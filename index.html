@@ -302,7 +302,8 @@ let state = {
   _searchFocused: false,
   previousSession: null,
   stats: { totalPoints: 0 },
-  fileHandle: null
+  fileHandle: null,
+  pendingFileHandle: null
 };
 
 function uid(){ return Math.random().toString(36).slice(2,10); }
@@ -582,6 +583,70 @@ function exportAllBackup(){
 function hasFileSystemAccess(){
   return typeof window.showSaveFilePicker === 'function' && typeof window.showOpenFilePicker === 'function';
 }
+
+/* Lembra qual arquivo local foi escolhido, pra tentar reconectar sozinho na próxima vez
+   que a página abrir (só faz sentido fora do sandbox do Claude.ai). */
+const FS_DB_NAME = 'recall_fs_handles';
+const FS_STORE = 'handles';
+function openHandleDB(){
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(FS_DB_NAME, 1);
+    req.onupgradeneeded = () => { req.result.createObjectStore(FS_STORE); };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function storeFileHandle(handle){
+  try{
+    const db = await openHandleDB();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(FS_STORE, 'readwrite');
+      tx.objectStore(FS_STORE).put(handle, 'main');
+      tx.oncomplete = resolve; tx.onerror = () => reject(tx.error);
+    });
+  }catch(e){ console.error('Falha ao lembrar do arquivo local', e); }
+}
+async function loadStoredFileHandle(){
+  try{
+    const db = await openHandleDB();
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(FS_STORE, 'readonly');
+      const req = tx.objectStore(FS_STORE).get('main');
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error);
+    });
+  }catch(e){ console.error(e); return null; }
+}
+async function tryReconnectFileHandle(){
+  if(hasClaudeStorage() || !hasFileSystemAccess()) return;
+  const handle = await loadStoredFileHandle();
+  if(!handle) return;
+  try{
+    const perm = await handle.queryPermission({ mode: 'readwrite' });
+    if(perm === 'granted'){
+      state.fileHandle = handle;
+      render();
+    } else {
+      state.pendingFileHandle = handle; // precisa de 1 clique pra reconceder a permissão
+      render();
+    }
+  }catch(e){ console.error('Falha ao tentar reconectar ao arquivo local', e); }
+}
+async function reconnectFileHandle(){
+  const handle = state.pendingFileHandle;
+  if(!handle) return;
+  try{
+    const perm = await handle.requestPermission({ mode: 'readwrite' });
+    if(perm === 'granted'){
+      state.fileHandle = handle;
+      state.pendingFileHandle = null;
+      showToast('Reconectado ao arquivo local.');
+      render();
+    } else {
+      showToast('Permissão negada para o arquivo.', 'error');
+    }
+  }catch(e){ console.error(e); showToast('Não foi possível reconectar ao arquivo.', 'error'); }
+}
 async function saveToFileSystem(){
   try{
     if(!state.fileHandle){
@@ -589,12 +654,13 @@ async function saveToFileSystem(){
         suggestedName: 'recall-backup.json',
         types: [{ description: 'Backup do Recall', accept: {'application/json': ['.json']} }]
       });
+      storeFileHandle(state.fileHandle);
     }
     const payload = JSON.stringify({ decks: state.decks, cards: state.cards, stats: state.stats }, null, 2);
     const writable = await state.fileHandle.createWritable();
     await writable.write(payload);
     await writable.close();
-    showToast('Salvo no arquivo. As próximas mudanças sincronizam automaticamente nele.');
+    showToast('Salvo no arquivo. As próximas mudanças sincronizam automaticamente nele, inclusive se você recarregar a página.');
     render();
   }catch(e){
     if(e && e.name === 'AbortError') return; // usuário cancelou o seletor
@@ -614,8 +680,9 @@ async function openFromFileSystem(){
     const data = JSON.parse(text);
     if(!data || !Array.isArray(data.decks)){ showToast('Esse arquivo não parece ser um backup do Recall.', 'error'); return; }
     state.fileHandle = handle;
+    storeFileHandle(handle);
     replaceAllData(data);
-    showToast('Baralhos carregados do arquivo. Mudanças a partir de agora sincronizam automaticamente nele.');
+    showToast('Baralhos carregados do arquivo. Mudanças a partir de agora sincronizam automaticamente nele, mesmo depois de recarregar a página.');
   }catch(e){
     if(e && e.name === 'AbortError') return;
     console.error(e);
@@ -1399,6 +1466,7 @@ function renderSidebar(){
       <br><a href="#" style="color:var(--text-muted); text-decoration:underline;" onclick="event.preventDefault(); saveToFileSystem();">${state.fileHandle ? '💾 Sincronizando com arquivo local ✓' : '💾 Salvar em arquivo local'}</a>
       &nbsp;·&nbsp;
       <a href="#" style="color:var(--text-muted); text-decoration:underline;" onclick="event.preventDefault(); openFromFileSystem();">📂 Abrir arquivo local</a>
+      ${state.pendingFileHandle ? `<br><a href="#" style="color:#F5A623; text-decoration:underline;" onclick="event.preventDefault(); reconnectFileHandle();">🔌 Reconectar ao arquivo local usado antes</a>` : ''}
       ` : ''}
       ${!hasClaudeStorage() ? `<br><a href="#" style="color:var(--text-muted); text-decoration:underline;" onclick="event.preventDefault(); openApiKeyModal();">${getApiKey() ? 'Chave de API configurada ✓' : '⚠ Configurar chave de API'}</a>` : ''}
     </div>
@@ -2116,6 +2184,7 @@ document.addEventListener('keydown', function(e){
 });
 
 loadData();
+tryReconnectFileHandle();
 </script>
 </body>
 </html>
