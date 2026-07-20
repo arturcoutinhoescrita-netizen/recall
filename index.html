@@ -187,15 +187,23 @@
   .option-btn.correct{ background:var(--success-soft); border-color:var(--success); color:var(--success); }
   .option-btn.wrong{ background:var(--error-soft); border-color:var(--error); color:var(--error); }
   .option-btn:disabled{ pointer-events:none; }
+  .opt-num{
+    display:inline-flex; align-items:center; justify-content:center;
+    width:20px; height:20px; margin-right:10px; border-radius:6px;
+    background:var(--surface-2); border:1px solid var(--border); color:var(--text-faint);
+    font-size:11px; font-weight:600; vertical-align:middle;
+  }
 
   .reveal-zone{ display:flex; flex-direction:column; gap:14px; align-items:center; }
   .answer-box{
     background:var(--bg-2); border:1px dashed var(--border); border-radius:12px; padding:16px 20px;
     font-size:15px; color:var(--text-muted); max-width:520px;
+    max-height:320px; overflow-y:auto; text-align:left; white-space:pre-wrap; word-break:break-word;
   }
   .feedback-banner{
-    display:flex; align-items:center; gap:10px; padding:13px 18px; border-radius:11px; font-size:14px; font-weight:600;
-    animation:pop .25s ease;
+    padding:14px 18px; border-radius:11px; font-size:14px; font-weight:600;
+    animation:pop .25s ease; line-height:1.55; text-align:left; white-space:pre-wrap; word-break:break-word;
+    max-height:360px; overflow-y:auto;
   }
   .feedback-banner.ok{ background:var(--success-soft); color:var(--success); }
   .feedback-banner.no{ background:var(--error-soft); color:var(--error); }
@@ -426,6 +434,33 @@ function scheduleCard(card, correct){
   }
   card.due = now + card.interval * 24*60*60*1000;
 }
+/* variante com 3 níveis de dificuldade, usada na pergunta aberta sem IA (autoavaliação) */
+function scheduleCardGraded(card, grade){
+  const now = Date.now();
+  card.ease = card.ease || 2.5;
+  card.reps = card.reps || 0;
+  card.interval = card.interval || 0;
+  card.missStreak = card.missStreak || 0;
+  if(grade === 'hard'){
+    card.reps = 0;
+    card.interval = 1;
+    card.ease = Math.max(1.3, card.ease - 0.2);
+    card.missStreak += 1;
+  } else {
+    card.reps += 1;
+    if(card.reps === 1) card.interval = 1;
+    else if(card.reps === 2) card.interval = 6;
+    else card.interval = Math.round(card.interval * card.ease);
+    if(grade === 'easy'){
+      card.ease = Math.max(1.3, card.ease + 0.15);
+      card.interval = Math.round(card.interval * 1.3);
+    } else { // medium
+      card.ease = Math.max(1.3, card.ease + 0.05);
+    }
+    card.missStreak = 0;
+  }
+  card.due = now + card.interval * 24*60*60*1000;
+}
 function getDueCards(deckId){
   const cards = state.cards[deckId] || [];
   const now = Date.now();
@@ -458,7 +493,7 @@ function playStreakBonus(){
 }
 
 /* ============ PONTUAÇÃO / GAMIFICAÇÃO ============ */
-function awardPoints(card, correct, exType){
+function awardPoints(card, correct, exType, grade){
   const s = state.session;
   s.streak = s.streak || 0;
   s.points = s.points || 0;
@@ -467,7 +502,7 @@ function awardPoints(card, correct, exType){
   let bonusMsg = '';
   let streakBonus = false;
   if(correct){
-    earned = 10;
+    earned = grade === 'easy' ? 15 : grade === 'medium' ? 8 : 10;
     s.streak++;
     if(exType === 'translate' && s.userInput){
       const norm = normalizeAnswer(s.userInput.trim());
@@ -484,6 +519,7 @@ function awardPoints(card, correct, exType){
       bonusMsg = (bonusMsg ? bonusMsg + ' · ' : '') + `Sequência de ${s.streak}! +20`;
     }
   } else {
+    earned = grade === 'hard' ? 2 : 0;
     s.streak = 0;
   }
   s.points += earned;
@@ -499,11 +535,20 @@ function awardPoints(card, correct, exType){
 
 /* ============ DECK / CARD CRUD ============ */
 function createDeck(name, color, type){
-  const d = { id: uid(), name: name.trim(), color: color || DECK_COLORS[state.decks.length % DECK_COLORS.length], type: type || 'standard' };
+  const d = { id: uid(), name: name.trim(), color: color || DECK_COLORS[state.decks.length % DECK_COLORS.length], type: type || 'standard', aiEnabled: true };
   state.decks.push(d);
   state.cards[d.id] = [];
   state.currentDeckId = d.id;
   state.view = 'deck'; state.tab = 'cards';
+  saveData(); render();
+}
+function isAiEnabled(deck){
+  return !deck || deck.aiEnabled !== false; // padrão: ligada, a menos que explicitamente desligada
+}
+function toggleDeckAi(deckId){
+  const deck = state.decks.find(d=>d.id===deckId);
+  if(!deck) return;
+  deck.aiEnabled = !isAiEnabled(deck);
   saveData(); render();
 }
 function deleteDeck(id){
@@ -690,7 +735,7 @@ async function openFromFileSystem(){
   }
 }
 function replaceAllData(data){
-  state.decks = (data.decks || []).map(d => ({ id: d.id || uid(), name: d.name, color: d.color || DECK_COLORS[0], type: d.type || 'standard', enabledExercises: d.enabledExercises }));
+  state.decks = (data.decks || []).map(d => ({ id: d.id || uid(), name: d.name, color: d.color || DECK_COLORS[0], type: d.type || 'standard', enabledExercises: d.enabledExercises, carryOverLang: d.carryOverLang || [], carryOverByMode: d.carryOverByMode || {} }));
   const newCards = {};
   state.decks.forEach(d => {
     const oldCards = (data.cards && data.cards[d.id]) || [];
@@ -745,7 +790,7 @@ function triggerImportBackup(){
 function importFullBackup(data){
   (data.decks || []).forEach(d => {
     const newId = uid();
-    state.decks.push({ id:newId, name: d.name, color: d.color || DECK_COLORS[state.decks.length % DECK_COLORS.length], type: d.type || 'standard', enabledExercises: d.enabledExercises });
+    state.decks.push({ id:newId, name: d.name, color: d.color || DECK_COLORS[state.decks.length % DECK_COLORS.length], type: d.type || 'standard', enabledExercises: d.enabledExercises, carryOverLang: d.carryOverLang || [], carryOverByMode: d.carryOverByMode || {} });
     const oldCards = (data.cards && data.cards[d.id]) || [];
     state.cards[newId] = oldCards.map(c => normalizeImportedCard(c));
   });
@@ -885,28 +930,53 @@ async function aiVerify(prompt, maxTokens){
   return { correct: isCorrect, explanation };
 }
 
-async function generateLanguageMC(term){
-  const prompt = `Termo em inglês a treinar: "${term}"\n\nCrie UMA pergunta de múltipla escolha em português para treinar este termo. Escolha aleatoriamente entre dois estilos:\n(A) Uma pergunta sobre o significado, uso ou contexto do termo "${term}", com alternativas de resposta em português.\n(B) Uma frase natural em inglês usando o termo "${term}", pedindo a tradução correta para português, com 4 alternativas de tradução em português.\n\nGere exatamente 4 alternativas, sendo apenas 1 correta e as outras 3 plausíveis mas erradas (para confundir quem não sabe bem o termo).\n\nResponda SOMENTE em JSON válido, exatamente neste formato, sem nenhum texto antes ou depois:\n{"prompt": "texto da pergunta ou frase a traduzir", "options": ["opção 1","opção 2","opção 3","opção 4"], "correctIndex": 0}\n\ncorrectIndex é o índice (0 a 3) da alternativa correta dentro do array options.`;
-  const data = await callClaude({ model: "claude-sonnet-5", max_tokens: 400, messages: [{ role: "user", content: prompt }] });
-  const text = (data.content||[]).map(b=>b.text||"").join("").trim();
-  const clean = text.replace(/```json|```/g,"").trim();
-  const parsed = JSON.parse(clean);
-  if(!parsed.options || parsed.options.length < 4 || typeof parsed.correctIndex !== 'number') throw new Error('formato inesperado');
-  return parsed;
+function shuffleMCOptions(content){
+  // usado pra evitar viés de posição em conteúdo vindo de fora (ex: IA sempre no índice 0)
+  if(!content || !Array.isArray(content.options)) return content;
+  const order = shuffle(content.options.map((_, i) => i));
+  return {
+    ...content,
+    options: order.map(i => content.options[i]),
+    correctIndex: order.indexOf(content.correctIndex)
+  };
+}
+function generateLocalMC(card, deckCards){
+  // múltipla escolha 100% local: usa as traduções de OUTROS termos do baralho como alternativas erradas
+  const eligibleOthers = (deckCards||[]).filter(c => c.id !== card.id && c.back);
+  if(!card.back || eligibleOthers.length < 3) return null; // não há termos suficientes com tradução cadastrada
+  const pickOne = (backStr) => {
+    const opts = String(backStr||'').split('/').map(s=>s.trim()).filter(Boolean);
+    return opts[Math.floor(Math.random()*opts.length)] || backStr;
+  };
+  const distractorCards = shuffle(eligibleOthers.slice()).slice(0, 3);
+  const direction = Math.random() < 0.5 ? 'term' : 'translation';
+  let promptText, correctText, distractorTexts;
+  if(direction === 'term'){
+    promptText = `Qual é a tradução de "${card.front}"?`;
+    correctText = pickOne(card.back);
+    distractorTexts = distractorCards.map(c => pickOne(c.back));
+  } else {
+    promptText = `Qual termo em inglês significa "${pickOne(card.back)}"?`;
+    correctText = stripParens(card.front);
+    distractorTexts = distractorCards.map(c => stripParens(c.front));
+  }
+  const entries = shuffle([{ text: correctText, correct: true }, ...distractorTexts.map(t => ({ text: t, correct: false }))]);
+  return {
+    prompt: promptText,
+    options: entries.map(e => e.text),
+    correctIndex: entries.findIndex(e => e.correct)
+  };
+}
+function generateLocalMCStandard(card, deckCards){
+  // múltipla escolha local pro baralho padrão: usa respostas de OUTROS cartões como alternativas erradas
+  const eligibleOthers = (deckCards||[]).filter(c => c.id !== card.id && c.back && c.back !== card.back);
+  if(eligibleOthers.length < 3) return null; // não há cartões suficientes no baralho
+  const distractorCards = shuffle(eligibleOthers.slice()).slice(0, 3);
+  return shuffle([card.back, ...distractorCards.map(c => c.back)]);
 }
 
-/* ============ GERAÇÃO EM LOTE (pré-carrega a sessão pra economizar mensagens) ============ */
+/* ============ GERAÇÃO EM LOTE (pré-carrega frases da sessão pra economizar mensagens) ============ */
 const LANG_BATCH_SIZE = 6; // itens processados por chamada de IA
-async function generateLanguageMCBatch(terms){
-  const listText = terms.map((t,i)=>`${i}. "${t}"`).join('\n');
-  const prompt = `Você vai receber uma lista numerada de termos em inglês para treinar.\n\n${listText}\n\nPara CADA termo da lista, crie UMA pergunta de múltipla escolha em português. Escolha aleatoriamente entre dois estilos por termo:\n(A) Uma pergunta sobre o significado, uso ou contexto do termo, com alternativas de resposta em português.\n(B) Uma frase natural em inglês usando o termo, pedindo a tradução correta para português, com 4 alternativas de tradução em português.\n\nPara cada termo, gere exatamente 4 alternativas, sendo apenas 1 correta e as outras 3 plausíveis mas erradas.\n\nResponda SOMENTE com um JSON válido, sem nenhum texto antes ou depois, exatamente neste formato:\n[{"i": 0, "prompt": "texto da pergunta ou frase a traduzir", "options": ["opção 1","opção 2","opção 3","opção 4"], "correctIndex": 0}, ...]\n\nO campo "i" deve corresponder ao número do termo na lista acima (começando em 0), e correctIndex é o índice (0 a 3) da alternativa correta dentro de options.`;
-  const data = await callClaude({ model: "claude-sonnet-5", max_tokens: 400*terms.length, messages: [{ role: "user", content: prompt }] });
-  const text = (data.content||[]).map(b=>b.text||"").join("").trim();
-  const clean = text.replace(/```json|```/g,"").trim();
-  const parsed = JSON.parse(clean);
-  if(!Array.isArray(parsed)) throw new Error('formato inesperado');
-  return parsed;
-}
 async function generateSentencesBatch(terms){
   const listText = terms.map((t,i)=>`${i}. "${t}"`).join('\n');
   const prompt = `Você vai receber uma lista numerada de termos em inglês para treinar.\n\n${listText}\n\nPara CADA termo, escreva UMA frase natural em inglês, de nível intermediário, que use claramente o termo em contexto.\n\nResponda SOMENTE com um JSON válido, sem nenhum texto antes ou depois, exatamente neste formato:\n[{"i": 0, "sentence": "frase em inglês"}, ...]\n\nO campo "i" deve corresponder ao número do termo na lista acima (começando em 0).`;
@@ -920,33 +990,19 @@ async function generateSentencesBatch(terms){
 async function prefetchSessionContent(s){
   const cardsById = {};
   (state.cards[s.deckId]||[]).forEach(c => cardsById[c.id] = c);
-  const mcIds = []; const writeIds = []; const seen = new Set();
+  const writeIds = []; const seen = new Set();
   s.queue.forEach(item => {
     const key = `${item.cardId}:${item.exType}`;
     if(seen.has(key)) return;
     seen.add(key);
-    if(item.exType === 'mc') mcIds.push(item.cardId);
-    else if(item.exType === 'write') writeIds.push(item.cardId);
+    if(item.exType === 'write') writeIds.push(item.cardId);
   });
   s.contentCache = {};
-  if(mcIds.length === 0 && writeIds.length === 0) return; // nada pra pré-gerar (só exercícios locais)
+  if(writeIds.length === 0) return; // nada pra pré-gerar (mc agora é local, e os demais tipos também)
 
-  s.prefetch = { active: true, done: 0, total: mcIds.length + writeIds.length };
+  s.prefetch = { active: true, done: 0, total: writeIds.length };
   render();
 
-  for(let i=0; i<mcIds.length; i+=LANG_BATCH_SIZE){
-    const batchIds = mcIds.slice(i, i+LANG_BATCH_SIZE);
-    const terms = batchIds.map(id => cardsById[id].front);
-    try{
-      const results = await generateLanguageMCBatch(terms);
-      results.forEach(r => {
-        const cardId = batchIds[r.i];
-        if(cardId && r.options) s.contentCache[`${cardId}:mc`] = { prompt: r.prompt, options: r.options, correctIndex: r.correctIndex };
-      });
-    }catch(e){ console.error('Falha ao pré-gerar múltipla escolha em lote', e); }
-    s.prefetch.done = Math.min(s.prefetch.done + batchIds.length, s.prefetch.total);
-    render();
-  }
   for(let i=0; i<writeIds.length; i+=LANG_BATCH_SIZE){
     const batchIds = writeIds.slice(i, i+LANG_BATCH_SIZE);
     const terms = batchIds.map(id => cardsById[id].front);
@@ -1067,16 +1123,40 @@ async function importKindleBook(bookTitle, highlights){
 
 
 /* ============ STUDY SESSION ============ */
+const AI_SESSION_CAP = 20;
 function startSession(deckId, mode){
+  const deck = state.decks.find(d=>d.id===deckId);
   const due = getDueCards(deckId);
   const pool = due.length ? due : (state.cards[deckId]||[]);
   if(pool.length === 0){ showToast('Este baralho ainda não tem cartões.', 'error'); return; }
+  const aiOn = isAiEnabled(deck);
+  const usesAI = (mode === 'mc' || mode === 'open') && aiOn; // 'direct' é sempre local; mc/open só usam IA se o baralho tiver ela ligada
+
+  let queue;
+  if(usesAI){
+    const fullIds = pool.map(c=>c.id);
+    const carry = ((deck && deck.carryOverByMode && deck.carryOverByMode[mode]) || []).filter(id => fullIds.includes(id));
+    const carrySet = new Set(carry);
+    const fresh = shuffle(fullIds.filter(id => !carrySet.has(id)));
+    const ordered = [...shuffle(carry), ...fresh];
+    queue = ordered.slice(0, AI_SESSION_CAP);
+    const leftover = ordered.slice(AI_SESSION_CAP);
+    if(deck){
+      deck.carryOverByMode = deck.carryOverByMode || {};
+      deck.carryOverByMode[mode] = leftover;
+      saveData();
+    }
+  } else {
+    queue = shuffle(pool.map(c=>c.id));
+  }
+
   state.session = {
     deckId, mode,
-    queue: shuffle(pool.map(c=>c.id)),
+    usesGradedOpen: mode === 'open' && !aiOn,
+    queue,
     index: 0,
     correct: 0,
-    total: pool.length,
+    total: queue.length,
     startTime: Date.now(),
     cardStart: Date.now(),
     revealed: false,
@@ -1086,13 +1166,39 @@ function startSession(deckId, mode){
     verifying: false,
     verifyResult: null,
     lastFeedback: null,
-    chosenIndex: null
+    chosenIndex: null,
+    graded: false,
+    gradeChosen: null
   };
   state.view = 'study';
   render();
   const first = getCurrentCard();
   if(!first) return;
   if(mode === 'mc') loadOptionsForCurrent();
+}
+function finalizeCarryOver(){
+  const s = state.session; if(!s) return;
+  const remainder = s.queue.slice(s.index);
+  if(remainder.length === 0) return;
+  const deck = state.decks.find(d=>d.id===s.deckId);
+  if(!deck) return;
+  if(s.mode === 'lang-mixed'){
+    const existing = deck.carryOverLang || [];
+    const seen = new Set(existing.map(i=>`${i.cardId}:${i.exType}`));
+    remainder.forEach(item => {
+      const key = `${item.cardId}:${item.exType}`;
+      if(!seen.has(key)){ existing.push(item); seen.add(key); }
+    });
+    deck.carryOverLang = existing;
+    saveData();
+  } else if(s.mode === 'mc' || s.mode === 'open'){
+    deck.carryOverByMode = deck.carryOverByMode || {};
+    const existing = deck.carryOverByMode[s.mode] || [];
+    const seen = new Set(existing);
+    remainder.forEach(id => { if(!seen.has(id)){ existing.push(id); seen.add(id); } });
+    deck.carryOverByMode[s.mode] = existing;
+    saveData();
+  }
 }
 function getCurrentCard(){
   const s = state.session;
@@ -1129,15 +1235,30 @@ function startLanguageSession(deckId){
   const due = getDueCards(deckId);
   const pool = due.length ? due : (state.cards[deckId]||[]);
   if(pool.length === 0){ showToast('Este baralho ainda não tem termos.', 'error'); return; }
-  let queue = [];
+  let fullQueue = [];
   pool.forEach(c => {
     enabledTypes.forEach(exType => {
       if((exType === 'translate' || exType === 'reverseTranslate') && !c.back) return; // sem tradução cadastrada, pula esses tipos pra esse termo
-      queue.push({ cardId: c.id, exType });
+      fullQueue.push({ cardId: c.id, exType });
     });
   });
-  if(queue.length === 0){ showToast('Adicione a tradução de pelo menos um termo (ou ative outro tipo de exercício) antes de estudar.', 'error'); return; }
-  queue = shuffle(queue);
+  if(fullQueue.length === 0){ showToast('Adicione a tradução de pelo menos um termo (ou ative outro tipo de exercício) antes de estudar.', 'error'); return; }
+
+  const usesAI = enabledTypes.includes('write'); // mc agora é local, só 'write' usa IA
+  let queue;
+  if(usesAI){
+    const fullKeys = new Set(fullQueue.map(i => `${i.cardId}:${i.exType}`));
+    const carry = (deck && deck.carryOverLang || []).filter(i => fullKeys.has(`${i.cardId}:${i.exType}`));
+    const carrySet = new Set(carry.map(i => `${i.cardId}:${i.exType}`));
+    const fresh = shuffle(fullQueue.filter(i => !carrySet.has(`${i.cardId}:${i.exType}`)));
+    const ordered = [...shuffle(carry), ...fresh];
+    queue = ordered.slice(0, AI_SESSION_CAP);
+    const leftover = ordered.slice(AI_SESSION_CAP);
+    if(deck){ deck.carryOverLang = leftover; saveData(); }
+  } else {
+    queue = shuffle(fullQueue);
+  }
+
   state.session = {
     deckId, mode: 'lang-mixed',
     queue, index: 0,
@@ -1164,6 +1285,13 @@ async function loadContentForCurrent(){
     const chosen = options[Math.floor(Math.random()*options.length)] || card.back;
     s.loadingContent = false; s.content = { chosenTranslation: chosen }; render(); return; // local, sem IA
   }
+  if(exType === 'mc'){
+    const mc = generateLocalMC(card, state.cards[s.deckId]);
+    s.loadingContent = false;
+    s.content = mc || { error: true, notEnoughCards: true };
+    render();
+    return; // local, sem IA
+  }
   const cacheKey = `${card.id}:${exType}`;
   if(s.contentCache && s.contentCache[cacheKey]){
     s.loadingContent = false; s.content = s.contentCache[cacheKey]; render(); return; // já veio pré-gerado em lote
@@ -1172,8 +1300,6 @@ async function loadContentForCurrent(){
   try{
     if(exType === 'write'){
       s.content = { sentence: await generateSentenceForTerm(card.front) };
-    } else if(exType === 'mc'){
-      s.content = await generateLanguageMC(card.front);
     }
   }catch(e){
     console.error(e);
@@ -1217,6 +1343,21 @@ function startMemorizeMode(){
   render();
   prefetchSessionContent(state.session).then(() => loadContentForCurrent());
 }
+function startCopyMemorize(){
+  const s = state.session; if(!s) return;
+  const card = getCurrentCard(); if(!card) return;
+  state.previousSession = s;
+  state.session = {
+    deckId: s.deckId, mode: 'copy-memorize', memorizeMode: true, memorizeCardId: card.id,
+    queue: [card.id], index: 0,
+    correct: 0, total: 1,
+    startTime: Date.now(), cardStart: Date.now(),
+    revealed: false, userInput: '', verifying: false, verifyResult: null, lastFeedback: null,
+    copyMismatch: false, points: 0, streak: 0
+  };
+  showToast('Modo memorizar: copie a resposta certinho pra fixar.');
+  render();
+}
 function endMemorizeMode(){
   const prev = state.previousSession;
   state.previousSession = null;
@@ -1227,9 +1368,25 @@ function endMemorizeMode(){
     state.view = 'study';
     saveData();
     render();
-    loadContentForCurrent();
+    if(prev.mode === 'mc') loadOptionsForCurrent();
+    else if(prev.mode === 'lang-mixed') loadContentForCurrent();
   } else {
     state.view = 'results';
+    render();
+  }
+}
+function submitCopyMemorize(){
+  const s = state.session; const card = getCurrentCard();
+  const input = document.getElementById('copy-input');
+  const val = input ? input.value : (s.userInput||'');
+  if(!val.trim()) return;
+  const match = normalizeAnswer(val) === normalizeAnswer(card.back);
+  if(match){
+    s.revealed = true;
+    s.copyMismatch = false;
+    render();
+  } else {
+    s.copyMismatch = true;
     render();
   }
 }
@@ -1299,7 +1456,16 @@ function answerLangMC(optionIndex){
 async function loadOptionsForCurrent(){
   const s = state.session; if(!s) return;
   const card = getCurrentCard(); if(!card) return;
-  s.loadingOptions = true; s.options = null; render();
+  const deck = state.decks.find(d=>d.id===s.deckId);
+  if(!isAiEnabled(deck)){
+    const localOptions = generateLocalMCStandard(card, state.cards[s.deckId]);
+    s.loadingOptions = false;
+    s.options = localOptions;
+    s.optionsUnavailable = !localOptions;
+    render();
+    return;
+  }
+  s.loadingOptions = true; s.options = null; s.optionsUnavailable = false; render();
   try{
     const wrongs = await generateDistractors(card.front, card.back);
     s.options = shuffle([card.back, ...wrongs]);
@@ -1351,15 +1517,32 @@ async function submitOpenAnswer(){
   saveData();
   render();
 }
+function revealOpenGraded(){
+  state.session.revealed = true;
+  render();
+}
+function answerOpenGraded(grade){
+  const s = state.session; const card = getCurrentCard();
+  const correct = grade !== 'hard';
+  scheduleCardGraded(card, grade);
+  if(correct){ s.correct++; } else { requeueOnWrong(); }
+  awardPoints(card, correct, 'open-graded', grade);
+  s.lastFeedback = correct;
+  s.gradeChosen = grade;
+  s.graded = true;
+  saveData();
+  render();
+}
 
 function nextCard(){
   const s = state.session;
   s.index++;
   s.revealed = false; s.userInput=''; s.options=null; s.chosen=null; s.verifyResult=null; s.lastFeedback=null;
-  s.content=null; s.chosenIndex=null;
+  s.content=null; s.chosenIndex=null; s.graded=false; s.gradeChosen=null; s.copyMismatch=false;
   s.cardStart = Date.now();
   if(s.index >= s.queue.length){
     if(s.memorizeMode){ endMemorizeMode(); return; }
+    finalizeCarryOver();
     state.view = 'results';
     render();
     return;
@@ -1370,6 +1553,7 @@ function nextCard(){
 }
 function endSessionEarly(){
   if(state.session && state.session.memorizeMode){ endMemorizeMode(); return; }
+  finalizeCarryOver();
   state.view = 'results';
   render();
 }
@@ -1419,7 +1603,8 @@ function focusStudyInput(){
   const s = state.session;
   if(s.revealed || s.verifying) return;
   let id = null;
-  if(s.mode === 'open') id = 'open-input';
+  if(s.mode === 'open' && !s.usesGradedOpen) id = 'open-input';
+  else if(s.mode === 'copy-memorize') id = 'copy-input';
   else if(s.mode === 'lang-mixed'){
     const exType = getCurrentExType();
     if(exType === 'translate') id = 'lang-input';
@@ -1691,6 +1876,8 @@ function renderStudyPicker(deck){
   </p>`;
   if(deck.type === 'language'){
     const enabled = getEnabledExercises(deck);
+    const usesAI = enabled.includes('write'); // mc agora é local, só 'write' usa IA
+    const carryCount = (deck.carryOverLang || []).length;
     return `
     ${dueLine}
     <div style="margin-bottom:16px;">
@@ -1703,6 +1890,7 @@ function renderStudyPicker(deck){
         `).join('')}
       </div>
       ${enabled.length === 0 ? `<p style="font-size:11.5px; color:var(--error); margin-top:8px;">Ative pelo menos 1 tipo de exercício pra estudar.</p>` : ''}
+      ${usesAI && carryCount > 0 ? `<p style="font-size:11.5px; color:#F5A623; margin-top:8px;">🔁 ${carryCount} exercício(s) pendente(s) da sessão anterior serão priorizados agora.</p>` : ''}
     </div>
     <div class="mode-grid" style="grid-template-columns:1fr;">
       <button class="mode-card" ${enabled.length===0?'disabled style="opacity:0.5; cursor:not-allowed;"':''} onclick="${enabled.length>0 ? `startLanguageSession('${deck.id}')` : ''}">
@@ -1710,11 +1898,26 @@ function renderStudyPicker(deck){
         <h3>Começar sessão</h3>
         <p>Para cada termo, mistura os exercícios ativos acima.${enabled.includes('translate') ? ' Tradução direta é verificada na hora, sem gastar IA.' : ''}</p>
         ${enabled.includes('translate') ? `<p style="margin-top:6px; font-size:11.5px;">Termos sem tradução cadastrada pulam o exercício de tradução direta — adicione a tradução na aba "Cartões" pra aproveitar todos.</p>` : ''}
+        ${usesAI ? `<p style="margin-top:6px; font-size:11.5px;">⚡ Sessões com IA são limitadas a ${AI_SESSION_CAP} perguntas — o resto fica pendente pra próxima vez.</p>` : ''}
       </button>
     </div>`;
   }
+  const aiOn = isAiEnabled(deck);
   return `
   ${dueLine}
+  <div style="margin-bottom:16px;">
+    <label style="font-size:11px; letter-spacing:0.06em; color:var(--text-faint); text-transform:uppercase; font-weight:600;">Inteligência artificial</label>
+    <div style="margin-top:8px;">
+      <button type="button" class="ghost-btn" style="padding:8px 14px; font-size:12.5px; ${aiOn ? 'border-color:var(--accent); color:var(--accent);' : 'border-color:var(--text-faint); opacity:0.7;'}" onclick="toggleDeckAi('${deck.id}')">
+        ${aiOn ? '🤖 IA ligada' : '📴 IA desligada'}
+      </button>
+      <p style="font-size:11.5px; color:var(--text-faint); margin-top:6px;">
+        ${aiOn
+          ? 'Múltipla escolha usa a IA pra criar alternativas, e pergunta aberta verifica sua resposta com busca na internet.'
+          : 'Múltipla escolha usa respostas de outros cartões do baralho como alternativas, e pergunta aberta vira autoavaliação (fácil/médio/difícil) — tudo local, sem gastar IA.'}
+      </p>
+    </div>
+  </div>
   <div class="mode-grid">
     <button class="mode-card" onclick="startSession('${deck.id}','direct')">
       <div class="m-icon">✍️</div>
@@ -1724,12 +1927,14 @@ function renderStudyPicker(deck){
     <button class="mode-card" onclick="startSession('${deck.id}','mc')">
       <div class="m-icon">🎯</div>
       <h3>Múltipla escolha</h3>
-      <p>A IA gera 3 alternativas erradas plausíveis com base na resposta certa.</p>
+      <p>${aiOn ? 'A IA gera 3 alternativas erradas plausíveis com base na resposta certa.' : 'Usa as respostas de outros cartões do baralho como alternativas erradas — sem IA.'}</p>
+      ${aiOn ? `<p style="margin-top:6px; font-size:11.5px;">⚡ Limitada a ${AI_SESSION_CAP} perguntas por sessão.${(deck.carryOverByMode && deck.carryOverByMode.mc && deck.carryOverByMode.mc.length) ? ` 🔁 ${deck.carryOverByMode.mc.length} pendente(s) serão priorizadas.` : ''}</p>` : `<p style="margin-top:6px; font-size:11.5px;">Precisa de pelo menos 4 cartões com respostas diferentes no baralho.</p>`}
     </button>
     <button class="mode-card" onclick="startSession('${deck.id}','open')">
       <div class="m-icon">🌐</div>
       <h3>Pergunta aberta</h3>
-      <p>Digite sua resposta livremente — a IA busca na internet e confere se está certa.</p>
+      <p>${aiOn ? 'Digite sua resposta livremente — a IA busca na internet e confere se está certa.' : 'Revele a resposta e diga se foi fácil, médio ou difícil — sem IA.'}</p>
+      ${aiOn ? `<p style="margin-top:6px; font-size:11.5px;">⚡ Limitada a ${AI_SESSION_CAP} perguntas por sessão.${(deck.carryOverByMode && deck.carryOverByMode.open && deck.carryOverByMode.open.length) ? ` 🔁 ${deck.carryOverByMode.open.length} pendente(s) serão priorizadas.` : ''}</p>` : `<p style="margin-top:6px; font-size:11.5px;">Sem limite de perguntas — não gasta IA.</p>`}
     </button>
   </div>`;
 }
@@ -1767,6 +1972,8 @@ function renderStudyView(){
     body = renderMCMode(s, card);
   } else if(s.mode === 'open'){
     body = renderOpenMode(s, card);
+  } else if(s.mode === 'copy-memorize'){
+    body = renderCopyMemorizeMode(s, card);
   } else if(s.mode === 'lang-mixed'){
     const exType = getCurrentExType();
     if(exType === 'translate') body = renderTranslateExercise(s, card);
@@ -1777,7 +1984,9 @@ function renderStudyView(){
 
   const exLabel = s.mode === 'lang-mixed' ? ` · ${EXERCISE_LABELS[getCurrentExType()]}` : '';
   const remaining = s.queue.length - s.index;
-  const isReverse = s.mode === 'lang-mixed' && getCurrentExType() === 'reverseTranslate';
+  const currentExType = s.mode === 'lang-mixed' ? getCurrentExType() : null;
+  const isReverse = currentExType === 'reverseTranslate';
+  const hideTopQuestion = currentExType === 'mc'; // a pergunta real já aparece dentro do quadro de alternativas
   const questionText = isReverse
     ? (s.content && s.content.chosenTranslation ? s.content.chosenTranslation : '...')
     : card.front;
@@ -1799,15 +2008,20 @@ function renderStudyView(){
         <div class="timer mono">${fmtTime(elapsed)}</div>
       </div>
     </div>
-    ${(s.mode === 'lang-mixed' && !s.memorizeMode && (card.missStreak||0) >= 3) ? `
+    ${(!s.memorizeMode && s.mode !== 'copy-memorize' && (card.missStreak||0) >= 3) ? `
     <div style="background:rgba(245,166,35,0.12); border:1px solid rgba(245,166,35,0.4); border-radius:10px; padding:10px 14px; margin-bottom:14px; display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
-      <span style="font-size:12.5px; color:#F5A623;">Você errou esse termo 3 vezes seguidas.</span>
-      <button class="primary-btn" style="padding:8px 14px; font-size:12.5px; white-space:nowrap;" onclick="startMemorizeMode()">🎯 Memorizar</button>
+      <span style="font-size:12.5px; color:#F5A623;">Você errou essa questão 3 vezes seguidas.</span>
+      <button class="primary-btn" style="padding:8px 14px; font-size:12.5px; white-space:nowrap;" onclick="${s.mode === 'lang-mixed' ? 'startMemorizeMode()' : 'startCopyMemorize()'}">🎯 Memorizar</button>
     </div>
     ` : ''}
-    ${s.memorizeMode ? `
+    ${s.memorizeMode && s.mode === 'lang-mixed' ? `
     <div style="background:rgba(125,169,250,0.12); border:1px solid rgba(125,169,250,0.4); border-radius:10px; padding:8px 14px; margin-bottom:14px; font-size:12px; color:#7DA9FA; text-align:center;">
       🎯 Modo memorizar — a sessão normal retoma de onde parou ao terminar estes 5 exercícios
+    </div>
+    ` : ''}
+    ${s.mode === 'copy-memorize' ? `
+    <div style="background:rgba(125,169,250,0.12); border:1px solid rgba(125,169,250,0.4); border-radius:10px; padding:8px 14px; margin-bottom:14px; font-size:12px; color:#7DA9FA; text-align:center;">
+      🎯 Modo memorizar — a sessão normal retoma assim que você copiar certinho
     </div>
     ` : ''}
     <div class="study-card">
@@ -1816,12 +2030,31 @@ function renderStudyView(){
         <button class="icon-btn" style="width:26px; height:26px; font-size:13px; ${card.flagged ? 'color:#F5A623;' : 'opacity:0.4;'}" title="${card.flagged ? 'Remover sinalização' : 'Sinalizar esta pergunta para editar/revisar depois'}" onclick="toggleFlagCurrentCard()">🚩</button>
       </div>
       ${isReverse ? `<p style="color:var(--text-muted); font-size:12px; margin:0 0 4px 0;">Digite o termo em inglês para:</p>` : ''}
-      <div class="question">${escapeHtml(questionText)}</div>
+      ${hideTopQuestion ? '' : `<div class="question">${escapeHtml(questionText)}</div>`}
     </div>
     ${body}
   </div>`;
 }
 
+function renderCopyMemorizeMode(s, card){
+  if(!s.revealed){
+    return `
+    <div class="answer-zone">
+      <p style="color:var(--text-muted); font-size:12.5px; text-align:center;">Copie a resposta abaixo, digitando ela certinho, pra fixar:</p>
+      <div class="answer-box">${escapeHtml(card.back)}</div>
+      <textarea id="copy-input" rows="2" placeholder="Digite a resposta..." autofocus autocomplete="off" autocorrect="off" spellcheck="false" onkeydown="if(event.key==='Enter' && !event.shiftKey){ event.preventDefault(); submitCopyMemorize(); }" onkeyup="state.session.userInput=this.value">${escapeHtml(s.userInput||'')}</textarea>
+      <div class="action-row"><button class="primary-btn" onclick="submitCopyMemorize()">Verificar</button></div>
+      ${s.copyMismatch ? `<div class="feedback-banner no">Confira com calma e tente de novo — precisa bater com a resposta.</div>` : ''}
+    </div>`;
+  }
+  return `
+  <div class="answer-zone">
+    <div class="reveal-zone">
+      <div class="feedback-banner ok">✓ Copiado certinho! Isso ajuda a fixar.</div>
+      <div class="action-row"><button class="primary-btn" onclick="nextCard()">Concluir →</button></div>
+    </div>
+  </div>`;
+}
 function renderDirectMode(s, card){
   if(!s.revealed){
     return `
@@ -1854,6 +2087,9 @@ function renderMCMode(s, card){
       <div class="loading-line"><div class="spinner"></div> Gerando alternativas...</div>
     </div>`;
   }
+  if(s.optionsUnavailable){
+    return `<div class="answer-zone" style="align-items:center;"><p style="color:var(--text-muted); font-size:13px; text-align:center;">Esse baralho precisa de pelo menos 4 cartões com respostas diferentes pra montar alternativas sem IA. Adicione mais cartões, ou ative a IA do baralho.</p></div>`;
+  }
   if(!s.options) return '';
   return `
   <div class="answer-zone">
@@ -1864,7 +2100,7 @@ function renderMCMode(s, card){
           if(opt === card.back) cls = 'correct';
           else if(opt === s.chosen) cls = 'wrong';
         }
-        return `<button class="option-btn ${cls}" ${s.revealed?'disabled':''} onclick="answerMC(${i})">${escapeHtml(opt)}</button>`;
+        return `<button class="option-btn ${cls}" ${s.revealed?'disabled':''} onclick="answerMC(${i})"><span class="opt-num">${i+1}</span>${escapeHtml(opt)}</button>`;
       }).join('')}
     </div>
     ${s.revealed ? `
@@ -1876,6 +2112,7 @@ function renderMCMode(s, card){
 }
 
 function renderOpenMode(s, card){
+  if(s.usesGradedOpen) return renderOpenGradedMode(s, card);
   if(!s.revealed){
     return `
     <div class="answer-zone">
@@ -1894,6 +2131,38 @@ function renderOpenMode(s, card){
     <div class="reveal-zone">
       <div class="answer-box"><strong>Resposta de referência:</strong> ${escapeHtml(card.back)}</div>
       <div class="feedback-banner ${r.correct?'ok':'no'}">${r.correct? '✓ Correto' : '✕ Incorreto'} — ${escapeHtml(r.explanation)}</div>
+      ${renderPointsBadge(s)}
+      <div class="action-row"><button class="primary-btn" onclick="nextCard()">Próximo →</button></div>
+    </div>
+  </div>`;
+}
+function renderOpenGradedMode(s, card){
+  if(!s.revealed){
+    return `
+    <div class="answer-zone" style="align-items:center;">
+      <p style="color:var(--text-muted); font-size:13.5px;">Pense na resposta e revele quando estiver pronto.</p>
+      <button class="primary-btn" onclick="revealOpenGraded()">Revelar resposta</button>
+    </div>`;
+  }
+  if(!s.graded){
+    return `
+    <div class="answer-zone">
+      <div class="reveal-zone">
+        <div class="answer-box">${escapeHtml(card.back)}</div>
+        <p style="color:var(--text-muted); font-size:13.5px; margin-top:4px;">Como foi pra você responder essa?</p>
+        <div style="display:flex; gap:8px; width:100%;">
+          <button class="ghost-btn" style="flex:1; border-color:var(--error); color:var(--error);" onclick="answerOpenGraded('hard')">😖 Difícil</button>
+          <button class="ghost-btn" style="flex:1; border-color:#F5A623; color:#F5A623;" onclick="answerOpenGraded('medium')">😐 Médio</button>
+          <button class="ghost-btn" style="flex:1; border-color:var(--success); color:var(--success);" onclick="answerOpenGraded('easy')">😌 Fácil</button>
+        </div>
+      </div>
+    </div>`;
+  }
+  const gradeLabels = { easy: '😌 Fácil', medium: '😐 Médio', hard: '😖 Difícil' };
+  return `
+  <div class="answer-zone">
+    <div class="reveal-zone">
+      <div class="feedback-banner ${s.lastFeedback?'ok':'no'}">Marcado como ${gradeLabels[s.gradeChosen]}${s.gradeChosen==='hard' ? ' — vai voltar a aparecer em breve' : ''}</div>
       ${renderPointsBadge(s)}
       <div class="action-row"><button class="primary-btn" onclick="nextCard()">Próximo →</button></div>
     </div>
@@ -1943,10 +2212,12 @@ function renderWriteExercise(s, card){
 }
 
 function renderLangMCExercise(s, card){
-  if(s.loadingContent){
-    return `<div class="answer-zone" style="align-items:center;"><div class="loading-line"><div class="spinner"></div> Gerando alternativas...</div></div>`;
+  if(!s.content || s.content.error || !s.content.options){
+    if(s.content && s.content.notEnoughCards){
+      return `<div class="answer-zone" style="align-items:center;"><p style="color:var(--text-muted); font-size:13px; text-align:center;">Esse baralho precisa de pelo menos 4 termos com tradução cadastrada pra montar alternativas de múltipla escolha. Adicione mais traduções na aba "Cartões".</p></div>`;
+    }
+    return langLoadError(s);
   }
-  if(!s.content || s.content.error || !s.content.options) return langLoadError(s);
   return `
   <div class="answer-zone">
     <div class="answer-box" style="text-align:left;">${escapeHtml(s.content.prompt)}</div>
@@ -1957,7 +2228,7 @@ function renderLangMCExercise(s, card){
           if(i === s.content.correctIndex) cls = 'correct';
           else if(i === s.chosenIndex) cls = 'wrong';
         }
-        return `<button class="option-btn ${cls}" ${s.revealed?'disabled':''} onclick="answerLangMC(${i})">${escapeHtml(opt)}</button>`;
+        return `<button class="option-btn ${cls}" ${s.revealed?'disabled':''} onclick="answerLangMC(${i})"><span class="opt-num">${i+1}</span>${escapeHtml(opt)}</button>`;
       }).join('')}
     </div>
     ${s.revealed ? `
@@ -2176,10 +2447,26 @@ document.addEventListener('keydown', function(e){
   const s = state.session;
   const nextVisible = s.mode === 'direct'
     ? (s.revealed && s.lastFeedback !== null)
-    : (s.revealed && !s.verifying);
+    : (s.mode === 'open' && s.usesGradedOpen)
+      ? (s.revealed && s.graded)
+      : (s.revealed && !s.verifying);
   if(nextVisible){
     e.preventDefault();
     nextCard();
+  }
+});
+
+/* Teclas 1-4 escolhem a alternativa correspondente nos modos de múltipla escolha. */
+document.addEventListener('keydown', function(e){
+  if(!['1','2','3','4'].includes(e.key)) return;
+  if(state.view !== 'study' || !state.session) return;
+  const s = state.session;
+  if(s.revealed || s.verifying) return;
+  const idx = parseInt(e.key, 10) - 1;
+  if(s.mode === 'mc' && s.options && !s.loadingOptions){
+    if(idx < s.options.length){ e.preventDefault(); answerMC(idx); }
+  } else if(s.mode === 'lang-mixed' && getCurrentExType() === 'mc' && s.content && s.content.options && !s.loadingContent){
+    if(idx < s.content.options.length){ e.preventDefault(); answerLangMC(idx); }
   }
 });
 
