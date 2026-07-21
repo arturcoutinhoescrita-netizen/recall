@@ -498,6 +498,7 @@ function initFirebase(){
   auth.onAuthStateChanged(user => {
     state.firebaseUser = user;
     state.authReady = true;
+    state.fileHandle = null; state.pendingFileHandle = null; // não carrega o arquivo lembrado da conta anterior
     if(user){
       loadData().then(() => tryReconnectFileHandle());
     } else {
@@ -834,12 +835,18 @@ function openHandleDB(){
     req.onerror = () => reject(req.error);
   });
 }
+/* o arquivo lembrado fica preso à conta logada, não só ao navegador — assim, se
+   duas pessoas usarem o mesmo computador com contas diferentes, uma não reconecta
+   sem querer ao arquivo que a outra configurou. */
+function getFileHandleKey(){
+  return hasFirebaseUser() ? `user:${state.firebaseUser.uid}` : 'main';
+}
 async function storeFileHandle(handle){
   try{
     const db = await openHandleDB();
     await new Promise((resolve, reject) => {
       const tx = db.transaction(FS_STORE, 'readwrite');
-      tx.objectStore(FS_STORE).put(handle, 'main');
+      tx.objectStore(FS_STORE).put(handle, getFileHandleKey());
       tx.oncomplete = resolve; tx.onerror = () => reject(tx.error);
     });
   }catch(e){ console.error('Falha ao lembrar do arquivo local', e); }
@@ -849,7 +856,7 @@ async function loadStoredFileHandle(){
     const db = await openHandleDB();
     return await new Promise((resolve, reject) => {
       const tx = db.transaction(FS_STORE, 'readonly');
-      const req = tx.objectStore(FS_STORE).get('main');
+      const req = tx.objectStore(FS_STORE).get(getFileHandleKey());
       req.onsuccess = () => resolve(req.result || null);
       req.onerror = () => reject(req.error);
     });
