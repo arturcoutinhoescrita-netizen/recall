@@ -1168,7 +1168,8 @@ function startSession(deckId, mode){
     lastFeedback: null,
     chosenIndex: null,
     graded: false,
-    gradeChosen: null
+    gradeChosen: null,
+    autoMatched: false
   };
   state.view = 'study';
   render();
@@ -1517,9 +1518,21 @@ async function submitOpenAnswer(){
   saveData();
   render();
 }
-function revealOpenGraded(){
-  state.session.revealed = true;
-  render();
+function submitOpenGraded(){
+  const s = state.session; const card = getCurrentCard();
+  const input = document.getElementById('open-graded-input');
+  const val = input ? input.value : (s.userInput||'');
+  if(!val.trim()) return;
+  s.userInput = val;
+  s.revealed = true;
+  const match = normalizeAnswer(val) === normalizeAnswer(card.back);
+  if(match){
+    s.autoMatched = true;
+    answerOpenGraded('easy');
+  } else {
+    s.autoMatched = false;
+    render();
+  }
 }
 function answerOpenGraded(grade){
   const s = state.session; const card = getCurrentCard();
@@ -1538,7 +1551,7 @@ function nextCard(){
   const s = state.session;
   s.index++;
   s.revealed = false; s.userInput=''; s.options=null; s.chosen=null; s.verifyResult=null; s.lastFeedback=null;
-  s.content=null; s.chosenIndex=null; s.graded=false; s.gradeChosen=null; s.copyMismatch=false;
+  s.content=null; s.chosenIndex=null; s.graded=false; s.gradeChosen=null; s.copyMismatch=false; s.autoMatched=false;
   s.cardStart = Date.now();
   if(s.index >= s.queue.length){
     if(s.memorizeMode){ endMemorizeMode(); return; }
@@ -1604,6 +1617,7 @@ function focusStudyInput(){
   if(s.revealed || s.verifying) return;
   let id = null;
   if(s.mode === 'open' && !s.usesGradedOpen) id = 'open-input';
+  else if(s.mode === 'open' && s.usesGradedOpen && !s.revealed) id = 'open-graded-input';
   else if(s.mode === 'copy-memorize') id = 'copy-input';
   else if(s.mode === 'lang-mixed'){
     const exType = getCurrentExType();
@@ -2139,17 +2153,20 @@ function renderOpenMode(s, card){
 function renderOpenGradedMode(s, card){
   if(!s.revealed){
     return `
-    <div class="answer-zone" style="align-items:center;">
-      <p style="color:var(--text-muted); font-size:13.5px;">Pense na resposta e revele quando estiver pronto.</p>
-      <button class="primary-btn" onclick="revealOpenGraded()">Revelar resposta</button>
+    <div class="answer-zone">
+      <textarea id="open-graded-input" rows="3" placeholder="Digite sua resposta... (Enter para confirmar, Shift+Enter para quebrar linha)" autofocus autocomplete="off" autocorrect="off" spellcheck="false" onkeydown="if(event.key==='Enter' && !event.shiftKey){ event.preventDefault(); submitOpenGraded(); }" onkeyup="state.session.userInput=this.value">${escapeHtml(s.userInput||'')}</textarea>
+      <div class="action-row">
+        <button class="primary-btn" onclick="submitOpenGraded()">Verificar resposta</button>
+      </div>
     </div>`;
   }
   if(!s.graded){
     return `
     <div class="answer-zone">
       <div class="reveal-zone">
-        <div class="answer-box">${escapeHtml(card.back)}</div>
-        <p style="color:var(--text-muted); font-size:13.5px; margin-top:4px;">Como foi pra você responder essa?</p>
+        <div class="answer-box"><strong>Sua resposta:</strong> ${escapeHtml(s.userInput||'')}</div>
+        <div class="answer-box"><strong>Resposta de referência:</strong> ${escapeHtml(card.back)}</div>
+        <p style="color:var(--text-muted); font-size:13.5px; margin-top:4px;">Sua resposta é diferente da referência. Como foi pra você?</p>
         <div style="display:flex; gap:8px; width:100%;">
           <button class="ghost-btn" style="flex:1; border-color:var(--error); color:var(--error);" onclick="answerOpenGraded('hard')">😖 Difícil</button>
           <button class="ghost-btn" style="flex:1; border-color:#F5A623; color:#F5A623;" onclick="answerOpenGraded('medium')">😐 Médio</button>
@@ -2162,7 +2179,7 @@ function renderOpenGradedMode(s, card){
   return `
   <div class="answer-zone">
     <div class="reveal-zone">
-      <div class="feedback-banner ${s.lastFeedback?'ok':'no'}">Marcado como ${gradeLabels[s.gradeChosen]}${s.gradeChosen==='hard' ? ' — vai voltar a aparecer em breve' : ''}</div>
+      <div class="feedback-banner ${s.lastFeedback?'ok':'no'}">${s.autoMatched ? '✓ Bateu certinho com a resposta de referência!' : `Marcado como ${gradeLabels[s.gradeChosen]}${s.gradeChosen==='hard' ? ' — vai voltar a aparecer em breve' : ''}`}</div>
       ${renderPointsBadge(s)}
       <div class="action-row"><button class="primary-btn" onclick="nextCard()">Próximo →</button></div>
     </div>
