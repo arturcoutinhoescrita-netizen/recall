@@ -268,6 +268,7 @@
   }
   .toast-error{ border-color:var(--error); color:var(--error); }
   @keyframes toast-in{ from{ opacity:0; transform:translateX(-50%) translateY(8px);} to{ opacity:1; transform:translateX(-50%) translateY(0);} }
+  .mobile-back-btn{ display:none; align-items:center; gap:6px; margin-bottom:14px; }
 
 
   @media (max-width:820px){
@@ -284,6 +285,15 @@
     .session-badges{ order:2; }
     .card-row{ flex-wrap:wrap; row-gap:6px; }
     .card-row .front, .card-row .back{ flex:1 1 100%; }
+    .card-form .row{ flex-direction:column; }
+    .modal{ width:calc(100vw - 40px) !important; max-height:85vh; overflow-y:auto; }
+    .results-stats{ flex-wrap:wrap; justify-content:center; }
+    .res-chip{ min-width:0; flex:1 1 calc(50% - 7px); }
+
+    /* navegação em etapas: só uma "tela" por vez (lista de baralhos OU baralho aberto) */
+    #app.step-detail .sidebar{ display:none; }
+    #app.step-home .main{ display:none; }
+    .mobile-back-btn{ display:inline-flex; }
   }
 </style>
 </head>
@@ -1855,6 +1865,9 @@ function render(){
     app.innerHTML = renderAuthGate();
     return;
   }
+  // no mobile, alterna entre a "etapa" da lista de baralhos e a do baralho aberto;
+  // no desktop essa classe não tem efeito nenhum (barra lateral fica sempre visível).
+  app.className = state.view === 'home' ? 'step-home' : 'step-detail';
   app.innerHTML = `
     ${renderSidebar()}
     <div class="main">${renderMain()}</div>
@@ -1951,6 +1964,10 @@ function selectDeck(id){
   state.cardSearch = ''; state.cardFilterFlagged = false; state.cardFilterLearned = false; state.cardFilterPriority = false;
   render();
 }
+function backToHome(){
+  state.view = 'home';
+  render();
+}
 
 function renderMain(){
   if(state.view === 'home' || !state.currentDeckId){
@@ -1975,6 +1992,7 @@ function renderDeckView(){
   const due = getDueCards(deck.id).length;
   const stateCounts = getDeckStateCounts(deck.id);
   return `
+  <button class="ghost-btn mobile-back-btn" onclick="backToHome()">← Baralhos</button>
   ${state.kindleImport && state.kindleImport.deckId === deck.id ? `
   <div style="background:var(--accent-soft); border:1px solid var(--accent-dim); border-radius:10px; padding:12px 16px; margin-bottom:16px; font-size:13px; color:var(--accent); display:flex; align-items:center; gap:10px;">
     <div class="spinner" style="border-top-color:var(--accent); width:18px; height:18px;"></div>
