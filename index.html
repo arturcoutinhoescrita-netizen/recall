@@ -12,6 +12,9 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Recall">
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
 <style>
   :root{
     --bg:#14162B;
@@ -352,7 +355,9 @@ let state = {
   previousSession: null,
   stats: { totalPoints: 0 },
   fileHandle: null,
-  pendingFileHandle: null
+  pendingFileHandle: null,
+  firebaseUser: null,
+  authReady: false
 };
 
 function uid(){ return Math.random().toString(36).slice(2,10); }
@@ -395,6 +400,9 @@ function hasClaudeStorage(){
 
 function sleep(ms){ return new Promise(r=>setTimeout(r, ms)); }
 
+function hasFirebaseUser(){
+  return !hasClaudeStorage() && !!state.firebaseUser;
+}
 async function loadData(){
   for(let attempt=0; attempt<2; attempt++){
     try{
@@ -406,10 +414,10 @@ async function loadData(){
           state.cards = d.cards || {};
           state.stats = d.stats || { totalPoints: 0 };
         }
-      } else {
-        const raw = localStorage.getItem(STORAGE_KEY);
-        if(raw){
-          const d = JSON.parse(raw);
+      } else if(hasFirebaseUser()){
+        const snap = await db.collection('users').doc(state.firebaseUser.uid).get();
+        if(snap.exists){
+          const d = snap.data();
           state.decks = d.decks || [];
           state.cards = d.cards || {};
           state.stats = d.stats || { totalPoints: 0 };
@@ -424,13 +432,13 @@ async function loadData(){
   render();
 }
 async function saveData(){
-  const payload = JSON.stringify({decks: state.decks, cards: state.cards, stats: state.stats});
+  const payload = JSON.parse(JSON.stringify({decks: state.decks, cards: state.cards, stats: state.stats}));
   for(let attempt=0; attempt<2; attempt++){
     try{
       if(hasClaudeStorage()){
-        await window.storage.set(STORAGE_KEY, payload, false);
-      } else {
-        localStorage.setItem(STORAGE_KEY, payload);
+        await window.storage.set(STORAGE_KEY, JSON.stringify(payload), false);
+      } else if(hasFirebaseUser()){
+        await db.collection('users').doc(state.firebaseUser.uid).set(payload);
       }
       if(state.saveFailed){ state.saveFailed = false; render(); }
       break; // sucesso
@@ -444,13 +452,70 @@ async function saveData(){
   if(state.fileHandle){
     try{
       const writable = await state.fileHandle.createWritable();
-      await writable.write(payload);
+      await writable.write(JSON.stringify(payload));
       await writable.close();
     }catch(e){
       console.error('Falha ao sincronizar com o arquivo local', e);
       // não interrompe o fluxo — o armazenamento padrão já cuidou de salvar
     }
   }
+}
+
+/* ============ FIREBASE (login + sincronização entre aparelhos) ============
+   Só entra em ação fora do Claude.ai (aqui hasClaudeStorage() é sempre falso).
+   Cada pessoa loga com a própria conta Google e os dados ficam em
+   users/{uid} no Firestore, isolados por login via regra de segurança. */
+const firebaseConfig = {
+  apiKey: "AIzaSyC7OYBIbfwiomiGipUAAcDnUWVnclaVu0Q",
+  authDomain: "recall-flashcards-172ff.firebaseapp.com",
+  projectId: "recall-flashcards-172ff",
+  storageBucket: "recall-flashcards-172ff.firebasestorage.app",
+  messagingSenderId: "272502529779",
+  appId: "1:272502529779:web:402568fc9f335a3ae6a186"
+};
+let auth = null, db = null;
+function initFirebase(){
+  firebase.initializeApp(firebaseConfig);
+  auth = firebase.auth();
+  db = firebase.firestore();
+  db.enablePersistence({ synchronizeTabs: true }).catch(e => console.error('Persistência offline do Firestore não disponível', e));
+
+  auth.getRedirectResult().catch(e => console.error('Falha ao concluir login com Google', e));
+
+  auth.onAuthStateChanged(user => {
+    state.firebaseUser = user;
+    state.authReady = true;
+    if(user){
+      loadData().then(() => tryReconnectFileHandle());
+    } else {
+      state.decks = []; state.cards = {}; state.stats = { totalPoints: 0 };
+      render();
+    }
+  });
+}
+function signInWithGoogle(){
+  auth.signInWithRedirect(new firebase.auth.GoogleAuthProvider()).catch(e => {
+    console.error('Falha ao iniciar login com Google', e);
+    showToast('Não foi possível iniciar o login. Tente novamente.', 'error');
+  });
+}
+function signOutUser(){
+  auth.signOut();
+}
+function renderAuthGate(){
+  if(!state.authReady){
+    return `
+    <div style="width:100%; min-height:100vh; display:flex; align-items:center; justify-content:center;">
+      <div class="spinner"></div>
+    </div>`;
+  }
+  return `
+  <div style="width:100%; min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; text-align:center; padding:20px;">
+    <div class="brand-mark" style="width:56px; height:56px; font-size:28px; border-radius:14px;">R</div>
+    <h1 style="margin:0;">Recall</h1>
+    <p style="color:var(--text-muted); max-width:320px; font-size:14px;">Entre com sua conta Google pra acessar seus baralhos, sincronizados em qualquer computador ou celular.</p>
+    <button class="primary-btn" onclick="signInWithGoogle()">Entrar com Google</button>
+  </div>`;
 }
 
 /* ============ SPACED REPETITION (SM-2 simplified) ============ */
@@ -1750,6 +1815,10 @@ function render(){
   }
 
   const app = document.getElementById('app');
+  if(!hasClaudeStorage() && !state.firebaseUser){
+    app.innerHTML = renderAuthGate();
+    return;
+  }
   app.innerHTML = `
     ${renderSidebar()}
     <div class="main">${renderMain()}</div>
@@ -1825,6 +1894,7 @@ function renderSidebar(){
     </div>
     <div class="sidebar-foot">
       ${state.saveFailed ? `<div style="color:var(--error); margin-bottom:6px;">⚠ Não consegui salvar as últimas mudanças. Exporte um backup pra não perder nada.</div>` : ''}
+      ${hasFirebaseUser() ? `<div style="margin-bottom:4px;">👤 ${escapeHtml(state.firebaseUser.email||'')} · <a href="#" style="color:var(--text-muted); text-decoration:underline;" onclick="event.preventDefault(); signOutUser();">Sair</a></div>` : ''}
       ${state.decks.length} baralho(s) · dados salvos automaticamente<br>
       <a href="#" style="color:var(--text-muted); text-decoration:underline;" onclick="event.preventDefault(); exportAllBackup();">Exportar backup completo</a>
       &nbsp;·&nbsp;
@@ -2707,8 +2777,12 @@ document.addEventListener('keydown', function(e){
   }
 });
 
-loadData();
-tryReconnectFileHandle();
+if(hasClaudeStorage()){
+  loadData();
+  tryReconnectFileHandle();
+} else {
+  initFirebase();
+}
 
 if('serviceWorker' in navigator){
   window.addEventListener('load', () => {
