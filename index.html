@@ -1344,6 +1344,31 @@ function startMemorizeMode(){
   render();
   prefetchSessionContent(state.session).then(() => loadContentForCurrent());
 }
+function dontKnowOpen(){
+  const s = state.session; const card = getCurrentCard();
+  if(!s || !card || s.mode !== 'open' || s.revealed) return;
+  if(s.usesGradedOpen){
+    scheduleCardGraded(card, 'hard');
+    awardPoints(card, false, 'open-graded', 'hard');
+  } else {
+    scheduleCard(card, false);
+    awardPoints(card, false, 'open');
+  }
+  requeueOnWrong(); // essa pergunta volta a aparecer mais à frente na sessão normal
+  saveData();
+  startCopyMemorize();
+  // avança a sessão pausada além dessa pergunta, pra não repetir ela de novo assim que voltar
+  if(state.previousSession){
+    state.previousSession.index++;
+    state.previousSession.revealed = false;
+    state.previousSession.userInput = '';
+    state.previousSession.verifyResult = null;
+    state.previousSession.lastFeedback = null;
+    state.previousSession.graded = false;
+    state.previousSession.gradeChosen = null;
+    state.previousSession.autoMatched = false;
+  }
+}
 function startCopyMemorize(){
   const s = state.session; if(!s) return;
   const card = getCurrentCard(); if(!card) return;
@@ -1365,6 +1390,14 @@ function endMemorizeMode(){
   if(prev){
     const card = (state.cards[prev.deckId]||[]).find(c=>c.id === state.session.memorizeCardId);
     if(card) card.missStreak = 0; // zera pra não reabrir o memorizar de novo imediatamente
+    if(prev.index >= prev.queue.length){
+      // a sessão pausada já tinha chegado ao fim (ex: "não sei" na última pergunta)
+      state.session = prev;
+      finalizeCarryOver();
+      state.view = 'results';
+      render();
+      return;
+    }
     state.session = prev;
     state.view = 'study';
     saveData();
@@ -2137,6 +2170,9 @@ function renderOpenMode(s, card){
         </button>
       </div>
       ${s.verifying ? `<div class="loading-line" style="justify-content:center;"><div class="spinner"></div> Buscando informações para conferir...</div>` : ''}
+      <div style="text-align:center; margin-top:-4px;">
+        <a href="#" style="font-size:11.5px; color:var(--text-faint); text-decoration:underline;" onclick="event.preventDefault(); dontKnowOpen();">não sei <span style="opacity:0.6;">(Esc)</span></a>
+      </div>
     </div>`;
   }
   const r = s.verifyResult;
@@ -2157,6 +2193,9 @@ function renderOpenGradedMode(s, card){
       <textarea id="open-graded-input" rows="3" placeholder="Digite sua resposta... (Enter para confirmar, Shift+Enter para quebrar linha)" autofocus autocomplete="off" autocorrect="off" spellcheck="false" onkeydown="if(event.key==='Enter' && !event.shiftKey){ event.preventDefault(); submitOpenGraded(); }" onkeyup="state.session.userInput=this.value">${escapeHtml(s.userInput||'')}</textarea>
       <div class="action-row">
         <button class="primary-btn" onclick="submitOpenGraded()">Verificar resposta</button>
+      </div>
+      <div style="text-align:center; margin-top:-4px;">
+        <a href="#" style="font-size:11.5px; color:var(--text-faint); text-decoration:underline;" onclick="event.preventDefault(); dontKnowOpen();">não sei <span style="opacity:0.6;">(Esc)</span></a>
       </div>
     </div>`;
   }
@@ -2484,6 +2523,17 @@ document.addEventListener('keydown', function(e){
     if(idx < s.options.length){ e.preventDefault(); answerMC(idx); }
   } else if(s.mode === 'lang-mixed' && getCurrentExType() === 'mc' && s.content && s.content.options && !s.loadingContent){
     if(idx < s.content.options.length){ e.preventDefault(); answerLangMC(idx); }
+  }
+});
+
+/* Esc aciona "não sei" nas perguntas abertas, antes de revelar a resposta. */
+document.addEventListener('keydown', function(e){
+  if(e.key !== 'Escape') return;
+  if(state.view !== 'study' || !state.session) return;
+  const s = state.session;
+  if(s.mode === 'open' && !s.revealed && !s.verifying){
+    e.preventDefault();
+    dontKnowOpen();
   }
 });
 
