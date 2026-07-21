@@ -289,6 +289,29 @@ function normalizeAnswer(str){
     .replace(/\s+/g,' ')
     .trim();
 }
+function diffWords(typedText, correctText){
+  // compara palavra por palavra (maior subsequência comum) e marca quais palavras
+  // digitadas pelo usuário não batem com a resposta correta, na ordem certa.
+  const typedWords = String(typedText||'').split(/\s+/).filter(Boolean);
+  const correctWords = String(correctText||'').split(/\s+/).filter(Boolean);
+  const a = typedWords.map(normalizeAnswer);
+  const b = correctWords.map(normalizeAnswer);
+  const n = a.length, m = b.length;
+  const dp = Array.from({length: n+1}, () => new Array(m+1).fill(0));
+  for(let i=n-1; i>=0; i--){
+    for(let j=m-1; j>=0; j--){
+      dp[i][j] = a[i]===b[j] ? dp[i+1][j+1]+1 : Math.max(dp[i+1][j], dp[i][j+1]);
+    }
+  }
+  const matched = new Array(n).fill(false);
+  let i=0, j=0;
+  while(i<n && j<m){
+    if(a[i]===b[j]){ matched[i]=true; i++; j++; }
+    else if(dp[i+1][j] >= dp[i][j+1]) i++;
+    else j++;
+  }
+  return typedWords.map((w, idx) => ({ text: w, correct: matched[idx] }));
+}
 function checkLocalTranslation(userInput, correctBack){
   const norm = normalizeAnswer(userInput);
   const options = String(correctBack||'').split('/').map(o=>normalizeAnswer(o)).filter(Boolean);
@@ -307,6 +330,8 @@ let state = {
   kindleImport: null,
   cardSearch: '',
   cardFilterFlagged: false,
+  cardFilterLearned: false,
+  cardFilterPriority: false,
   _searchFocused: false,
   previousSession: null,
   stats: { totalPoints: 0 },
@@ -464,7 +489,11 @@ function scheduleCardGraded(card, grade){
 function getDueCards(deckId){
   const cards = state.cards[deckId] || [];
   const now = Date.now();
-  return cards.filter(c => (c.due||0) <= now);
+  return cards.filter(c => !c.learned && (c.due||0) <= now);
+}
+function getStudyPool(deckId){
+  // todos os cartões elegíveis pra estudo, exceto os marcados como aprendidos
+  return (state.cards[deckId] || []).filter(c => !c.learned);
 }
 function shuffle(arr){
   const a = arr.slice();
@@ -564,7 +593,7 @@ function deleteDeck(id){
 }
 function addCard(deckId, front, back){
   if(!front.trim() || !back.trim()) return;
-  state.cards[deckId].push({ id: uid(), front: front.trim(), back: back.trim(), ease:2.5, interval:0, reps:0, due:Date.now() });
+  state.cards[deckId].push(makeCard(front, back));
   saveData(); render();
 }
 function deleteCard(deckId, cardId){
@@ -572,7 +601,7 @@ function deleteCard(deckId, cardId){
   saveData(); render();
 }
 function makeCard(front, back){
-  return { id: uid(), front: front.trim(), back: (back||'').trim(), ease:2.5, interval:0, reps:0, due:Date.now(), flagged:false };
+  return { id: uid(), front: front.trim(), back: (back||'').trim(), ease:2.5, interval:0, reps:0, due:Date.now(), flagged:false, learned:false, priority:false };
 }
 function toggleCardFlag(deckId, cardId){
   const card = (state.cards[deckId]||[]).find(c=>c.id===cardId);
@@ -585,6 +614,43 @@ function toggleFlagCurrentCard(){
   const card = getCurrentCard(); if(!card) return;
   card.flagged = !card.flagged;
   saveData(); render();
+}
+function toggleCardLearned(deckId, cardId){
+  const card = (state.cards[deckId]||[]).find(c=>c.id===cardId);
+  if(!card) return;
+  card.learned = !card.learned;
+  if(card.learned) card.priority = false; // não faz sentido as duas juntas
+  saveData(); render();
+}
+function toggleLearnedCurrentCard(){
+  const s = state.session; if(!s) return;
+  const card = getCurrentCard(); if(!card) return;
+  card.learned = !card.learned;
+  if(card.learned) card.priority = false;
+  saveData(); render();
+  if(card.learned) showToast('Marcado como aprendido — não vai mais aparecer nas próximas sessões.');
+}
+function toggleCardPriority(deckId, cardId){
+  const card = (state.cards[deckId]||[]).find(c=>c.id===cardId);
+  if(!card) return;
+  card.priority = !card.priority;
+  if(card.priority) card.learned = false;
+  saveData(); render();
+}
+function togglePriorityCurrentCard(){
+  const s = state.session; if(!s) return;
+  const card = getCurrentCard(); if(!card) return;
+  card.priority = !card.priority;
+  if(card.priority) card.learned = false;
+  saveData(); render();
+}
+function resetDeckFlags(deckId){
+  const deck = state.decks.find(d=>d.id===deckId);
+  askConfirm(`Limpar sinalizações, aprendidos e prioridades de todos os cartões de "${deck ? deck.name : ''}"? Isso não afeta o progresso de repetição espaçada, só essas marcações.`, () => {
+    (state.cards[deckId]||[]).forEach(c => { c.flagged = false; c.learned = false; c.priority = false; });
+    saveData(); render();
+    showToast('Marcações do baralho resetadas.');
+  }, 'Resetar');
 }
 function addTermCard(deckId, term, translation){
   if(!term.trim()) return;
@@ -750,7 +816,8 @@ function normalizeImportedCard(c){
   return {
     id: c.id || uid(), front: c.front, back: c.back || '',
     ease: c.ease || 2.5, interval: c.interval || 0, reps: c.reps || 0, due: c.due || Date.now(),
-    flagged: !!c.flagged, missStreak: c.missStreak || 0, usedTranslateAnswers: c.usedTranslateAnswers || []
+    flagged: !!c.flagged, learned: !!c.learned, priority: !!c.priority,
+    missStreak: c.missStreak || 0, usedTranslateAnswers: c.usedTranslateAnswers || []
   };
 }
 
@@ -1124,11 +1191,21 @@ async function importKindleBook(bookTitle, highlights){
 
 /* ============ STUDY SESSION ============ */
 const AI_SESSION_CAP = 20;
+function expandPoolForPriority(pool){
+  // cartões marcados com 🔥 prioridade aparecem 2x na mesma sessão
+  const expanded = [];
+  pool.forEach(c => {
+    expanded.push(c);
+    if(c.priority) expanded.push(c);
+  });
+  return expanded;
+}
 function startSession(deckId, mode){
   const deck = state.decks.find(d=>d.id===deckId);
   const due = getDueCards(deckId);
-  const pool = due.length ? due : (state.cards[deckId]||[]);
-  if(pool.length === 0){ showToast('Este baralho ainda não tem cartões.', 'error'); return; }
+  const basePool = due.length ? due : getStudyPool(deckId);
+  if(basePool.length === 0){ showToast('Este baralho ainda não tem cartões.', 'error'); return; }
+  const pool = expandPoolForPriority(basePool);
   const aiOn = isAiEnabled(deck);
   const usesAI = (mode === 'mc' || mode === 'open') && aiOn; // 'direct' é sempre local; mc/open só usam IA se o baralho tiver ela ligada
 
@@ -1234,8 +1311,9 @@ function startLanguageSession(deckId){
   const enabledTypes = deck ? getEnabledExercises(deck) : EXERCISE_TYPES;
   if(enabledTypes.length === 0){ showToast('Ative pelo menos 1 tipo de exercício antes de estudar.', 'error'); return; }
   const due = getDueCards(deckId);
-  const pool = due.length ? due : (state.cards[deckId]||[]);
-  if(pool.length === 0){ showToast('Este baralho ainda não tem termos.', 'error'); return; }
+  const basePool = due.length ? due : getStudyPool(deckId);
+  if(basePool.length === 0){ showToast('Este baralho ainda não tem termos.', 'error'); return; }
+  const pool = expandPoolForPriority(basePool);
   let fullQueue = [];
   pool.forEach(c => {
     enabledTypes.forEach(exType => {
@@ -1344,6 +1422,31 @@ function startMemorizeMode(){
   render();
   prefetchSessionContent(state.session).then(() => loadContentForCurrent());
 }
+function dontKnowOpen(){
+  const s = state.session; const card = getCurrentCard();
+  if(!s || !card || s.mode !== 'open' || s.revealed) return;
+  if(s.usesGradedOpen){
+    scheduleCardGraded(card, 'hard');
+    awardPoints(card, false, 'open-graded', 'hard');
+  } else {
+    scheduleCard(card, false);
+    awardPoints(card, false, 'open');
+  }
+  requeueOnWrong(); // essa pergunta volta a aparecer mais à frente na sessão normal
+  saveData();
+  startCopyMemorize();
+  // avança a sessão pausada além dessa pergunta, pra não repetir ela de novo assim que voltar
+  if(state.previousSession){
+    state.previousSession.index++;
+    state.previousSession.revealed = false;
+    state.previousSession.userInput = '';
+    state.previousSession.verifyResult = null;
+    state.previousSession.lastFeedback = null;
+    state.previousSession.graded = false;
+    state.previousSession.gradeChosen = null;
+    state.previousSession.autoMatched = false;
+  }
+}
 function startCopyMemorize(){
   const s = state.session; if(!s) return;
   const card = getCurrentCard(); if(!card) return;
@@ -1365,6 +1468,14 @@ function endMemorizeMode(){
   if(prev){
     const card = (state.cards[prev.deckId]||[]).find(c=>c.id === state.session.memorizeCardId);
     if(card) card.missStreak = 0; // zera pra não reabrir o memorizar de novo imediatamente
+    if(prev.index >= prev.queue.length){
+      // a sessão pausada já tinha chegado ao fim (ex: "não sei" na última pergunta)
+      state.session = prev;
+      finalizeCarryOver();
+      state.view = 'results';
+      render();
+      return;
+    }
     state.session = prev;
     state.view = 'study';
     saveData();
@@ -1385,9 +1496,11 @@ function submitCopyMemorize(){
   if(match){
     s.revealed = true;
     s.copyMismatch = false;
+    playCorrect();
     render();
   } else {
     s.copyMismatch = true;
+    s.lastCopyAttempt = val;
     render();
   }
 }
@@ -1551,7 +1664,7 @@ function nextCard(){
   const s = state.session;
   s.index++;
   s.revealed = false; s.userInput=''; s.options=null; s.chosen=null; s.verifyResult=null; s.lastFeedback=null;
-  s.content=null; s.chosenIndex=null; s.graded=false; s.gradeChosen=null; s.copyMismatch=false; s.autoMatched=false;
+  s.content=null; s.chosenIndex=null; s.graded=false; s.gradeChosen=null; s.copyMismatch=false; s.autoMatched=false; s.lastCopyAttempt='';
   s.cardStart = Date.now();
   if(s.index >= s.queue.length){
     if(s.memorizeMode){ endMemorizeMode(); return; }
@@ -1593,6 +1706,16 @@ function fmtDue(due){
 }
 
 function render(){
+  // guarda foco e posição do cursor ANTES de recriar a tela, pra restaurar depois —
+  // evita que re-renders disparados por outra coisa (ex: o toast sumindo sozinho)
+  // joguem o cursor de volta pro início enquanto o usuário está digitando.
+  const active = document.activeElement;
+  let savedId = null, savedStart = null, savedEnd = null;
+  if(active && (active.tagName === 'TEXTAREA' || active.tagName === 'INPUT') && active.id){
+    savedId = active.id;
+    try{ savedStart = active.selectionStart; savedEnd = active.selectionEnd; }catch(e){}
+  }
+
   const app = document.getElementById('app');
   app.innerHTML = `
     ${renderSidebar()}
@@ -1600,6 +1723,18 @@ function render(){
     ${state.modal ? renderModal() : ''}
     ${state.toast ? renderToast() : ''}
   `;
+
+  if(savedId){
+    const el = document.getElementById(savedId);
+    if(el){
+      el.focus();
+      if(savedStart !== null){
+        const len = el.value.length;
+        try{ el.setSelectionRange(Math.min(savedStart, len), Math.min(savedEnd, len)); }catch(e){}
+      }
+      return; // já restauramos o foco certo, não precisa do fallback abaixo
+    }
+  }
   requestAnimationFrame(focusStudyInput);
 }
 function focusStudyInput(){
@@ -1674,7 +1809,7 @@ function renderSidebar(){
 
 function selectDeck(id){
   state.currentDeckId = id; state.view = 'deck'; state.tab = 'cards'; state.editingCardId = null;
-  state.cardSearch = ''; state.cardFilterFlagged = false;
+  state.cardSearch = ''; state.cardFilterFlagged = false; state.cardFilterLearned = false; state.cardFilterPriority = false;
   render();
 }
 
@@ -1747,9 +1882,15 @@ function renderCardsTab(deck){
   const isLanguage = deck.type === 'language';
   const search = (state.cardSearch||'').trim().toLowerCase();
   const flaggedOnly = !!state.cardFilterFlagged;
+  const learnedOnly = !!state.cardFilterLearned;
+  const priorityOnly = !!state.cardFilterPriority;
   const flaggedCount = allCards.filter(c=>c.flagged).length;
+  const learnedCount = allCards.filter(c=>c.learned).length;
+  const priorityCount = allCards.filter(c=>c.priority).length;
   const cards = allCards.filter(c => {
     if(flaggedOnly && !c.flagged) return false;
+    if(learnedOnly && !c.learned) return false;
+    if(priorityOnly && !c.priority) return false;
     if(search && !((c.front||'').toLowerCase().includes(search) || (c.back||'').toLowerCase().includes(search))) return false;
     return true;
   });
@@ -1786,10 +1927,13 @@ function renderCardsTab(deck){
     <button class="ghost-btn" onclick="triggerImportInput('${deck.id}')">⇧ Importar (.txt do Anki / .csv / .json)</button>
     <button class="ghost-btn" onclick="exportDeckTxt('${deck.id}')">⇩ Exportar .txt</button>
     <button class="ghost-btn" onclick="exportDeckJson('${deck.id}')">⇩ Exportar .json</button>
+    <button class="ghost-btn" style="margin-left:auto; color:var(--error); border-color:var(--error);" onclick="resetDeckFlags('${deck.id}')">↺ Resetar marcações do baralho</button>
   </div>
   <div style="display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap; align-items:center;">
     <input type="text" id="card-search-input" placeholder="Buscar por termo/pergunta ou resposta..." value="${escapeHtml(state.cardSearch||'')}" style="flex:1; min-width:200px; padding:9px 12px; font-size:13px;" oninput="state.cardSearch=this.value; render();" onfocus="state._searchFocused=true;" onblur="state._searchFocused=false;">
     <button type="button" class="ghost-btn" style="padding:9px 14px; font-size:12.5px; ${flaggedOnly ? 'border-color:#F5A623; color:#F5A623;' : ''}" onclick="state.cardFilterFlagged=!state.cardFilterFlagged; render();">🚩 Só sinalizadas${flaggedCount ? ` (${flaggedCount})` : ''}</button>
+    <button type="button" class="ghost-btn" style="padding:9px 14px; font-size:12.5px; ${learnedOnly ? 'border-color:var(--success); color:var(--success);' : ''}" onclick="state.cardFilterLearned=!state.cardFilterLearned; render();">✅ Só aprendidas${learnedCount ? ` (${learnedCount})` : ''}</button>
+    <button type="button" class="ghost-btn" style="padding:9px 14px; font-size:12.5px; ${priorityOnly ? 'border-color:#F5A623; color:#F5A623;' : ''}" onclick="state.cardFilterPriority=!state.cardFilterPriority; render();">🔥 Só prioritárias${priorityCount ? ` (${priorityCount})` : ''}</button>
   </div>
   <div class="cards-grid">
     ${allCards.length===0 ? `<div style="color:var(--text-faint); font-size:13px; padding:10px 2px;">Nenhum cartão ainda — adicione o primeiro acima.</div>` : ''}
@@ -1816,8 +1960,10 @@ function renderCardsTab(deck){
           </div>
         </div>`;
       }
+      const learnedBtn = `<button class="icon-btn" style="width:28px; height:28px; font-size:13px; ${c.learned ? 'color:var(--success);' : 'opacity:0.4;'}" title="${c.learned ? 'Desmarcar como aprendido' : 'Marcar como aprendido (some das próximas sessões)'}" onclick="toggleCardLearned('${deck.id}','${c.id}')">✅</button>`;
+      const priorityBtn = `<button class="icon-btn" style="width:28px; height:28px; font-size:13px; ${c.priority ? 'color:#F5A623;' : 'opacity:0.4;'}" title="${c.priority ? 'Remover prioridade' : 'Marcar prioridade (aparece mais vezes)'}" onclick="toggleCardPriority('${deck.id}','${c.id}')">🔥</button>`;
       const flagBtn = `<button class="icon-btn" style="width:28px; height:28px; font-size:13px; ${c.flagged ? 'color:#F5A623;' : 'opacity:0.4;'}" title="${c.flagged ? 'Remover sinalização' : 'Sinalizar para revisar depois'}" onclick="toggleCardFlag('${deck.id}','${c.id}')">🚩</button>`;
-      const rowStyle = c.flagged ? 'style="background:rgba(245,166,35,0.07); border-color:rgba(245,166,35,0.35);"' : '';
+      const rowStyle = c.learned ? 'style="background:rgba(110,231,183,0.06); border-color:rgba(110,231,183,0.3);"' : c.flagged ? 'style="background:rgba(245,166,35,0.07); border-color:rgba(245,166,35,0.35);"' : '';
       return isLanguage ? `
       <div class="card-row" ${rowStyle}>
         <div class="front" style="flex:1;">${escapeHtml(c.front)}</div>
@@ -1830,6 +1976,8 @@ function renderCardsTab(deck){
           </div>
         `}
         <div class="due-tag">${fmtDue(c.due)}</div>
+        ${learnedBtn}
+        ${priorityBtn}
         ${flagBtn}
         <button class="icon-btn" style="width:28px; height:28px; font-size:13px;" title="Editar" onclick="startEditCard('${c.id}')">✎</button>
         <button class="del" onclick="deleteCard('${deck.id}','${c.id}')">✕</button>
@@ -1839,6 +1987,8 @@ function renderCardsTab(deck){
         <div class="front">${escapeHtml(c.front)}</div>
         <div class="back">${escapeHtml(c.back)}</div>
         <div class="due-tag">${fmtDue(c.due)}</div>
+        ${learnedBtn}
+        ${priorityBtn}
         ${flagBtn}
         <button class="icon-btn" style="width:28px; height:28px; font-size:13px;" title="Editar" onclick="startEditCard('${c.id}')">✎</button>
         <button class="del" onclick="deleteCard('${deck.id}','${c.id}')">✕</button>
@@ -2041,7 +2191,11 @@ function renderStudyView(){
     <div class="study-card">
       <div class="eyebrow" style="display:flex; justify-content:space-between; align-items:center;">
         <span>Cartão ${s.index+1} de ${s.queue.length}${exLabel}</span>
-        <button class="icon-btn" style="width:26px; height:26px; font-size:13px; ${card.flagged ? 'color:#F5A623;' : 'opacity:0.4;'}" title="${card.flagged ? 'Remover sinalização' : 'Sinalizar esta pergunta para editar/revisar depois'}" onclick="toggleFlagCurrentCard()">🚩</button>
+        <div style="display:flex; gap:4px;">
+          <button class="icon-btn" style="width:26px; height:26px; font-size:13px; ${card.learned ? 'color:var(--success);' : 'opacity:0.4;'}" title="${card.learned ? 'Desmarcar como aprendido' : 'Marcar como aprendido (some das próximas sessões)'}" onclick="toggleLearnedCurrentCard()">✅</button>
+          <button class="icon-btn" style="width:26px; height:26px; font-size:13px; ${card.priority ? 'color:#F5A623;' : 'opacity:0.4;'}" title="${card.priority ? 'Remover prioridade' : 'Marcar prioridade (aparece mais vezes)'}" onclick="togglePriorityCurrentCard()">🔥</button>
+          <button class="icon-btn" style="width:26px; height:26px; font-size:13px; ${card.flagged ? 'color:#F5A623;' : 'opacity:0.4;'}" title="${card.flagged ? 'Remover sinalização' : 'Sinalizar esta pergunta para editar/revisar depois'}" onclick="toggleFlagCurrentCard()">🚩</button>
+        </div>
       </div>
       ${isReverse ? `<p style="color:var(--text-muted); font-size:12px; margin:0 0 4px 0;">Digite o termo em inglês para:</p>` : ''}
       ${hideTopQuestion ? '' : `<div class="question">${escapeHtml(questionText)}</div>`}
@@ -2058,7 +2212,12 @@ function renderCopyMemorizeMode(s, card){
       <div class="answer-box">${escapeHtml(card.back)}</div>
       <textarea id="copy-input" rows="2" placeholder="Digite a resposta..." autofocus autocomplete="off" autocorrect="off" spellcheck="false" onkeydown="if(event.key==='Enter' && !event.shiftKey){ event.preventDefault(); submitCopyMemorize(); }" onkeyup="state.session.userInput=this.value">${escapeHtml(s.userInput||'')}</textarea>
       <div class="action-row"><button class="primary-btn" onclick="submitCopyMemorize()">Verificar</button></div>
-      ${s.copyMismatch ? `<div class="feedback-banner no">Confira com calma e tente de novo — precisa bater com a resposta.</div>` : ''}
+      ${s.copyMismatch ? `
+      <div class="feedback-banner no">
+        <div style="margin-bottom:6px;">Confira as palavras destacadas em vermelho — são as que não batem com a resposta:</div>
+        <div style="line-height:1.9; font-weight:400;">${diffWords(s.lastCopyAttempt||'', card.back).map(w => `<span style="${w.correct ? 'color:var(--success);' : 'color:var(--error); text-decoration:underline wavy; text-underline-offset:3px;'}">${escapeHtml(w.text)}</span>`).join(' ')}</div>
+      </div>
+      ` : ''}
     </div>`;
   }
   return `
@@ -2137,6 +2296,9 @@ function renderOpenMode(s, card){
         </button>
       </div>
       ${s.verifying ? `<div class="loading-line" style="justify-content:center;"><div class="spinner"></div> Buscando informações para conferir...</div>` : ''}
+      <div style="text-align:center; margin-top:-4px;">
+        <a href="#" style="font-size:11.5px; color:var(--text-faint); text-decoration:underline;" onclick="event.preventDefault(); dontKnowOpen();">não sei <span style="opacity:0.6;">(Esc)</span></a>
+      </div>
     </div>`;
   }
   const r = s.verifyResult;
@@ -2157,6 +2319,9 @@ function renderOpenGradedMode(s, card){
       <textarea id="open-graded-input" rows="3" placeholder="Digite sua resposta... (Enter para confirmar, Shift+Enter para quebrar linha)" autofocus autocomplete="off" autocorrect="off" spellcheck="false" onkeydown="if(event.key==='Enter' && !event.shiftKey){ event.preventDefault(); submitOpenGraded(); }" onkeyup="state.session.userInput=this.value">${escapeHtml(s.userInput||'')}</textarea>
       <div class="action-row">
         <button class="primary-btn" onclick="submitOpenGraded()">Verificar resposta</button>
+      </div>
+      <div style="text-align:center; margin-top:-4px;">
+        <a href="#" style="font-size:11.5px; color:var(--text-faint); text-decoration:underline;" onclick="event.preventDefault(); dontKnowOpen();">não sei <span style="opacity:0.6;">(Esc)</span></a>
       </div>
     </div>`;
   }
@@ -2484,6 +2649,17 @@ document.addEventListener('keydown', function(e){
     if(idx < s.options.length){ e.preventDefault(); answerMC(idx); }
   } else if(s.mode === 'lang-mixed' && getCurrentExType() === 'mc' && s.content && s.content.options && !s.loadingContent){
     if(idx < s.content.options.length){ e.preventDefault(); answerLangMC(idx); }
+  }
+});
+
+/* Esc aciona "não sei" nas perguntas abertas, antes de revelar a resposta. */
+document.addEventListener('keydown', function(e){
+  if(e.key !== 'Escape') return;
+  if(state.view !== 'study' || !state.session) return;
+  const s = state.session;
+  if(s.mode === 'open' && !s.revealed && !s.verifying){
+    e.preventDefault();
+    dontKnowOpen();
   }
 });
 
