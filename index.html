@@ -480,8 +480,6 @@ function initFirebase(){
   db = firebase.firestore();
   db.enablePersistence({ synchronizeTabs: true }).catch(e => console.error('Persistência offline do Firestore não disponível', e));
 
-  auth.getRedirectResult().catch(e => console.error('Falha ao concluir login com Google', e));
-
   auth.onAuthStateChanged(user => {
     state.firebaseUser = user;
     state.authReady = true;
@@ -494,9 +492,10 @@ function initFirebase(){
   });
 }
 function signInWithGoogle(){
-  auth.signInWithRedirect(new firebase.auth.GoogleAuthProvider()).catch(e => {
-    console.error('Falha ao iniciar login com Google', e);
-    showToast('Não foi possível iniciar o login. Tente novamente.', 'error');
+  auth.signInWithPopup(new firebase.auth.GoogleAuthProvider()).catch(e => {
+    if(e && e.code === 'auth/popup-closed-by-user') return; // usuário fechou a janela, sem problema
+    console.error('Falha ao fazer login com Google', e);
+    showToast('Não foi possível fazer login. Tente novamente.', 'error');
   });
 }
 function signOutUser(){
