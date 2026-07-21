@@ -474,11 +474,26 @@ const firebaseConfig = {
   appId: "1:272502529779:web:402568fc9f335a3ae6a186"
 };
 let auth = null, db = null;
+function isMobileDevice(){
+  return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+}
+function isStandaloneApp(){
+  // true quando o app foi instalado (ícone na tela inicial) e está rodando sem a barra do navegador —
+  // nesse modo, o login do Google trava tanto com popup quanto com redirect no Android.
+  return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+}
+function openInBrowserForLogin(){
+  window.open(location.href, '_blank');
+}
 function initFirebase(){
   firebase.initializeApp(firebaseConfig);
   auth = firebase.auth();
   db = firebase.firestore();
   db.enablePersistence({ synchronizeTabs: true }).catch(e => console.error('Persistência offline do Firestore não disponível', e));
+
+  // no celular, signInWithPopup costuma ser bloqueado/travar — usamos redirect lá,
+  // e por isso precisamos conferir o resultado do redirect ao carregar a página.
+  auth.getRedirectResult().catch(e => console.error('Falha ao concluir login com Google (redirect)', e));
 
   auth.onAuthStateChanged(user => {
     state.firebaseUser = user;
@@ -492,11 +507,19 @@ function initFirebase(){
   });
 }
 function signInWithGoogle(){
-  auth.signInWithPopup(new firebase.auth.GoogleAuthProvider()).catch(e => {
-    if(e && e.code === 'auth/popup-closed-by-user') return; // usuário fechou a janela, sem problema
-    console.error('Falha ao fazer login com Google', e);
-    showToast('Não foi possível fazer login. Tente novamente.', 'error');
-  });
+  const provider = new firebase.auth.GoogleAuthProvider();
+  if(isMobileDevice()){
+    auth.signInWithRedirect(provider).catch(e => {
+      console.error('Falha ao iniciar login com Google', e);
+      showToast('Não foi possível iniciar o login. Tente novamente.', 'error');
+    });
+  } else {
+    auth.signInWithPopup(provider).catch(e => {
+      if(e && e.code === 'auth/popup-closed-by-user') return; // usuário fechou a janela, sem problema
+      console.error('Falha ao fazer login com Google', e);
+      showToast('Não foi possível fazer login. Tente novamente.', 'error');
+    });
+  }
 }
 function signOutUser(){
   auth.signOut();
@@ -508,12 +531,19 @@ function renderAuthGate(){
       <div class="spinner"></div>
     </div>`;
   }
+  const standalone = isStandaloneApp();
   return `
   <div style="width:100%; min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; text-align:center; padding:20px;">
     <div class="brand-mark" style="width:56px; height:56px; font-size:28px; border-radius:14px;">R</div>
     <h1 style="margin:0;">Recall</h1>
-    <p style="color:var(--text-muted); max-width:320px; font-size:14px;">Entre com sua conta Google pra acessar seus baralhos, sincronizados em qualquer computador ou celular.</p>
-    <button class="primary-btn" onclick="signInWithGoogle()">Entrar com Google</button>
+    ${standalone ? `
+      <p style="color:var(--text-muted); max-width:320px; font-size:14px;">Como o app está instalado, o login do Google funciona melhor abrindo pelo navegador na primeira vez.</p>
+      <button class="primary-btn" onclick="openInBrowserForLogin()">Abrir no navegador pra entrar</button>
+      <p style="color:var(--text-faint); max-width:320px; font-size:12px;">Depois de entrar lá, volte aqui — o app instalado reconhece o login sozinho.</p>
+    ` : `
+      <p style="color:var(--text-muted); max-width:320px; font-size:14px;">Entre com sua conta Google pra acessar seus baralhos, sincronizados em qualquer computador ou celular.</p>
+      <button class="primary-btn" onclick="signInWithGoogle()">Entrar com Google</button>
+    `}
   </div>`;
 }
 
