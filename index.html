@@ -4,6 +4,14 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Recall — Flashcards com repetição espaçada</title>
+<meta name="description" content="Flashcards com repetição espaçada (SM-2), múltipla escolha, pergunta aberta e modo idioma.">
+<meta name="theme-color" content="#14162B">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Recall">
 <style>
   :root{
     --bg:#14162B;
@@ -494,6 +502,23 @@ function getDueCards(deckId){
 function getStudyPool(deckId){
   // todos os cartões elegíveis pra estudo, exceto os marcados como aprendidos
   return (state.cards[deckId] || []).filter(c => !c.learned);
+}
+/* interval só passa de 0 depois da primeira revisão (correta ou não), então
+   interval===0 identifica com segurança um cartão nunca estudado. */
+const MATURE_INTERVAL_DAYS = 21;
+function getCardState(card){
+  if(!card.interval) return 'new';
+  return card.interval >= MATURE_INTERVAL_DAYS ? 'mature' : 'learning';
+}
+const CARD_STATE_INFO = {
+  new: { label:'Novo', color:'#7DA9FA' },
+  learning: { label:'Aprendendo', color:'var(--accent)' },
+  mature: { label:'Maduro', color:'var(--success)' }
+};
+function getDeckStateCounts(deckId){
+  const counts = { new:0, learning:0, mature:0 };
+  (state.cards[deckId]||[]).forEach(c => counts[getCardState(c)]++);
+  return counts;
 }
 function shuffle(arr){
   const a = arr.slice();
@@ -1834,6 +1859,7 @@ function renderDeckView(){
   if(!deck) return '';
   const cards = state.cards[deck.id] || [];
   const due = getDueCards(deck.id).length;
+  const stateCounts = getDeckStateCounts(deck.id);
   return `
   ${state.kindleImport && state.kindleImport.deckId === deck.id ? `
   <div style="background:var(--accent-soft); border:1px solid var(--accent-dim); border-radius:10px; padding:12px 16px; margin-bottom:16px; font-size:13px; color:var(--accent); display:flex; align-items:center; gap:10px;">
@@ -1852,6 +1878,9 @@ function renderDeckView(){
   <div class="stat-row">
     <div class="stat-chip"><div class="num">${cards.length}</div><div class="lbl">total de cartões</div></div>
     <div class="stat-chip"><div class="num">${due}</div><div class="lbl">para revisar hoje</div></div>
+    <div class="stat-chip"><div class="num" style="color:${CARD_STATE_INFO.new.color};">${stateCounts.new}</div><div class="lbl">novo</div></div>
+    <div class="stat-chip"><div class="num" style="color:${CARD_STATE_INFO.learning.color};">${stateCounts.learning}</div><div class="lbl">aprendendo</div></div>
+    <div class="stat-chip"><div class="num" style="color:${CARD_STATE_INFO.mature.color};">${stateCounts.mature}</div><div class="lbl">maduro</div></div>
   </div>
   <div class="tab-row">
     <button class="tab ${state.tab==='cards'?'active':''}" onclick="setTab('cards')">Cartões</button>
@@ -1963,6 +1992,7 @@ function renderCardsTab(deck){
       const learnedBtn = `<button class="icon-btn" style="width:28px; height:28px; font-size:13px; ${c.learned ? 'color:var(--success);' : 'opacity:0.4;'}" title="${c.learned ? 'Desmarcar como aprendido' : 'Marcar como aprendido (some das próximas sessões)'}" onclick="toggleCardLearned('${deck.id}','${c.id}')">✅</button>`;
       const priorityBtn = `<button class="icon-btn" style="width:28px; height:28px; font-size:13px; ${c.priority ? 'color:#F5A623;' : 'opacity:0.4;'}" title="${c.priority ? 'Remover prioridade' : 'Marcar prioridade (aparece mais vezes)'}" onclick="toggleCardPriority('${deck.id}','${c.id}')">🔥</button>`;
       const flagBtn = `<button class="icon-btn" style="width:28px; height:28px; font-size:13px; ${c.flagged ? 'color:#F5A623;' : 'opacity:0.4;'}" title="${c.flagged ? 'Remover sinalização' : 'Sinalizar para revisar depois'}" onclick="toggleCardFlag('${deck.id}','${c.id}')">🚩</button>`;
+      const stateDot = renderStateDot(c);
       const rowStyle = c.learned ? 'style="background:rgba(110,231,183,0.06); border-color:rgba(110,231,183,0.3);"' : c.flagged ? 'style="background:rgba(245,166,35,0.07); border-color:rgba(245,166,35,0.35);"' : '';
       return isLanguage ? `
       <div class="card-row" ${rowStyle}>
@@ -1975,6 +2005,7 @@ function renderCardsTab(deck){
             <button class="ghost-btn" style="padding:6px 10px; font-size:12px; align-self:flex-start;" onclick="fillTranslation('${deck.id}','${c.id}')">Salvar</button>
           </div>
         `}
+        ${stateDot}
         <div class="due-tag">${fmtDue(c.due)}</div>
         ${learnedBtn}
         ${priorityBtn}
@@ -1986,6 +2017,7 @@ function renderCardsTab(deck){
       <div class="card-row" ${rowStyle}>
         <div class="front">${escapeHtml(c.front)}</div>
         <div class="back">${escapeHtml(c.back)}</div>
+        ${stateDot}
         <div class="due-tag">${fmtDue(c.due)}</div>
         ${learnedBtn}
         ${priorityBtn}
@@ -1996,6 +2028,10 @@ function renderCardsTab(deck){
     `;
     }).join('')}
   </div>`;
+}
+function renderStateDot(card){
+  const info = CARD_STATE_INFO[getCardState(card)];
+  return `<div title="${info.label}" style="width:8px; height:8px; border-radius:50%; background:${info.color}; flex-shrink:0;"></div>`;
 }
 function startEditCard(cardId){ state.editingCardId = cardId; render(); }
 function cancelEditCard(){ state.editingCardId = null; render(); }
@@ -2665,6 +2701,12 @@ document.addEventListener('keydown', function(e){
 
 loadData();
 tryReconnectFileHandle();
+
+if('serviceWorker' in navigator){
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').catch(e => console.error('Falha ao registrar o service worker', e));
+  });
+}
 </script>
 </body>
 </html>
