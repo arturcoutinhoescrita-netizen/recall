@@ -75,7 +75,7 @@
   .mono{ font-family:ui-monospace,'SF Mono','Cascadia Code','Roboto Mono',Consolas,'Courier New',monospace; }
   button{ font-family:inherit; cursor:pointer; }
   ::selection{ background:var(--accent-soft); }
-  #app{ display:flex; min-height:100vh; }
+  #app{ display:flex; height:100vh; }
 
   /* ---------- Sidebar ---------- */
   .sidebar{
@@ -84,6 +84,7 @@
     border-right:1px solid var(--border);
     padding:28px 20px;
     display:flex; flex-direction:column; gap:22px;
+    overflow-y:auto; min-height:0;
   }
   .brand{ display:flex; align-items:center; gap:10px; padding:0 2px; }
   .brand-mark{
@@ -1943,8 +1944,29 @@ function renderTagChips(tags, removeFn, removeArgsPrefix){
 function setBookLinkedDeck(id, deckId){
   const book = state.books.find(b=>b.id===id);
   if(!book) return;
+  if(deckId === '__new__'){
+    state.modal = { type:'create-deck-for-book', bookId:id, name:'', deckType: book.isEnglish ? 'language' : 'standard' };
+    render();
+    return;
+  }
   book.linkedDeckId = deckId || null;
   saveData(); render();
+}
+function confirmCreateDeckForBook(){
+  const m = state.modal;
+  if(!m || m.type !== 'create-deck-for-book') return;
+  const name = (m.name||'').trim();
+  if(!name){ showToast('Dê um nome ao baralho.', 'error'); return; }
+  const book = state.books.find(b=>b.id===m.bookId);
+  if(!book){ state.modal = null; render(); return; }
+  const color = DECK_COLORS[state.decks.length % DECK_COLORS.length];
+  const deck = { id: uid(), name, color, type: m.deckType };
+  state.decks.push(deck);
+  state.cards[deck.id] = [];
+  book.linkedDeckId = deck.id;
+  state.modal = null;
+  saveData(); render();
+  showToast('Baralho criado e vinculado ao livro.');
 }
 function goToLinkedDeck(deckId){
   if(!state.decks.some(d=>d.id===deckId)) return;
@@ -2940,8 +2962,8 @@ function openEpubUploadForNewBook(){
       };
       delete book.epubStatus;
       saveData();
-      showToast('Livro carregado!');
-      openEpubReader(book.id);
+      showToast('Livro carregado! Confira as propriedades (idioma, baralho) antes de ler.');
+      openBook(book.id);
     }catch(err){
       console.error('Falha ao carregar epub', err);
       state.books = state.books.filter(b => b.id !== book.id); // desfaz o placeholder se falhar
@@ -3169,7 +3191,7 @@ function renderEpubReaderView(){
   }
   const paragraphs = runtime.paragraphsCache[idx];
   return `
-  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; gap:10px;">
+  <div style="position:sticky; top:0; z-index:20; background:var(--bg); display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; padding:10px 0; gap:10px; border-bottom:1px solid var(--border);">
     <button class="ghost-btn" onclick="closeEpubReader()">← Leituras</button>
     ${gearBtn}
   </div>
@@ -3520,6 +3542,7 @@ function renderBookDetailView(){
           <select onchange="setBookLinkedDeck('${book.id}', this.value)" style="flex:1; min-width:160px;">
             <option value="">Nenhum</option>
             ${state.decks.map(d=>`<option value="${d.id}" ${book.linkedDeckId===d.id?'selected':''}>${escapeHtml(d.name)}</option>`).join('')}
+            <option value="__new__">+ Criar novo baralho</option>
           </select>
           ${linkedDeck ? `<button class="ghost-btn" onclick="goToLinkedDeck('${linkedDeck.id}')">🔗 Ir pro baralho</button>` : ''}
         </div>
@@ -4448,6 +4471,7 @@ function renderModal(){
   if(m.type === 'quote-capture') return renderQuoteCaptureModal(m);
   if(m.type === 'word-lookup') return renderWordLookupModal(m);
   if(m.type === 'passage-card') return renderPassageCardModal(m);
+  if(m.type === 'create-deck-for-book') return renderCreateDeckForBookModal(m);
   if(m.type === 'confirm') return renderConfirmModal(m);
   return `
   <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
@@ -4815,6 +4839,30 @@ function renderPassageCardModal(m){
       <div class="modal-actions">
         <button class="ghost-btn" onclick="closeModal()">Cancelar</button>
         <button class="primary-btn" onclick="confirmPassageCard()" ${!m.deckId?'disabled':''}>Adicionar cartão</button>
+      </div>
+    </div>
+  </div>`;
+}
+function renderCreateDeckForBookModal(m){
+  return `
+  <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
+    <div class="modal">
+      <h3>Criar baralho pra este livro</h3>
+      <div class="field">
+        <label>NOME DO BARALHO</label>
+        <input type="text" id="create-deck-for-book-name" value="${escapeHtml(m.name)}" onkeyup="state.modal.name=this.value" placeholder="Ex: Vocabulário do livro">
+      </div>
+      <div class="field" style="margin-top:12px;">
+        <label>TIPO</label>
+        <div style="display:flex; gap:8px;">
+          <button type="button" class="ghost-btn" style="flex:1; ${m.deckType==='standard' ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="state.modal.deckType='standard'; render();">Padrão<br><span style="font-weight:400; font-size:11px; opacity:0.8;">pergunta e resposta</span></button>
+          <button type="button" class="ghost-btn" style="flex:1; ${m.deckType==='language' ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="state.modal.deckType='language'; render();">Idioma<br><span style="font-weight:400; font-size:11px; opacity:0.8;">só o termo</span></button>
+        </div>
+        <p style="font-size:11px; color:var(--text-faint); margin:6px 0 0 0;">Sugerido com base no idioma marcado nas propriedades do livro — pode trocar se quiser.</p>
+      </div>
+      <div class="modal-actions">
+        <button class="ghost-btn" onclick="closeModal()">Cancelar</button>
+        <button class="primary-btn" onclick="confirmCreateDeckForBook()">Criar e vincular</button>
       </div>
     </div>
   </div>`;
