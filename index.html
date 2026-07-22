@@ -110,6 +110,8 @@
     color:var(--text-muted); transition:all .15s ease; position:relative;
   }
   .deck-item:hover{ background:var(--surface); color:var(--text); }
+  .clickable-word{ cursor:pointer; border-bottom:1px dotted var(--text-faint); }
+  .clickable-word:hover{ color:var(--accent); border-bottom-color:var(--accent); }
   .book-cover-hover{ transition:transform 0.18s ease, box-shadow 0.18s ease; }
   .book-cover-hover:hover{ transform:scale(1.05); box-shadow:0 8px 20px rgba(0,0,0,0.35); }
   .deck-item.active{ background:var(--surface-2); color:var(--text); border-color:var(--border); }
@@ -1333,6 +1335,13 @@ async function generateSentenceForTerm(term){
   return text.replace(/^"|"$/g,'');
 }
 
+async function translateWordInContext(word, sentence){
+  const prompt = `Frase em inglês: "${sentence}"\nPalavra específica dentro dessa frase: "${word}"\n\nTraduza essa palavra pro português considerando o sentido dela NESSA frase (a mesma palavra pode significar coisas diferentes dependendo do contexto). Responda SOMENTE com a tradução (uma palavra ou expressão bem curta), sem explicações, sem aspas.`;
+  const text = (await callGemini(prompt, { maxTokens: 60 })).trim();
+  if(!text) throw new Error('empty_response');
+  return text.replace(/^"|"$/g,'');
+}
+
 async function verifyTranslation(term, sentence, userTranslation){
   const prompt = `Frase em inglês: "${sentence}"\nTermo sendo treinado: "${term}"\nTradução para português dada pelo usuário: "${userTranslation}"\n\nAvalie se a tradução está correta em sentido geral e no uso específico do termo "${term}" (pequenas variações de palavras são aceitáveis se o sentido estiver certo). Se houver erro, explique claramente qual foi o erro e qual seria uma tradução mais adequada. Termine sua resposta com uma linha exatamente neste formato: "VEREDITO: CORRETO" ou "VEREDITO: INCORRETO", seguida de uma explicação em português (máximo 3 frases).`;
   const text = await callGemini(prompt, { maxTokens: 400 });
@@ -2404,6 +2413,55 @@ function renderDontKnowLangLink(){
   return `<div style="text-align:center; margin-top:-4px;">
     <a href="#" style="font-size:11.5px; color:var(--text-faint); text-decoration:underline;" onclick="event.preventDefault(); dontKnowLang();">não sei <span style="opacity:0.6;">(Esc)</span></a>
   </div>`;
+}
+/* transforma uma frase gerada pela IA em texto com cada palavra clicável,
+   pra consultar a tradução de termos desconhecidos sem sair do exercício. */
+function renderClickableSentence(sentence){
+  if(!sentence) return '';
+  const tokens = sentence.split(/(\s+)/);
+  return tokens.map(tok => {
+    const m = tok.match(/^([A-Za-zÀ-ÿ']+)(.*)$/);
+    if(m && m[1]){
+      const word = m[1];
+      return `<span class="clickable-word" onclick="lookupWord('${word.replace(/'/g,"\\'")}')">${escapeHtml(word)}</span>${escapeHtml(m[2])}`;
+    }
+    return escapeHtml(tok);
+  }).join('');
+}
+function lookupWord(word){
+  const s = state.session;
+  const sentence = (s && s.content && s.content.sentence) || '';
+  const cleanWord = (word||'').trim();
+  if(!cleanWord) return;
+  state.modal = { type:'word-lookup', word: cleanWord, sentence, status:'loading', translation:'' };
+  render();
+  translateWordInContext(cleanWord, sentence).then(translation => {
+    if(state.modal && state.modal.type === 'word-lookup' && state.modal.word === cleanWord){
+      state.modal.status = 'done';
+      state.modal.translation = translation;
+      render();
+    }
+  }).catch(err => {
+    console.error('Falha ao traduzir palavra', err);
+    if(state.modal && state.modal.type === 'word-lookup' && state.modal.word === cleanWord){
+      state.modal.status = 'error';
+      state.modal.error = friendlyAiErrorMsg(err);
+      render();
+    }
+  });
+}
+function addLookupWordToDeck(){
+  const m = state.modal;
+  if(!m || m.type !== 'word-lookup' || m.status !== 'done') return;
+  const s = state.session;
+  if(!s || !s.deckId){ state.modal = null; render(); return; }
+  const card = makeCard(m.word, m.translation);
+  card.note = `Frase de exemplo: "${m.sentence}"`;
+  state.cards[s.deckId] = state.cards[s.deckId] || [];
+  state.cards[s.deckId].push(card);
+  state.modal = null;
+  saveData(); render();
+  showToast(`"${m.word}" adicionado ao baralho.`);
 }
 function startCopyMemorize(){
   const s = state.session; if(!s) return;
@@ -3721,7 +3779,8 @@ function renderWriteExercise(s, card){
   if(!s.revealed){
     return `
     <div class="answer-zone">
-      <div class="answer-box" style="text-align:left;">${escapeHtml(s.content.sentence||'')}</div>
+      <div class="answer-box" style="text-align:left;">${renderClickableSentence(s.content.sentence)}</div>
+      <p style="font-size:11px; color:var(--text-faint); margin:-8px 0 0 0; text-align:left;">💡 Clique numa palavra pra ver a tradução</p>
       <textarea id="lang-input" rows="2" placeholder="Traduza a frase para português... (Enter para confirmar)" autofocus autocomplete="off" autocorrect="off" spellcheck="false" ${s.verifying?'disabled':''} onkeydown="if(event.key==='Enter' && !event.shiftKey){ event.preventDefault(); if(!${s.verifying}) submitFromInput('lang-input'); }" onkeyup="state.session.userInput=this.value">${escapeHtml(s.userInput||'')}</textarea>
       <div class="action-row">
         <button class="primary-btn" ${s.verifying?'disabled':''} onclick="submitFromInput('lang-input')">
@@ -3736,7 +3795,7 @@ function renderWriteExercise(s, card){
   return `
   <div class="answer-zone">
     <div class="reveal-zone">
-      <div class="answer-box"><strong>Frase:</strong> ${escapeHtml(s.content.sentence||'')}</div>
+      <div class="answer-box"><strong>Frase:</strong> ${renderClickableSentence(s.content.sentence)}</div>
       <div class="feedback-banner ${r.correct?'ok':'no'}">${r.correct? '✓ Correto' : '✕ Incorreto'} — ${escapeHtml(r.explanation)}</div>
       ${renderPointsBadge(s)}
       <div class="action-row"><button class="primary-btn" onclick="nextCard()">Próximo →</button></div>
@@ -3918,6 +3977,7 @@ function renderModal(){
   if(m.type === 'photo-import') return renderPhotoImportModal(m);
   if(m.type === 'add-book') return renderAddBookModal(m);
   if(m.type === 'quote-capture') return renderQuoteCaptureModal(m);
+  if(m.type === 'word-lookup') return renderWordLookupModal(m);
   if(m.type === 'confirm') return renderConfirmModal(m);
   return `
   <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
@@ -4213,6 +4273,22 @@ function renderQuoteCaptureModal(m){
       <div class="modal-actions">
         <button class="ghost-btn" onclick="closeModal()">Cancelar</button>
         <button class="primary-btn" onclick="confirmQuoteCapture()">Guardar citação</button>
+      </div>
+    </div>
+  </div>`;
+}
+function renderWordLookupModal(m){
+  return `
+  <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
+    <div class="modal" style="width:360px;">
+      <h3 style="margin-bottom:2px;">${escapeHtml(m.word)}</h3>
+      <p style="font-size:11.5px; color:var(--text-faint); margin:0 0 10px 0;">"${escapeHtml(m.sentence)}"</p>
+      ${m.status === 'loading' ? `<div class="loading-line"><div class="spinner"></div> Traduzindo...</div>` : ''}
+      ${m.status === 'error' ? `<p style="font-size:13px; color:var(--error);">${escapeHtml(m.error)}</p>` : ''}
+      ${m.status === 'done' ? `<p style="font-size:18px; font-weight:700; color:var(--accent); margin:4px 0 0 0;">${escapeHtml(m.translation)}</p>` : ''}
+      <div class="modal-actions">
+        <button class="ghost-btn" onclick="closeModal()">Fechar</button>
+        ${m.status==='done' ? `<button class="primary-btn" onclick="addLookupWordToDeck()">+ Adicionar ao baralho</button>` : ''}
       </div>
     </div>
   </div>`;
