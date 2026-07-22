@@ -736,9 +736,11 @@ function deleteDeck(id){
     showToast('Baralho excluído.');
   });
 }
-function addCard(deckId, front, back){
+function addCard(deckId, front, back, note){
   if(!front.trim() || !back.trim()) return;
-  state.cards[deckId].push(makeCard(front, back));
+  const card = makeCard(front, back);
+  card.note = (note||'').trim();
+  state.cards[deckId].push(card);
   saveData(); render();
 }
 function deleteCard(deckId, cardId){
@@ -746,7 +748,7 @@ function deleteCard(deckId, cardId){
   saveData(); render();
 }
 function makeCard(front, back){
-  return { id: uid(), front: front.trim(), back: (back||'').trim(), ease:2.5, interval:0, reps:0, due:Date.now(), flagged:false, learned:false, priority:false };
+  return { id: uid(), front: front.trim(), back: (back||'').trim(), note:'', ease:2.5, interval:0, reps:0, due:Date.now(), flagged:false, learned:false, priority:false };
 }
 function toggleCardFlag(deckId, cardId){
   const card = (state.cards[deckId]||[]).find(c=>c.id===cardId);
@@ -759,6 +761,11 @@ function toggleFlagCurrentCard(){
   const card = getCurrentCard(); if(!card) return;
   card.flagged = !card.flagged;
   saveData(); render();
+}
+function toggleNoteView(){
+  const s = state.session; if(!s) return;
+  s.showNote = !s.showNote;
+  render();
 }
 function toggleCardLearned(deckId, cardId){
   const card = (state.cards[deckId]||[]).find(c=>c.id===cardId);
@@ -797,9 +804,11 @@ function resetDeckFlags(deckId){
     showToast('Marcações do baralho resetadas.');
   }, 'Resetar');
 }
-function addTermCard(deckId, term, translation){
+function addTermCard(deckId, term, translation, note){
   if(!term.trim()) return;
-  state.cards[deckId].push(makeCard(term, translation||''));
+  const card = makeCard(term, translation||'');
+  card.note = (note||'').trim();
+  state.cards[deckId].push(card);
   saveData(); render();
 }
 function fillTranslation(deckId, cardId){
@@ -965,7 +974,7 @@ function replaceAllData(data){
 }
 function normalizeImportedCard(c){
   return {
-    id: c.id || uid(), front: c.front, back: c.back || '',
+    id: c.id || uid(), front: c.front, back: c.back || '', note: c.note || '',
     ease: c.ease || 2.5, interval: c.interval || 0, reps: c.reps || 0, due: c.due || Date.now(),
     flagged: !!c.flagged, learned: !!c.learned, priority: !!c.priority,
     missStreak: c.missStreak || 0, usedTranslateAnswers: c.usedTranslateAnswers || []
@@ -1926,7 +1935,7 @@ function nextCard(){
   s.index++;
   s.revealed = false; s.userInput=''; s.options=null; s.chosen=null; s.verifyResult=null; s.lastFeedback=null;
   s.content=null; s.chosenIndex=null; s.graded=false; s.gradeChosen=null; s.copyMismatch=false; s.autoMatched=false; s.lastCopyAttempt='';
-  s.checkedIndexes=null; s.partialCorrect=false;
+  s.checkedIndexes=null; s.partialCorrect=false; s.showNote=false;
   s.cardStart = Date.now();
   if(s.index >= s.queue.length){
     if(s.memorizeMode){ endMemorizeMode(); return; }
@@ -2189,6 +2198,10 @@ function renderCardsTab(deck){
       </div>
     </div>
     <p style="font-size:11.5px; color:var(--text-faint); margin:-4px 0 0 0;">Preencha quantas quiser — na hora de estudar, qualquer uma delas conta como resposta certa.</p>
+    <div class="field">
+      <label>NOTA (opcional)</label>
+      <textarea id="new-term-note" rows="2" placeholder="Uma explicação mais detalhada sobre o assunto, pra consultar durante o estudo"></textarea>
+    </div>
     <button class="primary-btn" onclick="submitNewTerm('${deck.id}')">＋ Adicionar termo</button>
     ` : `
     <div class="row">
@@ -2200,6 +2213,10 @@ function renderCardsTab(deck){
         <label>RESPOSTA (verso)</label>
         <textarea id="new-back" rows="2" placeholder="Ex: Ulan Bator"></textarea>
       </div>
+    </div>
+    <div class="field">
+      <label>NOTA (opcional)</label>
+      <textarea id="new-note" rows="2" placeholder="Uma explicação mais detalhada sobre o assunto, pra consultar durante o estudo"></textarea>
     </div>
     <button class="primary-btn" onclick="submitNewCard('${deck.id}')">＋ Adicionar cartão</button>
     `}
@@ -2233,6 +2250,10 @@ function renderCardsTab(deck){
               ${isLanguage
                 ? renderTranslationFields(`edit-back-${c.id}`, c.back)
                 : `<input type="text" id="edit-back-${c.id}" value="${escapeHtml(c.back)}" style="padding:7px 9px; font-size:13px;" onkeydown="if(event.key==='Enter'){event.preventDefault(); saveEditCard('${deck.id}','${c.id}');} else if(event.key==='Escape'){ cancelEditCard(); }">`}
+            </div>
+            <div class="field" style="gap:4px;">
+              <label style="font-size:10px;">NOTA (opcional)</label>
+              <textarea id="edit-note-${c.id}" rows="2" style="padding:7px 9px; font-size:13px;" placeholder="Explicação mais detalhada" onkeydown="if(event.key==='Escape'){ cancelEditCard(); }">${escapeHtml(c.note||'')}</textarea>
             </div>
           </div>
           <div style="display:flex; gap:6px; padding-top:18px;">
@@ -2297,22 +2318,27 @@ function saveEditCard(deckId, cardId){
     ? collectTranslationFields(`edit-back-${cardId}`)
     : (document.getElementById(`edit-back-${cardId}`) ? document.getElementById(`edit-back-${cardId}`).value.trim() : '');
   if(!front || (!isLanguage && !back)) { showToast('Preencha os campos antes de salvar.', 'error'); return; }
+  const noteInput = document.getElementById(`edit-note-${cardId}`);
+  const note = noteInput ? noteInput.value.trim() : '';
   const card = (state.cards[deckId]||[]).find(c=>c.id===cardId);
   if(!card) return;
   card.front = front;
   card.back = back;
+  card.note = note;
   state.editingCardId = null;
   saveData(); render();
 }
 function submitNewCard(deckId){
   const front = document.getElementById('new-front').value;
   const back = document.getElementById('new-back').value;
-  addCard(deckId, front, back);
+  const note = document.getElementById('new-note').value;
+  addCard(deckId, front, back, note);
 }
 function submitNewTerm(deckId){
   const term = document.getElementById('new-term').value;
   const translation = collectTranslationFields('new-term-translation');
-  addTermCard(deckId, term, translation);
+  const note = document.getElementById('new-term-note').value;
+  addTermCard(deckId, term, translation, note);
   const termInput = document.getElementById('new-term');
   if(termInput) termInput.value = '';
 }
@@ -2482,11 +2508,13 @@ function renderStudyView(){
       <div class="eyebrow" style="display:flex; justify-content:space-between; align-items:center;">
         <span>Cartão ${s.index+1} de ${s.queue.length}${exLabel}${(s.mode==='lang-mixed' && getCardTranslations(card).length >= 2) ? ` · <span style="opacity:0.7;">${getCardTranslations(card).length} respostas possíveis</span>` : ''}</span>
         <div style="display:flex; gap:4px;">
+          ${card.note ? `<button class="icon-btn" style="width:26px; height:26px; font-size:13px; ${s.showNote ? 'color:#F5D76E;' : 'opacity:0.5;'}" title="Ver nota (L)" onclick="toggleNoteView()">💡</button>` : ''}
           <button class="icon-btn" style="width:26px; height:26px; font-size:13px; ${card.learned ? 'color:var(--success);' : 'opacity:0.4;'}" title="${card.learned ? 'Desmarcar como aprendido' : 'Marcar como aprendido (some das próximas sessões)'}" onclick="toggleLearnedCurrentCard()">✅</button>
           <button class="icon-btn" style="width:26px; height:26px; font-size:13px; ${card.priority ? 'color:#F5A623;' : 'opacity:0.4;'}" title="${card.priority ? 'Remover prioridade' : 'Marcar prioridade (aparece mais vezes)'}" onclick="togglePriorityCurrentCard()">🔥</button>
           <button class="icon-btn" style="width:26px; height:26px; font-size:13px; ${card.flagged ? 'color:#F5A623;' : 'opacity:0.4;'}" title="${card.flagged ? 'Remover sinalização' : 'Sinalizar esta pergunta para editar/revisar depois'}" onclick="toggleFlagCurrentCard()">🚩</button>
         </div>
       </div>
+      ${(card.note && s.showNote) ? `<div style="background:var(--accent-soft); border:1px solid var(--accent-dim); border-radius:10px; padding:10px 14px; margin:10px 0 0 0; font-size:13px; color:var(--text); text-align:left; white-space:pre-wrap;">💡 ${escapeHtml(card.note)}</div>` : ''}
       ${isReverse ? `<p style="color:var(--text-muted); font-size:12px; margin:0 0 4px 0;">Digite o termo em inglês para:</p>` : ''}
       ${hideTopQuestion ? '' : `<div class="question">${escapeHtml(questionText)}</div>`}
     </div>
@@ -3011,6 +3039,19 @@ document.addEventListener('keydown', function(e){
     e.preventDefault();
     dontKnowLang();
   }
+});
+
+/* Tecla L mostra/esconde a nota do cartão — só quando não tem campo de texto focado,
+   pra não atrapalhar quem está digitando uma resposta que contenha a letra L. */
+document.addEventListener('keydown', function(e){
+  if(e.key !== 'l' && e.key !== 'L') return;
+  if(state.view !== 'study' || !state.session) return;
+  const active = document.activeElement;
+  if(active && (active.tagName === 'TEXTAREA' || active.tagName === 'INPUT')) return;
+  const card = getCurrentCard();
+  if(!card || !card.note) return;
+  e.preventDefault();
+  toggleNoteView();
 });
 
 if(hasClaudeStorage()){
