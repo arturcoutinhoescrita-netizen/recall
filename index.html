@@ -360,7 +360,7 @@ let state = {
   decks: [],
   cards: {},          // deckId -> [card]
   currentDeckId: null,
-  view: 'home',        // home | deck | study | results
+  view: 'home',        // home | deck | study | results | library | book
   tab: 'cards',         // cards | study (within deck view)
   modal: null,          // 'new-deck' | 'edit-deck'
   session: null,
@@ -379,7 +379,11 @@ let state = {
   fileHandle: null,
   pendingFileHandle: null,
   firebaseUser: null,
-  authReady: false
+  authReady: false,
+  books: [],           // estante de livros ("Leituras")
+  currentBookId: null,
+  bookSearch: '',
+  quoteSearch: ''
 };
 
 function uid(){ return Math.random().toString(36).slice(2,10); }
@@ -435,7 +439,9 @@ async function loadData(){
           state.decks = d.decks || [];
           state.cards = d.cards || {};
           state.stats = d.stats || { totalPoints: 0 };
+          state.books = d.books || [];
           if(d.geminiApiKey) setApiKey(d.geminiApiKey);
+          if(d.booksApiKey) setBooksApiKey(d.booksApiKey);
         }
       } else if(hasFirebaseUser()){
         const snap = await db.collection('users').doc(state.firebaseUser.uid).get();
@@ -444,9 +450,11 @@ async function loadData(){
           state.decks = d.decks || [];
           state.cards = d.cards || {};
           state.stats = d.stats || { totalPoints: 0 };
+          state.books = d.books || [];
           // sincroniza a chave do Gemini entre aparelhos logados na mesma conta —
           // assim não precisa configurar de novo em cada navegador/celular.
           if(d.geminiApiKey) setApiKey(d.geminiApiKey);
+          if(d.booksApiKey) setBooksApiKey(d.booksApiKey);
         }
       }
       break; // sucesso, não precisa repetir
@@ -458,7 +466,7 @@ async function loadData(){
   render();
 }
 async function saveData(){
-  const payload = JSON.parse(JSON.stringify({decks: state.decks, cards: state.cards, stats: state.stats, geminiApiKey: getApiKey()}));
+  const payload = JSON.parse(JSON.stringify({decks: state.decks, cards: state.cards, stats: state.stats, books: state.books, geminiApiKey: getApiKey(), booksApiKey: getBooksApiKey()}));
   for(let attempt=0; attempt<2; attempt++){
     try{
       if(hasClaudeStorage()){
@@ -930,7 +938,7 @@ function exportDeckJson(deckId){
   downloadFile(`${safeFileName(deck.name)}.json`, JSON.stringify({ deck, cards }, null, 2), 'application/json');
 }
 function exportAllBackup(){
-  downloadFile('recall_backup.json', JSON.stringify({ decks: state.decks, cards: state.cards, stats: state.stats }, null, 2), 'application/json');
+  downloadFile('recall_backup.json', JSON.stringify({ decks: state.decks, cards: state.cards, stats: state.stats, books: state.books }, null, 2), 'application/json');
 }
 function hasFileSystemAccess(){
   return typeof window.showSaveFilePicker === 'function' && typeof window.showOpenFilePicker === 'function';
@@ -1106,11 +1114,20 @@ function triggerImportBackup(){
   input.click();
 }
 function importFullBackup(data){
+  const deckIdMap = {}; // id antigo -> novo, pra remapear o vínculo livro->baralho
   (data.decks || []).forEach(d => {
     const newId = uid();
+    deckIdMap[d.id] = newId;
     state.decks.push({ id:newId, name: d.name, color: d.color || DECK_COLORS[state.decks.length % DECK_COLORS.length], type: d.type || 'standard', enabledExercises: d.enabledExercises, carryOverLang: d.carryOverLang || [], carryOverByMode: d.carryOverByMode || {} });
     const oldCards = (data.cards && data.cards[d.id]) || [];
     state.cards[newId] = oldCards.map(c => normalizeImportedCard(c));
+  });
+  (data.books || []).forEach(b => {
+    state.books.push({
+      id: uid(), title: b.title||'', author: b.author||'', category: b.category||'', coverUrl: b.coverUrl||'',
+      rating: b.rating||0, quotes: (b.quotes||[]).map(q=>({ id: uid(), text: q.text||'', createdAt: q.createdAt||Date.now() })),
+      linkedDeckId: deckIdMap[b.linkedDeckId] || null, addedAt: b.addedAt||Date.now()
+    });
   });
   saveData(); render();
 }
@@ -1168,6 +1185,8 @@ function handleImportFile(deckId, filename, content){
 /* ============ AI CALLS ============ */
 function getApiKey(){ return localStorage.getItem('recall_gemini_api_key') || ''; }
 function setApiKey(key){ localStorage.setItem('recall_gemini_api_key', (key||'').trim()); }
+function getBooksApiKey(){ return localStorage.getItem('recall_books_api_key') || ''; }
+function setBooksApiKey(key){ localStorage.setItem('recall_books_api_key', (key||'').trim()); }
 
 // modelo usado só pra ler foto e gerar as perguntas (função da câmera); o resto do
 // app (pergunta aberta, tradução, múltipla escolha etc.) usa GEMINI_MODEL_TEXT.
@@ -1490,7 +1509,7 @@ function drawImageRegionToBase64(imgEl, sx, sy, sw, sh){
   const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
   return { dataUrl, base64: dataUrl.split(',')[1], mime: 'image/jpeg' };
 }
-function openPhotoImportPicker(useCamera){
+function openImagePicker(useCamera, onReady){
   const input = document.createElement('input');
   input.type = 'file';
   input.accept = 'image/*';
@@ -1504,17 +1523,20 @@ function openPhotoImportPicker(useCamera){
       const dataUrl = String(reader.result);
       const probe = new Image();
       probe.onerror = () => showToast('Não consegui ler essa imagem.', 'error');
-      probe.onload = () => {
-        // caixa inicial já quase cobrindo a foto toda — o usuário só precisa
-        // arrastar os cantos pra apertar em volta do trecho que interessa.
-        state.modal = { type:'photo-crop', rawDataUrl: dataUrl, box: { x:5, y:5, w:90, h:90 } };
-        render();
-      };
+      probe.onload = () => onReady(dataUrl);
       probe.src = dataUrl;
     };
     reader.readAsDataURL(file);
   };
   input.click();
+}
+function openPhotoImportPicker(useCamera){
+  openImagePicker(useCamera, (dataUrl) => {
+    // caixa inicial já quase cobrindo a foto toda — o usuário só precisa
+    // arrastar os cantos pra apertar em volta do trecho que interessa.
+    state.modal = { type:'photo-crop', rawDataUrl: dataUrl, box: { x:5, y:5, w:90, h:90 }, purpose:'flashcards' };
+    render();
+  });
 }
 
 /* arrastar/redimensionar a área de corte: usa Pointer Events (unifica mouse e touch)
@@ -1605,6 +1627,7 @@ function confirmCrop(){
   const m = state.modal;
   if(!m || m.type !== 'photo-crop') return;
   const box = m.box;
+  const purpose = m.purpose, bookId = m.bookId;
   const img = new Image();
   img.onload = () => {
     const sx = (box.x / 100) * img.naturalWidth;
@@ -1612,7 +1635,8 @@ function confirmCrop(){
     const sw = (box.w / 100) * img.naturalWidth;
     const sh = (box.h / 100) * img.naturalHeight;
     const cropped = drawImageRegionToBase64(img, sx, sy, sw, sh);
-    runPhotoImportGeneration(cropped);
+    if(purpose === 'quote') runQuoteCapture(cropped, bookId);
+    else runPhotoImportGeneration(cropped);
   };
   img.src = m.rawDataUrl;
 }
@@ -1678,6 +1702,169 @@ function confirmPhotoImport(){
   state.currentDeckId = deckId; state.view = 'deck'; state.tab = 'cards';
   saveData(); render();
   showToast(`${chosen.length} cartão(ões) adicionado(s) ao baralho.`);
+}
+
+/* ============ LEITURAS (estante de livros) ============ */
+function makeBook(title, author){
+  return { id: uid(), title: (title||'').trim(), author: (author||'').trim(), category:'', coverUrl:'', rating:0, quotes:[], linkedDeckId:null, addedAt: Date.now() };
+}
+function openLibrary(){
+  state.view = 'library'; state.bookSearch = ''; state.quoteSearch = '';
+  render();
+}
+function backToLibrary(){
+  state.view = 'library'; state.currentBookId = null;
+  render();
+}
+function openBook(id){
+  state.currentBookId = id; state.view = 'book';
+  render();
+}
+function deleteBook(id){
+  const book = state.books.find(b=>b.id===id);
+  askConfirm(`Excluir "${book ? book.title : ''}" da estante, junto com as citações guardadas? Essa ação não pode ser desfeita.`, () => {
+    state.books = state.books.filter(b=>b.id!==id);
+    if(state.currentBookId === id){ state.currentBookId = null; state.view = 'library'; }
+    saveData(); render();
+    showToast('Livro removido da estante.');
+  });
+}
+function updateBookField(id, field, value){
+  const book = state.books.find(b=>b.id===id);
+  if(!book) return;
+  book[field] = value;
+  saveData();
+}
+function setBookRating(id, rating){
+  const book = state.books.find(b=>b.id===id);
+  if(!book) return;
+  book.rating = (book.rating === rating) ? 0 : rating; // clicar na mesma estrela zera a nota
+  saveData(); render();
+}
+function setBookLinkedDeck(id, deckId){
+  const book = state.books.find(b=>b.id===id);
+  if(!book) return;
+  book.linkedDeckId = deckId || null;
+  saveData(); render();
+}
+function goToLinkedDeck(deckId){
+  if(!state.decks.some(d=>d.id===deckId)) return;
+  state.currentDeckId = deckId; state.view = 'deck'; state.tab = 'cards';
+  render();
+}
+function deleteQuote(bookId, quoteId){
+  const book = state.books.find(b=>b.id===bookId);
+  if(!book) return;
+  book.quotes = (book.quotes||[]).filter(q=>q.id!==quoteId);
+  saveData(); render();
+}
+
+/* busca metadados/capa reais na API pública do Google Books — mais confiável
+   que pedir pra uma IA "adivinhar" esses dados, e não gasta cota do Gemini. */
+async function searchGoogleBooks(query){
+  const key = getBooksApiKey();
+  const url = `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&maxResults=8${key ? `&key=${encodeURIComponent(key)}` : ''}`;
+  const resp = await fetch(url);
+  if(!resp.ok) throw new Error('books_api_error');
+  const data = await resp.json();
+  return (data.items||[]).map(it => {
+    const info = it.volumeInfo || {};
+    const cover = info.imageLinks ? (info.imageLinks.thumbnail || info.imageLinks.smallThumbnail || '') : '';
+    return {
+      title: info.title || '',
+      author: (info.authors||[]).join(', '),
+      category: (info.categories||[])[0] || '',
+      coverUrl: cover.replace('http://','https://')
+    };
+  }).filter(b => b.title);
+}
+function openAddBookModal(){
+  state.modal = { type:'add-book', query:'', searching:false, results:[], manual:{title:'',author:'',category:'',coverUrl:''} };
+  render();
+}
+async function searchBookModal(){
+  const m = state.modal;
+  if(!m || m.type !== 'add-book') return;
+  const q = (m.query||'').trim();
+  if(!q){ showToast('Digite o nome do livro pra buscar.', 'error'); return; }
+  m.searching = true; render();
+  try{
+    const results = await searchGoogleBooks(q);
+    if(state.modal && state.modal.type === 'add-book') state.modal.results = results;
+    if(results.length === 0) showToast('Nenhum resultado encontrado — pode preencher à mão.', 'error');
+  }catch(e){
+    console.error('Falha ao buscar na API do Google Books', e);
+    showToast('Não consegui buscar na internet agora. Preencha à mão.', 'error');
+  }
+  if(state.modal && state.modal.type === 'add-book') state.modal.searching = false;
+  render();
+}
+function pickBookResult(i){
+  const m = state.modal;
+  if(!m || m.type !== 'add-book') return;
+  const r = m.results[i];
+  if(!r) return;
+  m.manual = { title: r.title, author: r.author, category: r.category, coverUrl: r.coverUrl };
+  m.results = [];
+  render();
+}
+function confirmAddBook(){
+  const m = state.modal;
+  const title = (m.manual.title||'').trim();
+  if(!title){ showToast('Dê um título ao livro.', 'error'); return; }
+  const book = makeBook(title, m.manual.author);
+  book.category = (m.manual.category||'').trim();
+  book.coverUrl = (m.manual.coverUrl||'').trim();
+  state.books.push(book);
+  state.modal = null;
+  saveData();
+  openBook(book.id);
+  showToast('Livro adicionado à estante.');
+}
+
+/* captura de citação: reaproveita o mesmo corte de foto dos flashcards, mas
+   ao invés de gerar perguntas, só transcreve o texto pra guardar no livro. */
+function openQuoteCapturePicker(bookId, useCamera){
+  openImagePicker(useCamera, (dataUrl) => {
+    state.modal = { type:'photo-crop', rawDataUrl: dataUrl, box: { x:5, y:5, w:90, h:90 }, purpose:'quote', bookId };
+    render();
+  });
+}
+async function extractTextFromImage(base64Data, mimeType){
+  const prompt = `Esta imagem é uma foto de uma página de livro. Transcreva EXATAMENTE o texto que aparece nela, preservando as quebras de parágrafo. Não resuma, não corrija e não comente nada — responda SOMENTE com o texto transcrito, sem nenhum texto adicional antes ou depois.`;
+  const text = (await callGemini(prompt, { maxTokens: 1200, imageBase64: base64Data, imageMime: mimeType, model: GEMINI_MODEL_VISION })).trim();
+  if(!text) throw new Error('empty_response');
+  return text;
+}
+async function runQuoteCapture(img, bookId){
+  state.modal = { type:'quote-capture', status:'processing', imageDataUrl: img.dataUrl, bookId, text:'' };
+  render();
+  try{
+    const text = await extractTextFromImage(img.base64, img.mime);
+    if(state.modal && state.modal.type === 'quote-capture'){
+      state.modal.status = 'review';
+      state.modal.text = text;
+    }
+  }catch(err){
+    console.error('Falha ao transcrever a foto', err);
+    if(state.modal && state.modal.type === 'quote-capture'){
+      state.modal.status = 'error';
+      state.modal.error = friendlyAiErrorMsg(err);
+    }
+  }
+  render();
+}
+function confirmQuoteCapture(){
+  const m = state.modal;
+  const text = (m.text||'').trim();
+  if(!text){ showToast('O texto da citação está vazio.', 'error'); return; }
+  const book = state.books.find(b => b.id === m.bookId);
+  state.modal = null;
+  if(!book){ render(); return; }
+  book.quotes = book.quotes || [];
+  book.quotes.push({ id: uid(), text, createdAt: Date.now() });
+  saveData(); render();
+  showToast('Citação guardada.');
 }
 
 /* ============ STUDY SESSION ============ */
@@ -2457,6 +2644,7 @@ function renderSidebar(){
         <span>REPETIÇÃO ESPAÇADA</span>
       </div>
     </div>
+    <button class="ghost-btn" style="font-size:13px; padding:10px 12px; margin-bottom:6px; ${(state.view==='library'||state.view==='book') ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="new-deck-btn" onclick="openNewDeckModal()">＋ Novo baralho</button>
     <button class="ghost-btn" style="font-size:12.5px; padding:9px 12px;" onclick="openPhotoImportPicker(true)">📷 Tirar foto (cartões)</button>
     <button class="ghost-btn" style="font-size:12.5px; padding:9px 12px;" onclick="openPhotoImportPicker(false)">🖼️ Carregar imagem (cartões)</button>
@@ -2465,7 +2653,7 @@ function renderSidebar(){
       ${state.decks.length === 0 ? `<div style="color:var(--text-faint); font-size:12.5px; padding:8px 4px;">Nenhum baralho ainda.</div>` : ''}
       ${state.decks.map(d => {
         const due = getDueCards(d.id).length;
-        const active = state.currentDeckId === d.id && state.view !== 'home';
+        const active = state.currentDeckId === d.id && state.view !== 'home' && state.view !== 'library' && state.view !== 'book';
         return `
         <div class="deck-item ${active?'active':''}" onclick="selectDeck('${d.id}')">
           <div class="deck-dot" style="background:${d.color}"></div>
@@ -2504,6 +2692,8 @@ function backToHome(){
 }
 
 function renderMain(){
+  if(state.view === 'library') return renderLibraryView();
+  if(state.view === 'book') return renderBookDetailView();
   if(state.view === 'home' || !state.currentDeckId){
     return `
     <div class="empty-state">
@@ -2517,6 +2707,132 @@ function renderMain(){
   if(state.view === 'study') return renderStudyView();
   if(state.view === 'results') return renderResultsView();
   return '';
+}
+
+function renderLibraryView(){
+  const q = (state.bookSearch||'').toLowerCase().trim();
+  const filteredBooks = q ? state.books.filter(b => b.title.toLowerCase().includes(q)) : state.books;
+  const quoteQ = (state.quoteSearch||'').toLowerCase().trim();
+  let quoteResults = [];
+  if(quoteQ){
+    state.books.forEach(b => {
+      (b.quotes||[]).forEach(quote => {
+        if(quote.text.toLowerCase().includes(quoteQ)) quoteResults.push({ book:b, quote });
+      });
+    });
+  }
+  return `
+  <button class="ghost-btn mobile-back-btn" onclick="backToHome()">← Início</button>
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:18px; flex-wrap:wrap; gap:10px;">
+    <h2 style="margin:0;">📚 Leituras</h2>
+    <button class="primary-btn" onclick="openAddBookModal()">＋ Adicionar livro</button>
+  </div>
+  <div style="display:flex; gap:14px; flex-wrap:wrap; margin-bottom:20px;">
+    <div class="field" style="max-width:340px; flex:1;">
+      <label>BUSCAR LIVRO POR NOME</label>
+      <input type="text" value="${escapeHtml(state.bookSearch)}" placeholder="Ex: Dom Casmurro" oninput="state.bookSearch=this.value; render();">
+    </div>
+    <div class="field" style="max-width:340px; flex:1;">
+      <label>BUSCAR CITAÇÃO EM TODOS OS LIVROS</label>
+      <input type="text" value="${escapeHtml(state.quoteSearch)}" placeholder="Trecho da citação..." oninput="state.quoteSearch=this.value; render();">
+    </div>
+  </div>
+  ${quoteQ ? `
+  <div style="margin-bottom:26px;">
+    <h3 style="font-size:13.5px; margin:0 0 10px 0; color:var(--text-muted);">${quoteResults.length} citação(ões) encontrada(s)</h3>
+    ${quoteResults.length===0 ? `<div style="color:var(--text-faint); font-size:13px;">Nenhuma citação bate com essa busca.</div>` : quoteResults.map(r => `
+      <div style="background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:12px 16px; margin-bottom:8px; cursor:pointer;" onclick="openBook('${r.book.id}')">
+        <div style="font-size:12px; color:var(--accent); font-weight:600; margin-bottom:4px;">${escapeHtml(r.book.title)}</div>
+        <div style="font-size:13.5px; color:var(--text); line-height:1.5;">"${escapeHtml(r.quote.text.length>220 ? r.quote.text.slice(0,220)+'…' : r.quote.text)}"</div>
+      </div>
+    `).join('')}
+  </div>` : ''}
+  ${filteredBooks.length===0 ? `<div style="color:var(--text-faint); font-size:13px;">${state.books.length===0 ? 'Nenhum livro na estante ainda. Clique em "Adicionar livro" pra começar.' : 'Nenhum livro bate com essa busca.'}</div>` : `
+  <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(140px,1fr)); gap:18px;">
+    ${filteredBooks.map(b => `
+      <div style="cursor:pointer;" onclick="openBook('${b.id}')">
+        <div style="width:100%; aspect-ratio:2/3; background:var(--bg-2); border:1px solid var(--border); border-radius:8px; overflow:hidden; display:flex; align-items:center; justify-content:center; font-size:32px;">
+          ${b.coverUrl ? `<img src="${escapeHtml(b.coverUrl)}" style="width:100%; height:100%; object-fit:cover;" onerror="this.style.display='none'; this.parentElement.textContent='📖';">` : '📖'}
+        </div>
+        <div style="font-size:12.5px; font-weight:600; margin-top:6px; line-height:1.3;">${escapeHtml(b.title)}</div>
+        ${b.author ? `<div style="font-size:11px; color:var(--text-muted);">${escapeHtml(b.author)}</div>` : ''}
+        ${b.rating>0 ? `<div style="font-size:11px; color:#F5D76E; margin-top:2px;">${'★'.repeat(b.rating)}${'☆'.repeat(5-b.rating)}</div>` : ''}
+        ${b.category ? `<div style="display:inline-block; font-size:10px; color:var(--text-muted); background:var(--bg-2); border-radius:6px; padding:2px 6px; margin-top:4px;">${escapeHtml(b.category)}</div>` : ''}
+      </div>
+    `).join('')}
+  </div>`}
+  `;
+}
+function renderBookDetailView(){
+  const book = state.books.find(b=>b.id===state.currentBookId);
+  if(!book) return '';
+  const categories = Array.from(new Set(state.books.map(b=>b.category).filter(Boolean)));
+  const linkedDeck = book.linkedDeckId ? state.decks.find(d=>d.id===book.linkedDeckId) : null;
+  const quotes = book.quotes || [];
+  return `
+  <button class="ghost-btn mobile-back-btn" onclick="backToLibrary()">← Leituras</button>
+  <div style="display:flex; gap:24px; flex-wrap:wrap; margin-bottom:28px;">
+    <div style="width:160px; flex-shrink:0;">
+      <div style="width:100%; aspect-ratio:2/3; background:var(--bg-2); border:1px solid var(--border); border-radius:10px; overflow:hidden; display:flex; align-items:center; justify-content:center; font-size:40px;">
+        ${book.coverUrl ? `<img src="${escapeHtml(book.coverUrl)}" style="width:100%; height:100%; object-fit:cover;" onerror="this.style.display='none'; this.parentElement.textContent='📖';">` : '📖'}
+      </div>
+      <div class="field" style="margin-top:10px;">
+        <label style="font-size:10px;">URL DA CAPA</label>
+        <input type="text" value="${escapeHtml(book.coverUrl)}" placeholder="Colar link da imagem" onkeyup="updateBookField('${book.id}','coverUrl',this.value)" onchange="render()">
+      </div>
+    </div>
+    <div style="flex:1; min-width:240px; display:flex; flex-direction:column; gap:12px;">
+      <div class="field">
+        <label style="font-size:10px;">TÍTULO</label>
+        <input type="text" style="font-size:18px; font-weight:700;" value="${escapeHtml(book.title)}" onkeyup="updateBookField('${book.id}','title',this.value)">
+      </div>
+      <div style="display:flex; gap:14px; flex-wrap:wrap;">
+        <div class="field" style="flex:1; min-width:160px;">
+          <label style="font-size:10px;">AUTOR</label>
+          <input type="text" value="${escapeHtml(book.author)}" onkeyup="updateBookField('${book.id}','author',this.value)">
+        </div>
+        <div class="field" style="flex:1; min-width:160px;">
+          <label style="font-size:10px;">CATEGORIA</label>
+          <input type="text" list="book-categories-list" value="${escapeHtml(book.category)}" onkeyup="updateBookField('${book.id}','category',this.value)">
+          <datalist id="book-categories-list">${categories.map(c=>`<option value="${escapeHtml(c)}">`).join('')}</datalist>
+        </div>
+      </div>
+      <div class="field">
+        <label style="font-size:10px;">NOTA</label>
+        <div style="display:flex; gap:4px; font-size:24px; line-height:1;">
+          ${[1,2,3,4,5].map(n => `<span style="cursor:pointer; color:${n<=book.rating?'#F5D76E':'var(--text-faint)'};" onclick="setBookRating('${book.id}', ${n})">★</span>`).join('')}
+        </div>
+      </div>
+      <div class="field">
+        <label style="font-size:10px;">BARALHO VINCULADO</label>
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+          <select onchange="setBookLinkedDeck('${book.id}', this.value)" style="flex:1; min-width:160px;">
+            <option value="">Nenhum</option>
+            ${state.decks.map(d=>`<option value="${d.id}" ${book.linkedDeckId===d.id?'selected':''}>${escapeHtml(d.name)}</option>`).join('')}
+          </select>
+          ${linkedDeck ? `<button class="ghost-btn" onclick="goToLinkedDeck('${linkedDeck.id}')">🔗 Ir pro baralho</button>` : ''}
+        </div>
+      </div>
+      <button class="ghost-btn" style="align-self:flex-start; color:var(--error); border-color:var(--error);" onclick="deleteBook('${book.id}')">🗑 Excluir livro</button>
+    </div>
+  </div>
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; flex-wrap:wrap; gap:10px;">
+    <h3 style="margin:0;">Citações (${quotes.length})</h3>
+    <div style="display:flex; gap:8px;">
+      <button class="ghost-btn" onclick="openQuoteCapturePicker('${book.id}', true)">📷 Tirar foto</button>
+      <button class="ghost-btn" onclick="openQuoteCapturePicker('${book.id}', false)">🖼️ Carregar imagem</button>
+    </div>
+  </div>
+  ${quotes.length===0 ? `<div style="color:var(--text-faint); font-size:13px;">Nenhuma citação guardada ainda.</div>` : `
+  <div style="display:flex; flex-direction:column; gap:10px;">
+    ${quotes.slice().reverse().map(quote => `
+      <div style="background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:14px 16px; display:flex; gap:12px; align-items:flex-start;">
+        <div style="flex:1; font-size:13.5px; line-height:1.6; white-space:pre-wrap;">"${escapeHtml(quote.text)}"</div>
+        <button class="icon-btn" title="Excluir citação" onclick="deleteQuote('${book.id}','${quote.id}')">🗑</button>
+      </div>
+    `).join('')}
+  </div>`}
+  `;
 }
 
 function renderDeckView(){
@@ -3389,7 +3705,7 @@ function backToDeck(){
 
 /* ============ MODALS ============ */
 function openNewDeckModal(){ state.modal = { type:'new-deck', name:'', color: DECK_COLORS[state.decks.length % DECK_COLORS.length], deckType:'standard' }; render(); }
-function openApiKeyModal(){ state.modal = { type:'api-key', key: getApiKey() }; render(); }
+function openApiKeyModal(){ state.modal = { type:'api-key', key: getApiKey(), booksKey: getBooksApiKey() }; render(); }
 function closeModal(){ state.modal = null; render(); }
 function renderModal(){
   const m = state.modal;
@@ -3397,6 +3713,8 @@ function renderModal(){
   if(m.type === 'kindle-import') return renderKindleImportModal(m);
   if(m.type === 'photo-crop') return renderPhotoCropModal(m);
   if(m.type === 'photo-import') return renderPhotoImportModal(m);
+  if(m.type === 'add-book') return renderAddBookModal(m);
+  if(m.type === 'quote-capture') return renderQuoteCaptureModal(m);
   if(m.type === 'confirm') return renderConfirmModal(m);
   return `
   <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
@@ -3443,13 +3761,20 @@ function renderApiKeyModal(m){
   return `
   <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
     <div class="modal">
-      <h3>Chave de API do Gemini</h3>
+      <h3>Chaves de API</h3>
       <p style="font-size:12.5px; color:var(--text-muted); line-height:1.5; margin:0;">
-        Os recursos de IA (gerar frases, alternativas, verificar respostas, cartões a partir de foto) usam o Google Gemini e precisam de uma chave sua pra funcionar. Ela é enviada só à API do Google e fica salva junto com seus baralhos, sincronizada automaticamente com qualquer aparelho onde você fizer login com esta mesma conta — não precisa configurar de novo a cada navegador. Crie a sua grátis em <strong>aistudio.google.com</strong> (Get API key).
+        Os recursos de IA (gerar frases, alternativas, verificar respostas, cartões a partir de foto) usam o Google Gemini e precisam de uma chave sua pra funcionar. Ela é enviada só à API do Google e fica salva junto com seus baralhos, sincronizada automaticamente com qualquer aparelho onde você fizer login com esta mesma conta. Crie a sua grátis em <strong>aistudio.google.com</strong> (Get API key).
       </p>
       <div class="field">
         <label>CHAVE DO GEMINI</label>
         <input type="text" id="api-key-input" placeholder="Cole sua chave aqui" value="${escapeHtml(m.key||'')}" onkeyup="state.modal.key=this.value">
+      </div>
+      <p style="font-size:12.5px; color:var(--text-muted); line-height:1.5; margin:14px 0 0 0;">
+        <strong>Opcional</strong> — a busca de livros em "Leituras" usa a API do Google Books sem chave por padrão, que tem uma cota compartilhada e pode falhar em horários de pico. Configurar sua própria chave (grátis, em <strong>console.cloud.google.com</strong>) garante uma cota só sua.
+      </p>
+      <div class="field">
+        <label>CHAVE DO GOOGLE BOOKS (opcional)</label>
+        <input type="text" id="books-api-key-input" placeholder="Cole sua chave aqui" value="${escapeHtml(m.booksKey||'')}" onkeyup="state.modal.booksKey=this.value">
       </div>
       <div class="modal-actions">
         <button class="ghost-btn" onclick="closeModal()">Cancelar</button>
@@ -3460,10 +3785,12 @@ function renderApiKeyModal(m){
 }
 function confirmApiKey(){
   const key = document.getElementById('api-key-input').value;
+  const booksKey = document.getElementById('books-api-key-input').value;
   setApiKey(key);
+  setBooksApiKey(booksKey);
   state.modal = null;
   render();
-  saveData(); // sincroniza a chave via Firestore pros outros aparelhos logados na mesma conta
+  saveData(); // sincroniza as chaves via Firestore pros outros aparelhos logados na mesma conta
 }
 function renderKindleImportModal(m){
   const totalHighlights = m.books.reduce((sum,b)=>sum+b.highlights.length, 0);
@@ -3589,6 +3916,96 @@ function renderPhotoImportModal(m){
       <div class="modal-actions">
         <button class="ghost-btn" onclick="closeModal()">Cancelar</button>
         <button class="primary-btn" onclick="confirmPhotoImport()" ${includedCount===0?'disabled':''}>Adicionar ${includedCount} cartão(ões)</button>
+      </div>
+    </div>
+  </div>`;
+}
+function renderAddBookModal(m){
+  return `
+  <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
+    <div class="modal" style="width:480px; max-height:88vh; overflow-y:auto;">
+      <h3>Adicionar livro</h3>
+      <div class="field">
+        <label>BUSCAR NA INTERNET (opcional)</label>
+        <div style="display:flex; gap:8px;">
+          <input type="text" placeholder="Nome do livro" value="${escapeHtml(m.query)}" onkeyup="state.modal.query=this.value; if(event.key==='Enter') searchBookModal();" style="flex:1;">
+          <button type="button" class="ghost-btn" onclick="searchBookModal()" ${m.searching?'disabled':''}>${m.searching?'Buscando…':'🔍 Buscar'}</button>
+        </div>
+      </div>
+      ${m.results.length>0 ? `
+      <div style="display:flex; flex-direction:column; gap:6px; max-height:220px; overflow-y:auto; margin:10px 0;">
+        ${m.results.map((r,i) => `
+          <div style="display:flex; gap:10px; align-items:center; padding:8px 10px; background:var(--bg-2); border:1px solid var(--border); border-radius:8px; cursor:pointer;" onclick="pickBookResult(${i})">
+            <div style="width:34px; height:48px; background:var(--surface); border-radius:4px; overflow:hidden; flex-shrink:0; display:flex; align-items:center; justify-content:center; font-size:16px;">
+              ${r.coverUrl ? `<img src="${escapeHtml(r.coverUrl)}" style="width:100%; height:100%; object-fit:cover;">` : '📖'}
+            </div>
+            <div style="flex:1; min-width:0;">
+              <div style="font-size:13px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(r.title)}</div>
+              <div style="font-size:11.5px; color:var(--text-muted);">${escapeHtml(r.author)}</div>
+            </div>
+          </div>
+        `).join('')}
+      </div>` : ''}
+      <p style="font-size:11.5px; color:var(--text-faint); margin:12px 0 4px 0;">Escolha um resultado pra preencher automaticamente, ou edite os campos abaixo à mão:</p>
+      <div class="field">
+        <label>TÍTULO</label>
+        <input type="text" value="${escapeHtml(m.manual.title)}" onkeyup="state.modal.manual.title=this.value">
+      </div>
+      <div style="display:flex; gap:14px; margin-top:12px; flex-wrap:wrap;">
+        <div class="field" style="flex:1; min-width:160px;">
+          <label>AUTOR</label>
+          <input type="text" value="${escapeHtml(m.manual.author)}" onkeyup="state.modal.manual.author=this.value">
+        </div>
+        <div class="field" style="flex:1; min-width:160px;">
+          <label>CATEGORIA</label>
+          <input type="text" value="${escapeHtml(m.manual.category)}" onkeyup="state.modal.manual.category=this.value">
+        </div>
+      </div>
+      <div class="field" style="margin-top:12px;">
+        <label>URL DA CAPA</label>
+        <input type="text" value="${escapeHtml(m.manual.coverUrl)}" placeholder="https://..." onkeyup="state.modal.manual.coverUrl=this.value">
+      </div>
+      <div class="modal-actions">
+        <button class="ghost-btn" onclick="closeModal()">Cancelar</button>
+        <button class="primary-btn" onclick="confirmAddBook()">Adicionar à estante</button>
+      </div>
+    </div>
+  </div>`;
+}
+function renderQuoteCaptureModal(m){
+  if(m.status === 'processing'){
+    return `
+    <div class="modal-overlay">
+      <div class="modal" style="width:420px; text-align:center;">
+        <h3>Lendo o texto…</h3>
+        <img src="${m.imageDataUrl}" style="max-width:100%; max-height:220px; border-radius:10px; margin:10px 0; object-fit:contain;">
+        <p style="font-size:12.5px; color:var(--text-muted);">A IA está transcrevendo o texto da foto…</p>
+      </div>
+    </div>`;
+  }
+  if(m.status === 'error'){
+    return `
+    <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
+      <div class="modal" style="width:420px;">
+        <h3>Não deu pra ler o texto</h3>
+        <p style="font-size:13px; color:var(--text-muted); line-height:1.5;">${escapeHtml(m.error)}</p>
+        <div class="modal-actions">
+          <button class="ghost-btn" onclick="closeModal()">Fechar</button>
+        </div>
+      </div>
+    </div>`;
+  }
+  return `
+  <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
+    <div class="modal" style="width:480px; max-height:86vh; overflow-y:auto;">
+      <h3>Revisar citação</h3>
+      <p style="font-size:12.5px; color:var(--text-muted); line-height:1.5; margin:0;">Confira e edite o texto transcrito antes de guardar.</p>
+      <div class="field" style="margin-top:10px;">
+        <textarea rows="8" onkeyup="state.modal.text=this.value">${escapeHtml(m.text)}</textarea>
+      </div>
+      <div class="modal-actions">
+        <button class="ghost-btn" onclick="closeModal()">Cancelar</button>
+        <button class="primary-btn" onclick="confirmQuoteCapture()">Guardar citação</button>
       </div>
     </div>
   </div>`;
