@@ -84,6 +84,8 @@
     color:var(--text-muted); transition:all .15s ease; position:relative;
   }
   .deck-item:hover{ background:var(--surface); color:var(--text); }
+  .book-cover-hover{ transition:transform 0.18s ease, box-shadow 0.18s ease; }
+  .book-cover-hover:hover{ transform:scale(1.05); box-shadow:0 8px 20px rgba(0,0,0,0.35); }
   .deck-item.active{ background:var(--surface-2); color:var(--text); border-color:var(--border); }
   .deck-dot{ width:9px; height:9px; border-radius:50%; flex-shrink:0; }
   .deck-item-name{ flex:1; font-size:13.5px; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -439,7 +441,7 @@ async function loadData(){
           state.decks = d.decks || [];
           state.cards = d.cards || {};
           state.stats = d.stats || { totalPoints: 0 };
-          state.books = d.books || [];
+          state.books = (d.books || []).map(normalizeBook);
           if(d.geminiApiKey) setApiKey(d.geminiApiKey);
           if(d.booksApiKey) setBooksApiKey(d.booksApiKey);
         }
@@ -450,7 +452,7 @@ async function loadData(){
           state.decks = d.decks || [];
           state.cards = d.cards || {};
           state.stats = d.stats || { totalPoints: 0 };
-          state.books = d.books || [];
+          state.books = (d.books || []).map(normalizeBook);
           // sincroniza a chave do Gemini entre aparelhos logados na mesma conta —
           // assim não precisa configurar de novo em cada navegador/celular.
           if(d.geminiApiKey) setApiKey(d.geminiApiKey);
@@ -682,6 +684,7 @@ function playWrong(){ beep(220,0.14,0); beep(160,0.22,0.09,0.22); }
 function playStreakBonus(){
   beep(784,0.08,0); beep(988,0.08,0.08); beep(1318,0.08,0.16); beep(1568,0.08,0.24); beep(2093,0.22,0.32);
 }
+function playBookOpen(){ beep(520,0.09,0,0.18); beep(660,0.14,0.07,0.16); }
 
 /* ============ PONTUAÇÃO / GAMIFICAÇÃO ============ */
 function awardPoints(card, correct, exType, grade){
@@ -1123,11 +1126,11 @@ function importFullBackup(data){
     state.cards[newId] = oldCards.map(c => normalizeImportedCard(c));
   });
   (data.books || []).forEach(b => {
-    state.books.push({
-      id: uid(), title: b.title||'', author: b.author||'', category: b.category||'', coverUrl: b.coverUrl||'',
-      rating: b.rating||0, quotes: (b.quotes||[]).map(q=>({ id: uid(), text: q.text||'', createdAt: q.createdAt||Date.now() })),
-      linkedDeckId: deckIdMap[b.linkedDeckId] || null, addedAt: b.addedAt||Date.now()
-    });
+    const nb = normalizeBook(b);
+    nb.id = uid();
+    nb.quotes = (b.quotes||[]).map(q=>({ id: uid(), text: q.text||'', createdAt: q.createdAt||Date.now() }));
+    nb.linkedDeckId = deckIdMap[b.linkedDeckId] || null;
+    state.books.push(nb);
   });
   saveData(); render();
 }
@@ -1706,7 +1709,36 @@ function confirmPhotoImport(){
 
 /* ============ LEITURAS (estante de livros) ============ */
 function makeBook(title, author){
-  return { id: uid(), title: (title||'').trim(), author: (author||'').trim(), category:'', coverUrl:'', rating:0, quotes:[], linkedDeckId:null, addedAt: Date.now() };
+  return {
+    id: uid(), title: (title||'').trim(), author: (author||'').trim(), categories:[], coverUrl:'', rating:0,
+    quotes:[], linkedDeckId:null, addedAt: Date.now(),
+    status:'quero-ler', dateFinished:null, totalPages:0, pagesRead:0
+  };
+}
+const BOOK_STATUS_LABELS = { 'quero-ler':'📌 Quero ler', 'lendo':'📖 Lendo', 'lido':'✅ Lido' };
+// livros salvos antes dessa atualização tinham "category" (string única) em vez de
+// "categories" (array) e não tinham status/páginas — normaliza pro formato novo.
+function normalizeBook(b){
+  return {
+    id: b.id || uid(),
+    title: b.title || '',
+    author: b.author || '',
+    categories: Array.isArray(b.categories) ? b.categories : (b.category ? [b.category] : []),
+    coverUrl: b.coverUrl || '',
+    rating: b.rating || 0,
+    quotes: b.quotes || [],
+    linkedDeckId: b.linkedDeckId || null,
+    addedAt: b.addedAt || Date.now(),
+    status: b.status || 'quero-ler',
+    dateFinished: b.dateFinished || null,
+    totalPages: b.totalPages || 0,
+    pagesRead: b.pagesRead || 0
+  };
+}
+function todayStr(){
+  const d = new Date();
+  const pad = n => String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
 }
 function openLibrary(){
   state.view = 'library'; state.bookSearch = ''; state.quoteSearch = '';
@@ -1718,6 +1750,7 @@ function backToLibrary(){
 }
 function openBook(id){
   state.currentBookId = id; state.view = 'book';
+  playBookOpen();
   render();
 }
 function deleteBook(id){
@@ -1740,6 +1773,57 @@ function setBookRating(id, rating){
   if(!book) return;
   book.rating = (book.rating === rating) ? 0 : rating; // clicar na mesma estrela zera a nota
   saveData(); render();
+}
+function setBookStatus(id, status){
+  const book = state.books.find(b=>b.id===id);
+  if(!book) return;
+  book.status = status;
+  if(status === 'lido'){
+    if(!book.dateFinished) book.dateFinished = todayStr();
+    if(book.totalPages > 0) book.pagesRead = book.totalPages;
+  }
+  saveData(); render();
+}
+function setBookDateFinished(id, value){
+  const book = state.books.find(b=>b.id===id);
+  if(!book) return;
+  book.dateFinished = value || null;
+  saveData();
+}
+function setBookPages(id, field, value){
+  const book = state.books.find(b=>b.id===id);
+  if(!book) return;
+  let n = parseInt(value, 10);
+  if(isNaN(n) || n < 0) n = 0;
+  book[field] = n;
+  if(field === 'totalPages' && book.pagesRead > n) book.pagesRead = n;
+  if(field === 'pagesRead' && book.totalPages > 0 && n > book.totalPages) book.pagesRead = book.totalPages;
+  saveData();
+}
+function addBookCategory(id){
+  const input = document.getElementById('book-category-input-'+id);
+  const val = (input.value||'').trim();
+  if(!val) return;
+  const book = state.books.find(b=>b.id===id);
+  if(!book) return;
+  book.categories = book.categories || [];
+  if(!book.categories.includes(val)) book.categories.push(val);
+  input.value = '';
+  saveData(); render();
+}
+function removeBookCategory(id, index){
+  const book = state.books.find(b=>b.id===id);
+  if(!book) return;
+  book.categories.splice(index, 1);
+  saveData(); render();
+}
+function renderTagChips(tags, removeFn, removeArgsPrefix){
+  return (tags||[]).map((t,i) => `
+    <span style="display:inline-flex; align-items:center; gap:4px; background:var(--bg-2); border:1px solid var(--border); border-radius:6px; padding:3px 8px; font-size:11.5px; color:var(--text-muted);">
+      ${escapeHtml(t)}
+      <span style="cursor:pointer; opacity:0.6;" onclick="${removeFn}(${removeArgsPrefix}${i})">×</span>
+    </span>
+  `).join('');
 }
 function setBookLinkedDeck(id, deckId){
   const book = state.books.find(b=>b.id===id);
@@ -1779,7 +1863,24 @@ async function searchGoogleBooks(query){
   }).filter(b => b.title);
 }
 function openAddBookModal(){
-  state.modal = { type:'add-book', query:'', searching:false, results:[], manual:{title:'',author:'',category:'',coverUrl:''} };
+  state.modal = { type:'add-book', query:'', searching:false, results:[], manual:{title:'',author:'',categories:[],coverUrl:''} };
+  render();
+}
+function addManualCategory(){
+  const m = state.modal;
+  if(!m || m.type !== 'add-book') return;
+  const input = document.getElementById('manual-category-input');
+  const val = (input.value||'').trim();
+  if(!val) return;
+  m.manual.categories = m.manual.categories || [];
+  if(!m.manual.categories.includes(val)) m.manual.categories.push(val);
+  input.value = '';
+  render();
+}
+function removeManualCategory(index){
+  const m = state.modal;
+  if(!m || m.type !== 'add-book') return;
+  m.manual.categories.splice(index, 1);
   render();
 }
 async function searchBookModal(){
@@ -1804,7 +1905,7 @@ function pickBookResult(i){
   if(!m || m.type !== 'add-book') return;
   const r = m.results[i];
   if(!r) return;
-  m.manual = { title: r.title, author: r.author, category: r.category, coverUrl: r.coverUrl };
+  m.manual = { title: r.title, author: r.author, categories: r.category ? [r.category] : [], coverUrl: r.coverUrl };
   m.results = [];
   render();
 }
@@ -1813,7 +1914,7 @@ function confirmAddBook(){
   const title = (m.manual.title||'').trim();
   if(!title){ showToast('Dê um título ao livro.', 'error'); return; }
   const book = makeBook(title, m.manual.author);
-  book.category = (m.manual.category||'').trim();
+  book.categories = (m.manual.categories||[]).slice();
   book.coverUrl = (m.manual.coverUrl||'').trim();
   state.books.push(book);
   state.modal = null;
@@ -2709,6 +2810,21 @@ function renderMain(){
   return '';
 }
 
+function getReadingStats(){
+  const now = new Date();
+  const curMonth = now.getMonth(), curYear = now.getFullYear();
+  let month = 0, year = 0;
+  state.books.forEach(b => {
+    if(b.status === 'lido' && b.dateFinished){
+      const d = new Date(b.dateFinished+'T00:00:00');
+      if(d.getFullYear() === curYear){
+        year++;
+        if(d.getMonth() === curMonth) month++;
+      }
+    }
+  });
+  return { month, year };
+}
 function renderLibraryView(){
   const q = (state.bookSearch||'').toLowerCase().trim();
   const filteredBooks = q ? state.books.filter(b => b.title.toLowerCase().includes(q)) : state.books;
@@ -2721,12 +2837,14 @@ function renderLibraryView(){
       });
     });
   }
+  const stats = getReadingStats();
   return `
   <button class="ghost-btn mobile-back-btn" onclick="backToHome()">← Início</button>
-  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:18px; flex-wrap:wrap; gap:10px;">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:10px;">
     <h2 style="margin:0;">📚 Leituras</h2>
     <button class="primary-btn" onclick="openAddBookModal()">＋ Adicionar livro</button>
   </div>
+  <div style="font-size:13px; color:var(--text-muted); margin-bottom:18px;">📖 ${stats.month} livro(s) lido(s) este mês · ${stats.year} este ano</div>
   <div style="display:flex; gap:14px; flex-wrap:wrap; margin-bottom:20px;">
     <div class="field" style="max-width:340px; flex:1;">
       <label>BUSCAR LIVRO POR NOME</label>
@@ -2751,13 +2869,17 @@ function renderLibraryView(){
   <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(140px,1fr)); gap:18px;">
     ${filteredBooks.map(b => `
       <div style="cursor:pointer;" onclick="openBook('${b.id}')">
-        <div style="width:100%; aspect-ratio:2/3; background:var(--bg-2); border:1px solid var(--border); border-radius:8px; overflow:hidden; display:flex; align-items:center; justify-content:center; font-size:32px;">
+        <div class="book-cover-hover" style="width:100%; aspect-ratio:2/3; background:var(--bg-2); border:1px solid var(--border); border-radius:8px; overflow:hidden; display:flex; align-items:center; justify-content:center; font-size:32px;">
           ${b.coverUrl ? `<img src="${escapeHtml(b.coverUrl)}" style="width:100%; height:100%; object-fit:cover;" onerror="this.style.display='none'; this.parentElement.textContent='📖';">` : '📖'}
         </div>
         <div style="font-size:12.5px; font-weight:600; margin-top:6px; line-height:1.3;">${escapeHtml(b.title)}</div>
         ${b.author ? `<div style="font-size:11px; color:var(--text-muted);">${escapeHtml(b.author)}</div>` : ''}
         ${b.rating>0 ? `<div style="font-size:11px; color:#F5D76E; margin-top:2px;">${'★'.repeat(b.rating)}${'☆'.repeat(5-b.rating)}</div>` : ''}
-        ${b.category ? `<div style="display:inline-block; font-size:10px; color:var(--text-muted); background:var(--bg-2); border-radius:6px; padding:2px 6px; margin-top:4px;">${escapeHtml(b.category)}</div>` : ''}
+        <div style="display:flex; gap:4px; flex-wrap:wrap; margin-top:4px;">
+          <span style="font-size:10px; color:var(--text-muted); background:var(--bg-2); border-radius:6px; padding:2px 6px;">${BOOK_STATUS_LABELS[b.status]||BOOK_STATUS_LABELS['quero-ler']}</span>
+          ${(b.categories||[]).map(c=>`<span style="font-size:10px; color:var(--text-muted); background:var(--bg-2); border-radius:6px; padding:2px 6px;">${escapeHtml(c)}</span>`).join('')}
+        </div>
+        ${b.totalPages>0 ? `<div style="font-size:10.5px; color:var(--text-faint); margin-top:4px;">${b.pagesRead||0}/${b.totalPages} págs</div>` : ''}
       </div>
     `).join('')}
   </div>`}
@@ -2766,7 +2888,7 @@ function renderLibraryView(){
 function renderBookDetailView(){
   const book = state.books.find(b=>b.id===state.currentBookId);
   if(!book) return '';
-  const categories = Array.from(new Set(state.books.map(b=>b.category).filter(Boolean)));
+  const allCategories = Array.from(new Set(state.books.flatMap(b=>b.categories||[]).filter(Boolean)));
   const linkedDeck = book.linkedDeckId ? state.decks.find(d=>d.id===book.linkedDeckId) : null;
   const quotes = book.quotes || [];
   return `
@@ -2786,16 +2908,43 @@ function renderBookDetailView(){
         <label style="font-size:10px;">TÍTULO</label>
         <input type="text" style="font-size:18px; font-weight:700;" value="${escapeHtml(book.title)}" onkeyup="updateBookField('${book.id}','title',this.value)">
       </div>
+      <div class="field">
+        <label style="font-size:10px;">AUTOR</label>
+        <input type="text" value="${escapeHtml(book.author)}" onkeyup="updateBookField('${book.id}','author',this.value)">
+      </div>
+      <div class="field">
+        <label style="font-size:10px;">STATUS</label>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          ${Object.keys(BOOK_STATUS_LABELS).map(val => `
+            <button type="button" class="ghost-btn" style="flex:1; min-width:110px; ${book.status===val ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="setBookStatus('${book.id}','${val}')">${BOOK_STATUS_LABELS[val]}</button>
+          `).join('')}
+        </div>
+      </div>
+      ${book.status==='lido' ? `
+      <div class="field">
+        <label style="font-size:10px;">DATA DE CONCLUSÃO</label>
+        <input type="date" value="${book.dateFinished||''}" onchange="setBookDateFinished('${book.id}', this.value); render();">
+      </div>` : ''}
       <div style="display:flex; gap:14px; flex-wrap:wrap;">
-        <div class="field" style="flex:1; min-width:160px;">
-          <label style="font-size:10px;">AUTOR</label>
-          <input type="text" value="${escapeHtml(book.author)}" onkeyup="updateBookField('${book.id}','author',this.value)">
+        <div class="field" style="flex:1; min-width:120px;">
+          <label style="font-size:10px;">TOTAL DE PÁGINAS</label>
+          <input type="number" min="0" value="${book.totalPages||''}" onchange="setBookPages('${book.id}','totalPages',this.value); render();">
         </div>
-        <div class="field" style="flex:1; min-width:160px;">
-          <label style="font-size:10px;">CATEGORIA</label>
-          <input type="text" list="book-categories-list" value="${escapeHtml(book.category)}" onkeyup="updateBookField('${book.id}','category',this.value)">
-          <datalist id="book-categories-list">${categories.map(c=>`<option value="${escapeHtml(c)}">`).join('')}</datalist>
+        <div class="field" style="flex:1; min-width:120px;">
+          <label style="font-size:10px;">PÁGINAS LIDAS</label>
+          <input type="number" min="0" value="${book.pagesRead||''}" onchange="setBookPages('${book.id}','pagesRead',this.value); render();">
         </div>
+      </div>
+      <div class="field">
+        <label style="font-size:10px;">CATEGORIAS (tags)</label>
+        <div style="display:flex; flex-wrap:wrap; gap:6px; ${(book.categories||[]).length ? 'margin-bottom:8px;' : ''}">
+          ${renderTagChips(book.categories, 'removeBookCategory', `'${book.id}', `)}
+        </div>
+        <div style="display:flex; gap:8px;">
+          <input type="text" id="book-category-input-${book.id}" list="book-categories-list" placeholder="Ex: ficção, terror..." style="flex:1;" onkeydown="if(event.key==='Enter'){ event.preventDefault(); addBookCategory('${book.id}'); }">
+          <button type="button" class="ghost-btn" onclick="addBookCategory('${book.id}')">+ Add</button>
+        </div>
+        <datalist id="book-categories-list">${allCategories.map(c=>`<option value="${escapeHtml(c)}">`).join('')}</datalist>
       </div>
       <div class="field">
         <label style="font-size:10px;">NOTA</label>
@@ -3951,14 +4100,18 @@ function renderAddBookModal(m){
         <label>TÍTULO</label>
         <input type="text" value="${escapeHtml(m.manual.title)}" onkeyup="state.modal.manual.title=this.value">
       </div>
-      <div style="display:flex; gap:14px; margin-top:12px; flex-wrap:wrap;">
-        <div class="field" style="flex:1; min-width:160px;">
-          <label>AUTOR</label>
-          <input type="text" value="${escapeHtml(m.manual.author)}" onkeyup="state.modal.manual.author=this.value">
+      <div class="field" style="margin-top:12px;">
+        <label>AUTOR</label>
+        <input type="text" value="${escapeHtml(m.manual.author)}" onkeyup="state.modal.manual.author=this.value">
+      </div>
+      <div class="field" style="margin-top:12px;">
+        <label>CATEGORIAS (tags)</label>
+        <div style="display:flex; flex-wrap:wrap; gap:6px; ${(m.manual.categories||[]).length ? 'margin-bottom:8px;' : ''}">
+          ${renderTagChips(m.manual.categories, 'removeManualCategory', '')}
         </div>
-        <div class="field" style="flex:1; min-width:160px;">
-          <label>CATEGORIA</label>
-          <input type="text" value="${escapeHtml(m.manual.category)}" onkeyup="state.modal.manual.category=this.value">
+        <div style="display:flex; gap:8px;">
+          <input type="text" id="manual-category-input" placeholder="Ex: ficção, terror..." style="flex:1;" onkeydown="if(event.key==='Enter'){ event.preventDefault(); addManualCategory(); }">
+          <button type="button" class="ghost-btn" onclick="addManualCategory()">+ Add</button>
         </div>
       </div>
       <div class="field" style="margin-top:12px;">
