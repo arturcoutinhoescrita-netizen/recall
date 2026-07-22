@@ -369,6 +369,9 @@ let state = {
   cardFilterLearned: false,
   cardFilterPriority: false,
   _searchFocused: false,
+  cardFormMode: 'text',   // 'text' | 'image' — só relevante em baralhos padrão
+  imageEditorUrl: '',
+  newPinPos: null,
   previousSession: null,
   stats: { totalPoints: 0 },
   fileHandle: null,
@@ -750,6 +753,84 @@ function deleteCard(deckId, cardId){
 function makeCard(front, back){
   return { id: uid(), front: front.trim(), back: (back||'').trim(), note:'', ease:2.5, interval:0, reps:0, due:Date.now(), flagged:false, learned:false, priority:false };
 }
+function isImageCard(card){
+  return !!(card && card.cardKind === 'image');
+}
+/* pino de imagem = um cartão comum (front=pergunta, back=resposta, note=nota) mais
+   imageUrl/pinX/pinY — assim reaproveita toda a repetição espaçada já existente. */
+function addImagePin(deckId, imageUrl, x, y, question, answer, note){
+  if(!imageUrl || !question.trim() || !answer.trim()) return;
+  const card = makeCard(question, answer);
+  card.note = (note||'').trim();
+  card.cardKind = 'image';
+  card.imageUrl = imageUrl.trim();
+  card.pinX = x; card.pinY = y;
+  state.cards[deckId].push(card);
+  saveData(); render();
+  return card;
+}
+function getDeckImageUrls(deckId){
+  const urls = (state.cards[deckId]||[]).filter(isImageCard).map(c=>c.imageUrl);
+  return Array.from(new Set(urls));
+}
+function startNewPinAt(e){
+  const rect = e.target.getBoundingClientRect();
+  const x = ((e.clientX - rect.left) / rect.width) * 100;
+  const y = ((e.clientY - rect.top) / rect.height) * 100;
+  state.newPinPos = { x: Math.round(x*10)/10, y: Math.round(y*10)/10 };
+  render();
+}
+function cancelNewPin(){
+  state.newPinPos = null;
+  render();
+}
+function submitNewPin(deckId){
+  const q = document.getElementById('new-pin-question').value;
+  const a = document.getElementById('new-pin-answer').value;
+  const note = document.getElementById('new-pin-note').value;
+  if(!q.trim() || !a.trim()){ showToast('Preencha pergunta e resposta do pino.', 'error'); return; }
+  const pos = state.newPinPos;
+  state.newPinPos = null;
+  addImagePin(deckId, state.imageEditorUrl, pos.x, pos.y, q, a, note);
+  showToast('Pino adicionado.');
+}
+function renderImageCardForm(deck){
+  const url = (state.imageEditorUrl||'').trim();
+  const pins = (state.cards[deck.id]||[]).filter(c => isImageCard(c) && c.imageUrl === url);
+  return `
+  <div class="field">
+    <label>URL DA IMAGEM</label>
+    <input type="text" id="image-editor-url" placeholder="Cole o link da imagem (https://...)" value="${escapeHtml(state.imageEditorUrl||'')}" oninput="state.imageEditorUrl=this.value; state.newPinPos=null; render();" onfocus="state._searchFocused=false;">
+  </div>
+  ${url ? `
+    <p style="font-size:11.5px; color:var(--text-faint); margin:-4px 0 0 0;">Clique na imagem pra adicionar um pino. Já tem ${pins.length} pino(s) aqui.</p>
+    <div style="position:relative; max-width:420px; margin:0 auto; background:var(--bg-2); border-radius:12px;">
+      <img src="${escapeHtml(url)}" style="width:100%; display:block; border-radius:12px; cursor:crosshair;" onclick="startNewPinAt(event)" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+      <div style="display:none; padding:36px 16px; text-align:center; color:var(--error); font-size:13px;">⚠ Não foi possível carregar essa imagem. Confira o link.</div>
+      ${pins.map((p,i) => `<div title="${escapeHtml(p.front)}" style="position:absolute; left:${p.pinX}%; top:${p.pinY}%; transform:translate(-50%,-50%); width:22px; height:22px; border-radius:50%; background:var(--accent); color:#1B1200; font-size:11px; font-weight:700; display:flex; align-items:center; justify-content:center; border:2px solid #1B1200; pointer-events:none;">${i+1}</div>`).join('')}
+      ${state.newPinPos ? `<div style="position:absolute; left:${state.newPinPos.x}%; top:${state.newPinPos.y}%; transform:translate(-50%,-50%); width:22px; height:22px; border-radius:50%; background:var(--success); border:2px solid #06210F; pointer-events:none;"></div>` : ''}
+    </div>
+    ${state.newPinPos ? `
+    <div class="field">
+      <label>PERGUNTA DO PINO</label>
+      <textarea id="new-pin-question" rows="2" placeholder="Ex: O que é essa estrutura?" autofocus></textarea>
+    </div>
+    <div class="field">
+      <label>RESPOSTA</label>
+      <textarea id="new-pin-answer" rows="2" placeholder="Ex: Válvula mitral"></textarea>
+    </div>
+    <div class="field">
+      <label>NOTA (opcional)</label>
+      <textarea id="new-pin-note" rows="2" placeholder="Explicação mais detalhada"></textarea>
+    </div>
+    <div style="display:flex; gap:8px;">
+      <button class="ghost-btn" onclick="cancelNewPin()">Cancelar pino</button>
+      <button class="primary-btn" onclick="submitNewPin('${deck.id}')">＋ Salvar pino</button>
+    </div>
+    ` : ''}
+  ` : ''}
+  `;
+}
 function toggleCardFlag(deckId, cardId){
   const card = (state.cards[deckId]||[]).find(c=>c.id===cardId);
   if(!card) return;
@@ -973,12 +1054,16 @@ function replaceAllData(data){
   saveData(); render();
 }
 function normalizeImportedCard(c){
-  return {
+  const card = {
     id: c.id || uid(), front: c.front, back: c.back || '', note: c.note || '',
     ease: c.ease || 2.5, interval: c.interval || 0, reps: c.reps || 0, due: c.due || Date.now(),
     flagged: !!c.flagged, learned: !!c.learned, priority: !!c.priority,
     missStreak: c.missStreak || 0, usedTranslateAnswers: c.usedTranslateAnswers || []
   };
+  if(c.cardKind === 'image'){
+    card.cardKind = 'image'; card.imageUrl = c.imageUrl || ''; card.pinX = c.pinX || 0; card.pinY = c.pinY || 0;
+  }
+  return card;
 }
 
 function triggerImportInput(deckId){
@@ -1372,9 +1457,10 @@ function expandPoolForPriority(pool){
 }
 function startSession(deckId, mode){
   const deck = state.decks.find(d=>d.id===deckId);
-  const due = getDueCards(deckId);
-  const basePool = due.length ? due : getStudyPool(deckId);
-  if(basePool.length === 0){ showToast('Este baralho ainda não tem cartões.', 'error'); return; }
+  const isImageMode = mode === 'image-answer' || mode === 'image-locate';
+  const due = getDueCards(deckId).filter(c => isImageCard(c) === isImageMode);
+  const basePool = due.length ? due : getStudyPool(deckId).filter(c => isImageCard(c) === isImageMode);
+  if(basePool.length === 0){ showToast(isImageMode ? 'Nenhum cartão de imagem pronto pra estudar.' : 'Este baralho ainda não tem cartões.', 'error'); return; }
   const pool = expandPoolForPriority(basePool);
   const aiOn = isAiEnabled(deck);
   const usesAI = (mode === 'mc' || mode === 'open') && aiOn; // 'direct' é sempre local; mc/open só usam IA se o baralho tiver ela ligada
@@ -1935,7 +2021,7 @@ function nextCard(){
   s.index++;
   s.revealed = false; s.userInput=''; s.options=null; s.chosen=null; s.verifyResult=null; s.lastFeedback=null;
   s.content=null; s.chosenIndex=null; s.graded=false; s.gradeChosen=null; s.copyMismatch=false; s.autoMatched=false; s.lastCopyAttempt='';
-  s.checkedIndexes=null; s.partialCorrect=false; s.showNote=false;
+  s.checkedIndexes=null; s.partialCorrect=false; s.showNote=false; s.clickPos=null;
   s.cardStart = Date.now();
   if(s.index >= s.queue.length){
     if(s.memorizeMode){ endMemorizeMode(); return; }
@@ -2091,6 +2177,7 @@ function renderSidebar(){
 function selectDeck(id){
   state.currentDeckId = id; state.view = 'deck'; state.tab = 'cards'; state.editingCardId = null;
   state.cardSearch = ''; state.cardFilterFlagged = false; state.cardFilterLearned = false; state.cardFilterPriority = false;
+  state.cardFormMode = 'text'; state.imageEditorUrl = ''; state.newPinPos = null;
   render();
 }
 function backToHome(){
@@ -2204,6 +2291,11 @@ function renderCardsTab(deck){
     </div>
     <button class="primary-btn" onclick="submitNewTerm('${deck.id}')">＋ Adicionar termo</button>
     ` : `
+    <div style="display:flex; gap:8px; margin-bottom:14px;">
+      <button type="button" class="ghost-btn" style="flex:1; ${state.cardFormMode!=='image' ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="state.cardFormMode='text'; render();">Cartão normal</button>
+      <button type="button" class="ghost-btn" style="flex:1; ${state.cardFormMode==='image' ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="state.cardFormMode='image'; render();">🖼️ Cartão de imagem</button>
+    </div>
+    ${state.cardFormMode === 'image' ? renderImageCardForm(deck) : `
     <div class="row">
       <div class="field">
         <label>PERGUNTA (frente)</label>
@@ -2219,6 +2311,7 @@ function renderCardsTab(deck){
       <textarea id="new-note" rows="2" placeholder="Uma explicação mais detalhada sobre o assunto, pra consultar durante o estudo"></textarea>
     </div>
     <button class="primary-btn" onclick="submitNewCard('${deck.id}')">＋ Adicionar cartão</button>
+    `}
     `}
   </div>
   <div style="display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap;">
@@ -2288,7 +2381,7 @@ function renderCardsTab(deck){
       </div>
       ` : `
       <div class="card-row" ${rowStyle}>
-        <div class="front">${escapeHtml(c.front)}</div>
+        <div class="front">${isImageCard(c) ? '🖼️ ' : ''}${escapeHtml(c.front)}</div>
         <div class="back">${escapeHtml(c.back)}</div>
         ${stateDot}
         <div class="due-tag">${fmtDue(c.due)}</div>
@@ -2414,6 +2507,18 @@ function renderStudyPicker(deck){
       <p>${aiOn ? 'Digite sua resposta livremente — a IA busca na internet e confere se está certa.' : 'Revele a resposta e diga se foi fácil, médio ou difícil — sem IA.'}</p>
       ${aiOn ? `<p style="margin-top:6px; font-size:11.5px;">⚡ Limitada a ${AI_SESSION_CAP} perguntas por sessão.${(deck.carryOverByMode && deck.carryOverByMode.open && deck.carryOverByMode.open.length) ? ` 🔁 ${deck.carryOverByMode.open.length} pendente(s) serão priorizadas.` : ''}</p>` : `<p style="margin-top:6px; font-size:11.5px;">Sem limite de perguntas — não gasta IA.</p>`}
     </button>
+    ${(state.cards[deck.id]||[]).some(isImageCard) ? `
+    <button class="mode-card" onclick="startSession('${deck.id}','image-answer')">
+      <div class="m-icon">📍</div>
+      <h3>Responder</h3>
+      <p>Mostra o pino escolhido destacado na imagem e a pergunta dele — digite a resposta e se autoavalie.</p>
+    </button>
+    <button class="mode-card" onclick="startSession('${deck.id}','image-locate')">
+      <div class="m-icon">🎯</div>
+      <h3>Localizar</h3>
+      <p>Mostra só a pergunta, sem revelar onde fica — clique no ponto certo da imagem.</p>
+    </button>
+    ` : ''}
   </div>`;
 }
 
@@ -2452,6 +2557,10 @@ function renderStudyView(){
     body = renderOpenMode(s, card);
   } else if(s.mode === 'copy-memorize'){
     body = renderCopyMemorizeMode(s, card);
+  } else if(s.mode === 'image-answer'){
+    body = renderImageAnswerMode(s, card);
+  } else if(s.mode === 'image-locate'){
+    body = renderImageLocateMode(s, card);
   } else if(s.mode === 'lang-mixed'){
     const exType = getCurrentExType();
     if(exType === 'translate') body = renderTranslateExercise(s, card);
@@ -2568,6 +2677,96 @@ function renderDirectMode(s, card){
         ${renderPointsBadge(s)}
         <div class="action-row"><button class="primary-btn" onclick="nextCard()">Próximo →</button></div>
       `}
+    </div>
+  </div>`;
+}
+
+function renderImagePinMarkers(card, highlightCurrent){
+  const allPins = (state.cards[state.session.deckId]||[]).filter(c => isImageCard(c) && c.imageUrl === card.imageUrl);
+  return allPins.map(p => {
+    const isCurrent = p.id === card.id;
+    const size = (highlightCurrent && isCurrent) ? 24 : 14;
+    const bg = (highlightCurrent && isCurrent) ? 'var(--accent)' : 'rgba(244,241,234,0.4)';
+    const ring = (highlightCurrent && isCurrent) ? 'box-shadow:0 0 0 6px rgba(245,166,35,0.25);' : '';
+    return `<div style="position:absolute; left:${p.pinX}%; top:${p.pinY}%; transform:translate(-50%,-50%); width:${size}px; height:${size}px; border-radius:50%; background:${bg}; border:2px solid #1B1200; ${ring} pointer-events:none;"></div>`;
+  }).join('');
+}
+function renderImageBroken(){
+  return `<div style="display:none; padding:36px 16px; text-align:center; color:var(--error); font-size:13px; background:var(--bg-2); border-radius:12px;">⚠ Não foi possível carregar essa imagem.</div>`;
+}
+function renderImageAnswerMode(s, card){
+  const imageBlock = `
+  <div style="position:relative; max-width:420px; width:100%; margin:0 auto;">
+    <img src="${escapeHtml(card.imageUrl)}" style="width:100%; display:block; border-radius:12px;" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+    ${renderImageBroken()}
+    ${renderImagePinMarkers(card, true)}
+  </div>`;
+  if(!s.revealed){
+    return `
+    <div class="answer-zone" style="align-items:center;">
+      ${imageBlock}
+      <button class="primary-btn" onclick="submitDirectReveal()">Revelar resposta</button>
+    </div>`;
+  }
+  return `
+  <div class="answer-zone">
+    ${imageBlock}
+    <div class="reveal-zone">
+      <div class="answer-box">${escapeHtml(card.back)}</div>
+      ${s.lastFeedback === null ? `
+        <p style="color:var(--text-muted); font-size:13.5px;">Você acertou?</p>
+        <div class="action-row">
+          <button class="ghost-btn" style="border-color:var(--error); color:var(--error);" onclick="answerDirect(false)">✕ Errei</button>
+          <button class="primary-btn" onclick="answerDirect(true)">✓ Acertei</button>
+        </div>
+      ` : `
+        <div class="feedback-banner ${s.lastFeedback?'ok':'no'}">${s.lastFeedback? '✓ Mandou bem!' : '✕ Vamos revisar de novo em breve.'}</div>
+        ${renderPointsBadge(s)}
+        <div class="action-row"><button class="primary-btn" onclick="nextCard()">Próximo →</button></div>
+      `}
+    </div>
+  </div>`;
+}
+const IMAGE_LOCATE_TOLERANCE_PCT = 7;
+function answerImageLocate(e){
+  const s = state.session; const card = getCurrentCard();
+  if(!s || s.revealed) return;
+  const rect = e.target.getBoundingClientRect();
+  const x = ((e.clientX - rect.left) / rect.width) * 100;
+  const y = ((e.clientY - rect.top) / rect.height) * 100;
+  const dist = Math.hypot(x - card.pinX, y - card.pinY);
+  const correct = dist <= IMAGE_LOCATE_TOLERANCE_PCT;
+  s.clickPos = { x, y };
+  scheduleCard(card, correct);
+  if(correct){ s.correct++; } else { requeueOnWrong(); }
+  awardPoints(card, correct, 'image-locate');
+  s.lastFeedback = correct;
+  s.revealed = true;
+  saveData();
+  render();
+}
+function renderImageLocateMode(s, card){
+  if(!s.revealed){
+    return `
+    <div class="answer-zone" style="align-items:center;">
+      <div style="position:relative; max-width:420px; width:100%; margin:0 auto;">
+        <img src="${escapeHtml(card.imageUrl)}" style="width:100%; display:block; border-radius:12px; cursor:crosshair;" onclick="answerImageLocate(event)" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+        ${renderImageBroken()}
+      </div>
+      <p style="color:var(--text-muted); font-size:12.5px; text-align:center;">Clique no ponto certo da imagem.</p>
+    </div>`;
+  }
+  return `
+  <div class="answer-zone">
+    <div style="position:relative; max-width:420px; width:100%; margin:0 auto;">
+      <img src="${escapeHtml(card.imageUrl)}" style="width:100%; display:block; border-radius:12px;">
+      <div style="position:absolute; left:${card.pinX}%; top:${card.pinY}%; transform:translate(-50%,-50%); width:22px; height:22px; border-radius:50%; background:var(--success); border:2px solid #06210F;"></div>
+      ${(!s.lastFeedback && s.clickPos) ? `<div style="position:absolute; left:${s.clickPos.x}%; top:${s.clickPos.y}%; transform:translate(-50%,-50%); width:18px; height:18px; border-radius:50%; background:var(--error); border:2px solid #2A0A10;"></div>` : ''}
+    </div>
+    <div class="reveal-zone">
+      <div class="feedback-banner ${s.lastFeedback?'ok':'no'}">${s.lastFeedback? '✓ Isso aí!' : '✕ Não era ali — o certo tá marcado em verde.'}</div>
+      ${renderPointsBadge(s)}
+      <div class="action-row"><button class="primary-btn" onclick="nextCard()">Próximo →</button></div>
     </div>
   </div>`;
 }
