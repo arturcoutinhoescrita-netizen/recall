@@ -441,6 +441,7 @@ async function loadData(){
           state.stats = d.stats || { totalPoints: 0 };
           state.books = d.books || [];
           if(d.geminiApiKey) setApiKey(d.geminiApiKey);
+          if(d.booksApiKey) setBooksApiKey(d.booksApiKey);
         }
       } else if(hasFirebaseUser()){
         const snap = await db.collection('users').doc(state.firebaseUser.uid).get();
@@ -453,6 +454,7 @@ async function loadData(){
           // sincroniza a chave do Gemini entre aparelhos logados na mesma conta —
           // assim não precisa configurar de novo em cada navegador/celular.
           if(d.geminiApiKey) setApiKey(d.geminiApiKey);
+          if(d.booksApiKey) setBooksApiKey(d.booksApiKey);
         }
       }
       break; // sucesso, não precisa repetir
@@ -464,7 +466,7 @@ async function loadData(){
   render();
 }
 async function saveData(){
-  const payload = JSON.parse(JSON.stringify({decks: state.decks, cards: state.cards, stats: state.stats, books: state.books, geminiApiKey: getApiKey()}));
+  const payload = JSON.parse(JSON.stringify({decks: state.decks, cards: state.cards, stats: state.stats, books: state.books, geminiApiKey: getApiKey(), booksApiKey: getBooksApiKey()}));
   for(let attempt=0; attempt<2; attempt++){
     try{
       if(hasClaudeStorage()){
@@ -1183,6 +1185,8 @@ function handleImportFile(deckId, filename, content){
 /* ============ AI CALLS ============ */
 function getApiKey(){ return localStorage.getItem('recall_gemini_api_key') || ''; }
 function setApiKey(key){ localStorage.setItem('recall_gemini_api_key', (key||'').trim()); }
+function getBooksApiKey(){ return localStorage.getItem('recall_books_api_key') || ''; }
+function setBooksApiKey(key){ localStorage.setItem('recall_books_api_key', (key||'').trim()); }
 
 // modelo usado só pra ler foto e gerar as perguntas (função da câmera); o resto do
 // app (pergunta aberta, tradução, múltipla escolha etc.) usa GEMINI_MODEL_TEXT.
@@ -1758,7 +1762,9 @@ function deleteQuote(bookId, quoteId){
 /* busca metadados/capa reais na API pública do Google Books — mais confiável
    que pedir pra uma IA "adivinhar" esses dados, e não gasta cota do Gemini. */
 async function searchGoogleBooks(query){
-  const resp = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&maxResults=8`);
+  const key = getBooksApiKey();
+  const url = `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&maxResults=8${key ? `&key=${encodeURIComponent(key)}` : ''}`;
+  const resp = await fetch(url);
   if(!resp.ok) throw new Error('books_api_error');
   const data = await resp.json();
   return (data.items||[]).map(it => {
@@ -3699,7 +3705,7 @@ function backToDeck(){
 
 /* ============ MODALS ============ */
 function openNewDeckModal(){ state.modal = { type:'new-deck', name:'', color: DECK_COLORS[state.decks.length % DECK_COLORS.length], deckType:'standard' }; render(); }
-function openApiKeyModal(){ state.modal = { type:'api-key', key: getApiKey() }; render(); }
+function openApiKeyModal(){ state.modal = { type:'api-key', key: getApiKey(), booksKey: getBooksApiKey() }; render(); }
 function closeModal(){ state.modal = null; render(); }
 function renderModal(){
   const m = state.modal;
@@ -3755,13 +3761,20 @@ function renderApiKeyModal(m){
   return `
   <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
     <div class="modal">
-      <h3>Chave de API do Gemini</h3>
+      <h3>Chaves de API</h3>
       <p style="font-size:12.5px; color:var(--text-muted); line-height:1.5; margin:0;">
-        Os recursos de IA (gerar frases, alternativas, verificar respostas, cartões a partir de foto) usam o Google Gemini e precisam de uma chave sua pra funcionar. Ela é enviada só à API do Google e fica salva junto com seus baralhos, sincronizada automaticamente com qualquer aparelho onde você fizer login com esta mesma conta — não precisa configurar de novo a cada navegador. Crie a sua grátis em <strong>aistudio.google.com</strong> (Get API key).
+        Os recursos de IA (gerar frases, alternativas, verificar respostas, cartões a partir de foto) usam o Google Gemini e precisam de uma chave sua pra funcionar. Ela é enviada só à API do Google e fica salva junto com seus baralhos, sincronizada automaticamente com qualquer aparelho onde você fizer login com esta mesma conta. Crie a sua grátis em <strong>aistudio.google.com</strong> (Get API key).
       </p>
       <div class="field">
         <label>CHAVE DO GEMINI</label>
         <input type="text" id="api-key-input" placeholder="Cole sua chave aqui" value="${escapeHtml(m.key||'')}" onkeyup="state.modal.key=this.value">
+      </div>
+      <p style="font-size:12.5px; color:var(--text-muted); line-height:1.5; margin:14px 0 0 0;">
+        <strong>Opcional</strong> — a busca de livros em "Leituras" usa a API do Google Books sem chave por padrão, que tem uma cota compartilhada e pode falhar em horários de pico. Configurar sua própria chave (grátis, em <strong>console.cloud.google.com</strong>) garante uma cota só sua.
+      </p>
+      <div class="field">
+        <label>CHAVE DO GOOGLE BOOKS (opcional)</label>
+        <input type="text" id="books-api-key-input" placeholder="Cole sua chave aqui" value="${escapeHtml(m.booksKey||'')}" onkeyup="state.modal.booksKey=this.value">
       </div>
       <div class="modal-actions">
         <button class="ghost-btn" onclick="closeModal()">Cancelar</button>
@@ -3772,10 +3785,12 @@ function renderApiKeyModal(m){
 }
 function confirmApiKey(){
   const key = document.getElementById('api-key-input').value;
+  const booksKey = document.getElementById('books-api-key-input').value;
   setApiKey(key);
+  setBooksApiKey(booksKey);
   state.modal = null;
   render();
-  saveData(); // sincroniza a chave via Firestore pros outros aparelhos logados na mesma conta
+  saveData(); // sincroniza as chaves via Firestore pros outros aparelhos logados na mesma conta
 }
 function renderKindleImportModal(m){
   const totalHighlights = m.books.reduce((sum,b)=>sum+b.highlights.length, 0);
