@@ -1,6 +1,6 @@
 /* Bump esse número sempre que publicar uma mudança e quiser forçar os
    usuários a pegar a versão nova em vez do cache antigo. */
-const CACHE_VERSION = 'v1';
+const CACHE_VERSION = 'v2';
 const CACHE_NAME = `recall-${CACHE_VERSION}`;
 
 const PRECACHE_URLS = [
