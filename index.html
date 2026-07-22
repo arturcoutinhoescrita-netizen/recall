@@ -308,8 +308,11 @@
 /* ============ STATE ============ */
 const STORAGE_KEY = 'flashcards_app_data';
 const DECK_COLORS = ['#F5A623','#6EE7B7','#7DA9FA','#FB7185','#C99CF7','#F5D76E'];
-const EXERCISE_TYPES = ['translate','reverseTranslate','write','mc'];
-const EXERCISE_LABELS = { translate:'Tradução direta', reverseTranslate:'Tradução invertida', write:'Tradução de frase', mc:'Múltipla escolha' };
+const EXERCISE_TYPES = ['translate','reverseTranslate','write','mc','translateOther'];
+const EXERCISE_LABELS = { translate:'Tradução direta', reverseTranslate:'Tradução invertida', write:'Tradução de frase', mc:'Múltipla escolha', translateOther:'Tradução alternativa', 'copy-translation':'Copiar tradução' };
+function getCardTranslations(card){
+  return String((card&&card.back)||'').split('/').map(t=>t.trim()).filter(Boolean);
+}
 
 function stripParens(str){
   return String(str||'').replace(/\([^)]*\)/g, '').replace(/\s+/g,' ').trim();
@@ -1165,21 +1168,31 @@ function generateLocalMC(card, deckCards){
   };
   const distractorCards = shuffle(eligibleOthers.slice()).slice(0, 3);
   const direction = Math.random() < 0.5 ? 'term' : 'translation';
-  let promptText, correctText, distractorTexts;
+  const cardTranslations = getCardTranslations(card);
+  let promptText, correctTexts, distractorTexts;
   if(direction === 'term'){
     promptText = `Qual é a tradução de "${card.front}"?`;
-    correctText = pickOne(card.back);
-    distractorTexts = distractorCards.map(c => pickOne(c.back));
+    if(cardTranslations.length >= 2){
+      // termo com 2+ traduções aceitas: inclui 2 delas como certas, pra reforçar que mais de uma resposta vale
+      correctTexts = shuffle(cardTranslations.slice()).slice(0, 2);
+      distractorTexts = distractorCards.map(c => pickOne(c.back)).slice(0, 2);
+    } else {
+      correctTexts = [pickOne(card.back)];
+      distractorTexts = distractorCards.map(c => pickOne(c.back));
+    }
   } else {
     promptText = `Qual termo em inglês significa "${pickOne(card.back)}"?`;
-    correctText = stripParens(card.front);
+    correctTexts = [stripParens(card.front)];
     distractorTexts = distractorCards.map(c => stripParens(c.front));
   }
-  const entries = shuffle([{ text: correctText, correct: true }, ...distractorTexts.map(t => ({ text: t, correct: false }))]);
+  const entries = shuffle([
+    ...correctTexts.map(t => ({ text: t, correct: true })),
+    ...distractorTexts.map(t => ({ text: t, correct: false }))
+  ]);
   return {
     prompt: promptText,
     options: entries.map(e => e.text),
-    correctIndex: entries.findIndex(e => e.correct)
+    correctIndexes: entries.map((e,i) => e.correct ? i : -1).filter(i => i !== -1)
   };
 }
 function generateLocalMCStandard(card, deckCards){
@@ -1439,6 +1452,12 @@ function getCurrentExType(){
   const item = s.queue[s.index];
   return (item && typeof item === 'object') ? item.exType : null;
 }
+function getCurrentQueueItem(){
+  const s = state.session;
+  if(!s) return null;
+  const item = s.queue[s.index];
+  return (item && typeof item === 'object') ? item : null;
+}
 
 /* ============ SESSÃO DE IDIOMA (5 exercícios por termo, misturados) ============ */
 function getEnabledExercises(deck){
@@ -1466,6 +1485,7 @@ function startLanguageSession(deckId){
   pool.forEach(c => {
     enabledTypes.forEach(exType => {
       if((exType === 'translate' || exType === 'reverseTranslate') && !c.back) return; // sem tradução cadastrada, pula esses tipos pra esse termo
+      if(exType === 'translateOther' && getCardTranslations(c).length < 2) return; // precisa de pelo menos 2 traduções pra ter uma resposta "alternativa" válida
       fullQueue.push({ cardId: c.id, exType });
     });
   });
@@ -1519,6 +1539,23 @@ async function loadContentForCurrent(){
     render();
     return; // local, sem IA
   }
+  if(exType === 'translateOther'){
+    const options = getCardTranslations(card);
+    const excludeIdx = Math.floor(Math.random()*options.length);
+    s.loadingContent = false;
+    s.content = { excluded: options[excludeIdx], validOptions: options.filter((_,i)=>i!==excludeIdx) };
+    render();
+    return; // local, sem IA
+  }
+  if(exType === 'copy-translation'){
+    const item = getCurrentQueueItem();
+    const options = getCardTranslations(card);
+    const idx = Math.min((item && item.translationIndex) || 0, options.length-1);
+    s.loadingContent = false;
+    s.content = { targetTranslation: options[idx] };
+    render();
+    return; // local, sem IA
+  }
   const cacheKey = `${card.id}:${exType}`;
   if(s.contentCache && s.contentCache[cacheKey]){
     s.loadingContent = false; s.content = s.contentCache[cacheKey]; render(); return; // já veio pré-gerado em lote
@@ -1550,13 +1587,15 @@ function requeueOnWrong(){
 function startMemorizeMode(){
   const s = state.session; if(!s || s.mode !== 'lang-mixed') return;
   const card = getCurrentCard(); if(!card) return;
-  const deck = state.decks.find(d=>d.id===s.deckId);
-  const enabledTypes = deck ? getEnabledExercises(deck) : EXERCISE_TYPES;
-  const usableTypes = enabledTypes.filter(t => (t === 'translate' || t === 'reverseTranslate') ? !!card.back : true);
-  if(usableTypes.length === 0){ showToast('Não há exercícios suficientes para memorizar este termo.', 'error'); return; }
+  const translations = getCardTranslations(card);
+  if(translations.length === 0){ showToast('Esse termo não tem tradução cadastrada — adicione uma antes de memorizar.', 'error'); return; }
+  // 1 pergunta de cópia por tradução (até 2), depois sempre 2 de recordação livre —
+  // assim quem tem só 1 tradução treina menos e quem tem 2+ é empurrado a usar as duas.
   let queue = [];
-  for(let i=0; i<5; i++) queue.push({ cardId: card.id, exType: usableTypes[i % usableTypes.length] });
-  queue = shuffle(queue);
+  const copyCount = Math.min(2, translations.length);
+  for(let i=0; i<copyCount; i++) queue.push({ cardId: card.id, exType: 'copy-translation', translationIndex: i });
+  queue.push({ cardId: card.id, exType: 'translate' });
+  queue.push({ cardId: card.id, exType: 'translate' });
   state.previousSession = s; // guarda a sessão normal pra retomar depois
   state.session = {
     deckId: s.deckId, mode: 'lang-mixed', memorizeMode: true, memorizeCardId: card.id,
@@ -1566,7 +1605,7 @@ function startMemorizeMode(){
     revealed: false, userInput: '', verifying: false, verifyResult: null, lastFeedback: null,
     loadingContent: false, content: null, chosenIndex: null
   };
-  showToast('Modo memorizar: 5 exercícios focados só nesse termo.');
+  showToast(`Modo memorizar: ${queue.length} exercícios focados só nesse termo.`);
   render();
   prefetchSessionContent(state.session).then(() => loadContentForCurrent());
 }
@@ -1594,6 +1633,33 @@ function dontKnowOpen(){
     state.previousSession.gradeChosen = null;
     state.previousSession.autoMatched = false;
   }
+}
+function dontKnowLang(){
+  const s = state.session; const card = getCurrentCard();
+  if(!s || !card || s.mode !== 'lang-mixed' || s.revealed || s.memorizeMode) return;
+  scheduleCard(card, false);
+  awardPoints(card, false, getCurrentExType());
+  requeueOnWrong(); // essa pergunta volta a aparecer mais à frente na sessão normal
+  saveData();
+  startMemorizeMode();
+  // avança a sessão pausada além dessa pergunta, pra não repetir ela de novo assim que voltar
+  if(state.previousSession){
+    state.previousSession.index++;
+    state.previousSession.revealed = false;
+    state.previousSession.userInput = '';
+    state.previousSession.verifyResult = null;
+    state.previousSession.lastFeedback = null;
+    state.previousSession.content = null;
+    state.previousSession.chosenIndex = null;
+    state.previousSession.checkedIndexes = null;
+    state.previousSession.partialCorrect = false;
+    state.previousSession.loadingContent = false;
+  }
+}
+function renderDontKnowLangLink(){
+  return `<div style="text-align:center; margin-top:-4px;">
+    <a href="#" style="font-size:11.5px; color:var(--text-faint); text-decoration:underline;" onclick="event.preventDefault(); dontKnowLang();">não sei <span style="opacity:0.6;">(Esc)</span></a>
+  </div>`;
 }
 function startCopyMemorize(){
   const s = state.session; if(!s) return;
@@ -1688,6 +1754,31 @@ async function submitLanguageAnswer(){
     render();
     return;
   }
+  if(exType === 'translateOther'){
+    // verificação 100% local — precisa bater com alguma tradução aceita QUE NÃO seja a excluída
+    const typedNorm = normalizeAnswer(s.userInput.trim());
+    const excludedNorm = normalizeAnswer(s.content.excluded);
+    const correct = typedNorm !== excludedNorm && s.content.validOptions.some(o => normalizeAnswer(o) === typedNorm);
+    const explanation = correct ? '' : `Não vale "${s.content.excluded}" — outra(s) tradução(ões) aceita(s): ${s.content.validOptions.join(', ')}`;
+    s.verifyResult = { correct, explanation };
+    scheduleCard(card, correct);
+    if(correct){ s.correct++; } else { requeueOnWrong(); }
+    awardPoints(card, correct, 'translateOther');
+    s.lastFeedback = correct;
+    s.revealed = true;
+    saveData();
+    render();
+    return;
+  }
+  if(exType === 'copy-translation'){
+    // só copiar certinho pra fixar — não afeta a repetição espaçada, igual o copy-memorize do baralho padrão
+    const correct = normalizeAnswer(s.userInput.trim()) === normalizeAnswer(s.content.targetTranslation);
+    s.verifyResult = { correct, explanation: correct ? '' : `Devia ser: ${s.content.targetTranslation}` };
+    s.lastFeedback = correct;
+    s.revealed = true;
+    render();
+    return;
+  }
   s.verifying = true; render();
   try{
     let result;
@@ -1707,11 +1798,33 @@ async function submitLanguageAnswer(){
 }
 function answerLangMC(optionIndex){
   const s = state.session; const card = getCurrentCard();
-  const correct = optionIndex === s.content.correctIndex;
-  scheduleCard(card, correct);
-  if(correct){ s.correct++; } else { requeueOnWrong(); }
-  awardPoints(card, correct, 'langMC');
-  s.chosenIndex = optionIndex; s.revealed = true; s.lastFeedback = correct;
+  if(s.revealed) return;
+  const correctIdx = s.content.correctIndexes || [];
+  s.checkedIndexes = s.checkedIndexes || [];
+  if(s.checkedIndexes.includes(optionIndex)) return;
+  const isCorrectPick = correctIdx.includes(optionIndex);
+  if(!isCorrectPick){
+    // marcou uma errada: encerra a questão como errada, mesmo se já tinha achado uma certa antes
+    s.chosenIndex = optionIndex; s.revealed = true; s.lastFeedback = false; s.partialCorrect = false;
+    scheduleCard(card, false);
+    requeueOnWrong();
+    awardPoints(card, false, 'langMC');
+    saveData();
+    render();
+    return;
+  }
+  s.checkedIndexes.push(optionIndex);
+  if(s.checkedIndexes.length < correctIdx.length){
+    // achou uma certa, mas ainda tem outra(s) — não revela nem avança ainda
+    s.partialCorrect = true;
+    render();
+    return;
+  }
+  // achou todas as opções certas
+  s.revealed = true; s.lastFeedback = true; s.partialCorrect = false;
+  scheduleCard(card, true);
+  s.correct++;
+  awardPoints(card, true, 'langMC');
   saveData();
   render();
 }
@@ -1813,6 +1926,7 @@ function nextCard(){
   s.index++;
   s.revealed = false; s.userInput=''; s.options=null; s.chosen=null; s.verifyResult=null; s.lastFeedback=null;
   s.content=null; s.chosenIndex=null; s.graded=false; s.gradeChosen=null; s.copyMismatch=false; s.autoMatched=false; s.lastCopyAttempt='';
+  s.checkedIndexes=null; s.partialCorrect=false;
   s.cardStart = Date.now();
   if(s.index >= s.queue.length){
     if(s.memorizeMode){ endMemorizeMode(); return; }
@@ -1914,6 +2028,8 @@ function focusStudyInput(){
     if(exType === 'translate') id = 'lang-input';
     else if(exType === 'reverseTranslate') id = 'lang-input';
     else if(exType === 'write' && s.content && !s.content.error && !s.loadingContent) id = 'lang-input';
+    else if(exType === 'translateOther') id = 'lang-input';
+    else if(exType === 'copy-translation') id = 'lang-input';
   }
   if(!id) return;
   const el = document.getElementById(id);
@@ -2316,6 +2432,8 @@ function renderStudyView(){
     else if(exType === 'reverseTranslate') body = renderReverseTranslateExercise(s, card);
     else if(exType === 'write') body = renderWriteExercise(s, card);
     else if(exType === 'mc') body = renderLangMCExercise(s, card);
+    else if(exType === 'translateOther') body = renderTranslateOtherExercise(s, card);
+    else if(exType === 'copy-translation') body = renderCopyTranslationExercise(s, card);
   }
 
   const exLabel = s.mode === 'lang-mixed' ? ` · ${EXERCISE_LABELS[getCurrentExType()]}` : '';
@@ -2352,7 +2470,7 @@ function renderStudyView(){
     ` : ''}
     ${s.memorizeMode && s.mode === 'lang-mixed' ? `
     <div style="background:rgba(125,169,250,0.12); border:1px solid rgba(125,169,250,0.4); border-radius:10px; padding:8px 14px; margin-bottom:14px; font-size:12px; color:#7DA9FA; text-align:center;">
-      🎯 Modo memorizar — a sessão normal retoma de onde parou ao terminar estes 5 exercícios
+      🎯 Modo memorizar — a sessão normal retoma de onde parou ao terminar estes ${s.queue.length} exercícios
     </div>
     ` : ''}
     ${s.mode === 'copy-memorize' ? `
@@ -2362,7 +2480,7 @@ function renderStudyView(){
     ` : ''}
     <div class="study-card">
       <div class="eyebrow" style="display:flex; justify-content:space-between; align-items:center;">
-        <span>Cartão ${s.index+1} de ${s.queue.length}${exLabel}</span>
+        <span>Cartão ${s.index+1} de ${s.queue.length}${exLabel}${(s.mode==='lang-mixed' && getCardTranslations(card).length >= 2) ? ` · <span style="opacity:0.7;">${getCardTranslations(card).length} respostas possíveis</span>` : ''}</span>
         <div style="display:flex; gap:4px;">
           <button class="icon-btn" style="width:26px; height:26px; font-size:13px; ${card.learned ? 'color:var(--success);' : 'opacity:0.4;'}" title="${card.learned ? 'Desmarcar como aprendido' : 'Marcar como aprendido (some das próximas sessões)'}" onclick="toggleLearnedCurrentCard()">✅</button>
           <button class="icon-btn" style="width:26px; height:26px; font-size:13px; ${card.priority ? 'color:#F5A623;' : 'opacity:0.4;'}" title="${card.priority ? 'Remover prioridade' : 'Marcar prioridade (aparece mais vezes)'}" onclick="togglePriorityCurrentCard()">🔥</button>
@@ -2551,6 +2669,7 @@ function renderWriteExercise(s, card){
         </button>
       </div>
       ${s.verifying ? `<div class="loading-line" style="justify-content:center;"><div class="spinner"></div> Conferindo sua resposta...</div>` : ''}
+      ${renderDontKnowLangLink()}
     </div>`;
   }
   const r = s.verifyResult;
@@ -2572,24 +2691,78 @@ function renderLangMCExercise(s, card){
     }
     return langLoadError(s);
   }
+  const correctIdx = s.content.correctIndexes || [];
+  const checked = s.checkedIndexes || [];
+  const multi = correctIdx.length > 1;
   return `
   <div class="answer-zone">
     <div class="answer-box" style="text-align:left;">${escapeHtml(s.content.prompt)}</div>
+    ${(multi && !s.revealed) ? `<p style="color:var(--text-muted); font-size:12px; text-align:center; margin:-4px 0 0 0;">Esse termo tem mais de uma tradução certa — marque todas antes de avançar.</p>` : ''}
     <div class="options-grid">
       ${s.content.options.map((opt, i) => {
         let cls = '';
+        const isChecked = checked.includes(i);
         if(s.revealed){
-          if(i === s.content.correctIndex) cls = 'correct';
-          else if(i === s.chosenIndex) cls = 'wrong';
+          if(correctIdx.includes(i)) cls = 'correct';
+          else if(i === s.chosenIndex || isChecked) cls = 'wrong';
+        } else if(isChecked){
+          cls = 'correct';
         }
-        return `<button class="option-btn ${cls}" ${s.revealed?'disabled':''} onclick="answerLangMC(${i})"><span class="opt-num">${i+1}</span>${escapeHtml(opt)}</button>`;
+        return `<button class="option-btn ${cls}" ${(s.revealed||isChecked)?'disabled':''} onclick="answerLangMC(${i})"><span class="opt-num">${isChecked && !s.revealed ? '✓' : i+1}</span>${escapeHtml(opt)}</button>`;
       }).join('')}
     </div>
+    ${(!s.revealed && s.partialCorrect) ? `<div class="feedback-banner ok">☑ Essa foi! Ainda falta marcar ${correctIdx.length - checked.length} opção(ões) certa(s).</div>` : ''}
+    ${!s.revealed ? renderDontKnowLangLink() : ''}
     ${s.revealed ? `
       <div class="feedback-banner ${s.lastFeedback?'ok':'no'}">${s.lastFeedback? '✓ Isso aí!' : '✕ Não foi dessa vez.'}</div>
       ${renderPointsBadge(s)}
       <div class="action-row"><button class="primary-btn" onclick="nextCard()">Próximo →</button></div>
     ` : ''}
+  </div>`;
+}
+function renderTranslateOtherExercise(s, card){
+  if(!s.content) return `<div class="answer-zone" style="align-items:center;"><div class="loading-line"><div class="spinner"></div> Carregando...</div></div>`;
+  if(!s.revealed){
+    return `
+    <div class="answer-zone">
+      <p style="color:var(--text-muted); font-size:13.5px; text-align:center;">Digite uma tradução diferente de "${escapeHtml(s.content.excluded)}".</p>
+      <input type="text" id="lang-input" placeholder="Tradução..." value="${escapeHtml(s.userInput||'')}" autofocus autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" onkeyup="if(event.key==='Enter') submitFromInput('lang-input'); else state.session.userInput=this.value">
+      <div class="action-row">
+        <button class="primary-btn" onclick="submitFromInput('lang-input')">Verificar</button>
+      </div>
+      ${renderDontKnowLangLink()}
+    </div>`;
+  }
+  const r = s.verifyResult;
+  return `
+  <div class="answer-zone">
+    <div class="reveal-zone">
+      <div class="feedback-banner ${r.correct?'ok':'no'}">${r.correct? '✓ Correto' : `✕ ${escapeHtml(r.explanation)}`}</div>
+      ${renderPointsBadge(s)}
+      <div class="action-row"><button class="primary-btn" onclick="nextCard()">Próximo →</button></div>
+    </div>
+  </div>`;
+}
+function renderCopyTranslationExercise(s, card){
+  if(!s.content) return `<div class="answer-zone" style="align-items:center;"><div class="loading-line"><div class="spinner"></div> Carregando...</div></div>`;
+  if(!s.revealed){
+    return `
+    <div class="answer-zone">
+      <p style="color:var(--text-muted); font-size:12.5px; text-align:center;">Copie a tradução abaixo, digitando ela certinho, pra fixar:</p>
+      <div class="answer-box">${escapeHtml(s.content.targetTranslation)}</div>
+      <input type="text" id="lang-input" placeholder="Digite a tradução..." value="${escapeHtml(s.userInput||'')}" autofocus autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" onkeyup="if(event.key==='Enter') submitFromInput('lang-input'); else state.session.userInput=this.value">
+      <div class="action-row">
+        <button class="primary-btn" onclick="submitFromInput('lang-input')">Verificar</button>
+      </div>
+    </div>`;
+  }
+  const r = s.verifyResult;
+  return `
+  <div class="answer-zone">
+    <div class="reveal-zone">
+      <div class="feedback-banner ${r.correct?'ok':'no'}">${r.correct? '✓ Copiado certinho!' : `✕ ${escapeHtml(r.explanation)}`}</div>
+      <div class="action-row"><button class="primary-btn" onclick="nextCard()">Próximo →</button></div>
+    </div>
   </div>`;
 }
 
@@ -2602,6 +2775,7 @@ function renderTranslateExercise(s, card){
       <div class="action-row">
         <button class="primary-btn" onclick="submitFromInput('lang-input')">Verificar</button>
       </div>
+      ${renderDontKnowLangLink()}
     </div>`;
   }
   const r = s.verifyResult;
@@ -2623,6 +2797,7 @@ function renderReverseTranslateExercise(s, card){
       <div class="action-row">
         <button class="primary-btn" onclick="submitFromInput('lang-input')">Verificar</button>
       </div>
+      ${renderDontKnowLangLink()}
     </div>`;
   }
   const r = s.verifyResult;
@@ -2824,7 +2999,7 @@ document.addEventListener('keydown', function(e){
   }
 });
 
-/* Esc aciona "não sei" nas perguntas abertas, antes de revelar a resposta. */
+/* Esc aciona "não sei" nas perguntas abertas e nos exercícios de idioma, antes de revelar a resposta. */
 document.addEventListener('keydown', function(e){
   if(e.key !== 'Escape') return;
   if(state.view !== 'study' || !state.session) return;
@@ -2832,6 +3007,9 @@ document.addEventListener('keydown', function(e){
   if(s.mode === 'open' && !s.revealed && !s.verifying){
     e.preventDefault();
     dontKnowOpen();
+  } else if(s.mode === 'lang-mixed' && !s.revealed && !s.memorizeMode){
+    e.preventDefault();
+    dontKnowLang();
   }
 });
 
