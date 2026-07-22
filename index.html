@@ -5,18 +5,19 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Recall — Flashcards com repetição espaçada</title>
 <meta name="description" content="Flashcards com repetição espaçada (SM-2), múltipla escolha, pergunta aberta e modo idioma.">
-<meta name="theme-color" content="#14162B">
+<meta name="theme-color" content="#14162B" id="theme-color-meta">
 <link rel="manifest" href="manifest.json">
 <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" id="status-bar-style-meta">
 <meta name="apple-mobile-web-app-title" content="Recall">
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
 <style>
   :root{
+    /* tema escuro (padrão) */
     --bg:#14162B;
     --bg-2:#0F1123;
     --surface:#1B1E3B;
@@ -24,6 +25,9 @@
     --accent:#F5A623;
     --accent-soft:rgba(245,166,35,0.16);
     --accent-dim:rgba(245,166,35,0.55);
+    --accent-dark:#C97D1B;
+    --glow:rgba(245,166,35,0.10);
+    --brand-text:#1B1200;
     --success:#6EE7B7;
     --success-soft:rgba(110,231,183,0.14);
     --error:#FB7185;
@@ -33,16 +37,38 @@
     --text-faint:#5C6088;
     --border:rgba(244,241,234,0.09);
   }
+  :root[data-recall-theme="light"]{
+    /* tema claro: Harmonia Botânica & Nude */
+    --bg:#FAF8F5;
+    --bg-2:#F3EFE0;
+    --surface:#FFFFFF;
+    --surface-2:#F3EFE0;
+    --accent:#B88E74;
+    --accent-soft:rgba(184,142,116,0.16);
+    --accent-dim:rgba(184,142,116,0.55);
+    --accent-dark:#4A3525;
+    --glow:rgba(178,200,186,0.22);
+    --brand-text:#1B1200;
+    --success:#B2C8BA;
+    --success-soft:rgba(120,153,132,0.22);
+    --error:#C4636E;
+    --error-soft:rgba(196,99,110,0.12);
+    --text:#4A3525;
+    --text-muted:#8A7460;
+    --text-faint:rgba(74,53,37,0.45);
+    --border:rgba(74,53,37,0.12);
+  }
   *{box-sizing:border-box;}
   html,body{margin:0;padding:0;height:100%;}
   body{
     background:
-      radial-gradient(ellipse 900px 500px at 15% -10%, rgba(245,166,35,0.10), transparent 60%),
+      radial-gradient(ellipse 900px 500px at 15% -10%, var(--glow), transparent 60%),
       var(--bg);
     color:var(--text);
     font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
     min-height:100vh;
     -webkit-font-smoothing:antialiased;
+    transition:background-color 0.2s ease, color 0.2s ease;
   }
   h1,h2,h3,.display{ font-family:Georgia,'Iowan Old Style','Palatino Linotype','Book Antiqua',Palatino,serif; letter-spacing:-0.01em; }
   .mono{ font-family:ui-monospace,'SF Mono','Cascadia Code','Roboto Mono',Consolas,'Courier New',monospace; }
@@ -61,10 +87,10 @@
   .brand{ display:flex; align-items:center; gap:10px; padding:0 2px; }
   .brand-mark{
     width:34px; height:34px; border-radius:9px;
-    background:linear-gradient(155deg, var(--accent), #C97D1B);
+    background:linear-gradient(155deg, var(--accent), var(--accent-dark));
     display:flex; align-items:center; justify-content:center;
-    font-family:Georgia,'Iowan Old Style','Palatino Linotype','Book Antiqua',Palatino,serif; font-weight:700; color:#1B1200; font-size:18px;
-    box-shadow:0 0 22px rgba(245,166,35,0.35);
+    font-family:Georgia,'Iowan Old Style','Palatino Linotype','Book Antiqua',Palatino,serif; font-weight:700; color:var(--brand-text); font-size:18px;
+    box-shadow:0 0 22px var(--accent-soft);
   }
   .brand h1{ font-size:20px; margin:0; font-weight:600; }
   .brand span{ display:block; font-size:11px; color:var(--text-faint); margin-top:1px; letter-spacing:0.04em; }
@@ -75,7 +101,7 @@
     border-radius:10px; padding:11px 14px; font-size:13.5px; font-weight:600;
     display:flex; align-items:center; gap:8px; transition:all .15s ease;
   }
-  .new-deck-btn:hover{ background:var(--accent); color:#1B1200; }
+  .new-deck-btn:hover{ background:var(--accent); color:var(--brand-text); }
 
   .deck-list{ display:flex; flex-direction:column; gap:4px; overflow-y:auto; flex:1; }
   .deck-item{
@@ -90,7 +116,7 @@
   .deck-dot{ width:9px; height:9px; border-radius:50%; flex-shrink:0; }
   .deck-item-name{ flex:1; font-size:13.5px; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .due-badge{
-    font-size:10.5px; font-weight:700; background:var(--accent); color:#1B1200;
+    font-size:10.5px; font-weight:700; background:var(--accent); color:var(--brand-text);
     padding:2px 7px; border-radius:20px; font-family:ui-monospace,'SF Mono','Cascadia Code','Roboto Mono',Consolas,'Courier New',monospace;
   }
   .sidebar-foot{ font-size:11px; color:var(--text-faint); padding:0 2px; line-height:1.5; }
@@ -142,7 +168,7 @@
   }
   input[type=text]:focus, textarea:focus, select:focus{ outline:none; border-color:var(--accent-dim); }
   .primary-btn{
-    background:var(--accent); color:#1B1200; border:none; border-radius:9px;
+    background:var(--accent); color:var(--brand-text); border:none; border-radius:9px;
     padding:10px 18px; font-weight:700; font-size:13.5px; transition:all .15s ease;
   }
   .primary-btn:hover{ filter:brightness(1.08); transform:translateY(-1px); }
@@ -302,6 +328,19 @@
     .mobile-back-btn{ display:inline-flex; }
   }
 </style>
+<script>
+// aplica o tema salvo o quanto antes, antes do resto da página desenhar,
+// pra não piscar o tema errado por uma fração de segundo.
+(function(){
+  try{
+    if(localStorage.getItem('recall_theme') === 'light'){
+      document.documentElement.setAttribute('data-recall-theme', 'light');
+      var tc = document.getElementById('theme-color-meta'); if(tc) tc.content = '#FAF8F5';
+      var sb = document.getElementById('status-bar-style-meta'); if(sb) sb.content = 'default';
+    }
+  }catch(e){}
+})();
+</script>
 </head>
 <body>
 <div id="app"></div>
@@ -824,7 +863,7 @@ function renderImageCardForm(deck){
     <div style="position:relative; max-width:420px; margin:0 auto; background:var(--bg-2); border-radius:12px;">
       <img src="${escapeHtml(url)}" style="width:100%; display:block; border-radius:12px; cursor:crosshair;" onclick="startNewPinAt(event)" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
       <div style="display:none; padding:36px 16px; text-align:center; color:var(--error); font-size:13px;">⚠ Não foi possível carregar essa imagem. Confira o link.</div>
-      ${pins.map((p,i) => `<div title="${escapeHtml(p.front)}" style="position:absolute; left:${p.pinX}%; top:${p.pinY}%; transform:translate(-50%,-50%); width:22px; height:22px; border-radius:50%; background:var(--accent); color:#1B1200; font-size:11px; font-weight:700; display:flex; align-items:center; justify-content:center; border:2px solid #1B1200; pointer-events:none;">${i+1}</div>`).join('')}
+      ${pins.map((p,i) => `<div title="${escapeHtml(p.front)}" style="position:absolute; left:${p.pinX}%; top:${p.pinY}%; transform:translate(-50%,-50%); width:22px; height:22px; border-radius:50%; background:var(--accent); color:var(--brand-text); font-size:11px; font-weight:700; display:flex; align-items:center; justify-content:center; border:2px solid var(--brand-text); pointer-events:none;">${i+1}</div>`).join('')}
       ${state.newPinPos ? `<div style="position:absolute; left:${state.newPinPos.x}%; top:${state.newPinPos.y}%; transform:translate(-50%,-50%); width:22px; height:22px; border-radius:50%; background:var(--success); border:2px solid #06210F; pointer-events:none;"></div>` : ''}
     </div>
     ${state.newPinPos ? `
@@ -1186,6 +1225,20 @@ function handleImportFile(deckId, filename, content){
 }
 
 /* ============ AI CALLS ============ */
+/* ============ TEMA (claro/escuro) ============ */
+function getTheme(){ return localStorage.getItem('recall_theme') || 'dark'; }
+function applyTheme(theme){
+  document.documentElement.setAttribute('data-recall-theme', theme === 'light' ? 'light' : 'dark');
+  const tc = document.getElementById('theme-color-meta'); if(tc) tc.content = theme==='light' ? '#FAF8F5' : '#14162B';
+  const sb = document.getElementById('status-bar-style-meta'); if(sb) sb.content = theme==='light' ? 'default' : 'black-translucent';
+}
+function toggleTheme(){
+  const next = getTheme() === 'light' ? 'dark' : 'light';
+  localStorage.setItem('recall_theme', next);
+  applyTheme(next);
+  render(); // atualiza o texto do link no rodapé
+}
+
 function getApiKey(){ return localStorage.getItem('recall_gemini_api_key') || ''; }
 function setApiKey(key){ localStorage.setItem('recall_gemini_api_key', (key||'').trim()); }
 function getBooksApiKey(){ return localStorage.getItem('recall_books_api_key') || ''; }
@@ -2642,7 +2695,7 @@ function endSessionEarly(){
 /* ============ RENDER ============ */
 function renderPointsBadge(s){
   if(!s.revealed || !s.lastFeedback || !s.lastEarned) return '';
-  return `<div style="margin-top:6px; font-size:12px; color:#6EE7B7; text-align:center; font-weight:600;">+${s.lastEarned} pontos${s.lastBonusMsg ? ` · 🎉 ${escapeHtml(s.lastBonusMsg)}` : ''}</div>`;
+  return `<div style="margin-top:6px; font-size:12px; color:var(--success); text-align:center; font-weight:600;">+${s.lastEarned} pontos${s.lastBonusMsg ? ` · 🎉 ${escapeHtml(s.lastBonusMsg)}` : ''}</div>`;
 }
 function fmtTime(ms){
   const s = Math.floor(ms/1000);
@@ -2774,9 +2827,10 @@ function renderSidebar(){
       <br><a href="#" style="color:var(--text-muted); text-decoration:underline;" onclick="event.preventDefault(); saveToFileSystem();">${state.fileHandle ? '💾 Sincronizando com arquivo local ✓' : '💾 Salvar em arquivo local'}</a>
       &nbsp;·&nbsp;
       <a href="#" style="color:var(--text-muted); text-decoration:underline;" onclick="event.preventDefault(); openFromFileSystem();">📂 Abrir arquivo local</a>
-      ${state.pendingFileHandle ? `<br><a href="#" style="color:#F5A623; text-decoration:underline;" onclick="event.preventDefault(); reconnectFileHandle();">🔌 Reconectar ao arquivo local usado antes</a>` : ''}
+      ${state.pendingFileHandle ? `<br><a href="#" style="color:var(--accent); text-decoration:underline;" onclick="event.preventDefault(); reconnectFileHandle();">🔌 Reconectar ao arquivo local usado antes</a>` : ''}
       ` : ''}
       <br><a href="#" style="color:var(--text-muted); text-decoration:underline;" onclick="event.preventDefault(); openApiKeyModal();">${getApiKey() ? 'Chave de API do Gemini configurada ✓' : '⚠ Configurar chave de API do Gemini'}</a>
+      <br><a href="#" style="color:var(--text-muted); text-decoration:underline;" onclick="event.preventDefault(); toggleTheme();">${getTheme()==='light' ? '🌙 Usar tema escuro' : '☀️ Usar tema claro'}</a>
     </div>
   </div>`;
 }
@@ -2801,7 +2855,7 @@ function renderMain(){
       <div style="font-size:40px;">🕯️</div>
       <h2>Sua mesa de estudos</h2>
       <p>Crie um baralho na barra lateral, adicione perguntas e respostas, e comece a estudar com repetição espaçada. Seu progresso fica salvo automaticamente.</p>
-      ${(state.stats && state.stats.totalPoints > 0) ? `<div style="margin-top:18px; font-size:14px; color:#6EE7B7; font-weight:600;">🏆 ${state.stats.totalPoints} pontos acumulados no total</div>` : ''}
+      ${(state.stats && state.stats.totalPoints > 0) ? `<div style="margin-top:18px; font-size:14px; color:var(--success); font-weight:600;">🏆 ${state.stats.totalPoints} pontos acumulados no total</div>` : ''}
     </div>`;
   }
   if(state.view === 'deck') return renderDeckView();
@@ -3105,9 +3159,9 @@ function renderCardsTab(deck){
   </div>
   <div style="display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap; align-items:center;">
     <input type="text" id="card-search-input" placeholder="Buscar por termo/pergunta ou resposta..." value="${escapeHtml(state.cardSearch||'')}" style="flex:1; min-width:200px; padding:9px 12px; font-size:13px;" oninput="state.cardSearch=this.value; render();" onfocus="state._searchFocused=true;" onblur="state._searchFocused=false;">
-    <button type="button" class="ghost-btn" style="padding:9px 14px; font-size:12.5px; ${flaggedOnly ? 'border-color:#F5A623; color:#F5A623;' : ''}" onclick="state.cardFilterFlagged=!state.cardFilterFlagged; render();">🚩 Só sinalizadas${flaggedCount ? ` (${flaggedCount})` : ''}</button>
+    <button type="button" class="ghost-btn" style="padding:9px 14px; font-size:12.5px; ${flaggedOnly ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="state.cardFilterFlagged=!state.cardFilterFlagged; render();">🚩 Só sinalizadas${flaggedCount ? ` (${flaggedCount})` : ''}</button>
     <button type="button" class="ghost-btn" style="padding:9px 14px; font-size:12.5px; ${learnedOnly ? 'border-color:var(--success); color:var(--success);' : ''}" onclick="state.cardFilterLearned=!state.cardFilterLearned; render();">✅ Só aprendidas${learnedCount ? ` (${learnedCount})` : ''}</button>
-    <button type="button" class="ghost-btn" style="padding:9px 14px; font-size:12.5px; ${priorityOnly ? 'border-color:#F5A623; color:#F5A623;' : ''}" onclick="state.cardFilterPriority=!state.cardFilterPriority; render();">🔥 Só prioritárias${priorityCount ? ` (${priorityCount})` : ''}</button>
+    <button type="button" class="ghost-btn" style="padding:9px 14px; font-size:12.5px; ${priorityOnly ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="state.cardFilterPriority=!state.cardFilterPriority; render();">🔥 Só prioritárias${priorityCount ? ` (${priorityCount})` : ''}</button>
   </div>
   <div class="cards-grid">
     ${allCards.length===0 ? `<div style="color:var(--text-faint); font-size:13px; padding:10px 2px;">Nenhum cartão ainda — adicione o primeiro acima.</div>` : ''}
@@ -3139,8 +3193,8 @@ function renderCardsTab(deck){
         </div>`;
       }
       const learnedBtn = `<button class="icon-btn" style="width:28px; height:28px; font-size:13px; ${c.learned ? 'color:var(--success);' : 'opacity:0.4;'}" title="${c.learned ? 'Desmarcar como aprendido' : 'Marcar como aprendido (some das próximas sessões)'}" onclick="toggleCardLearned('${deck.id}','${c.id}')">✅</button>`;
-      const priorityBtn = `<button class="icon-btn" style="width:28px; height:28px; font-size:13px; ${c.priority ? 'color:#F5A623;' : 'opacity:0.4;'}" title="${c.priority ? 'Remover prioridade' : 'Marcar prioridade (aparece mais vezes)'}" onclick="toggleCardPriority('${deck.id}','${c.id}')">🔥</button>`;
-      const flagBtn = `<button class="icon-btn" style="width:28px; height:28px; font-size:13px; ${c.flagged ? 'color:#F5A623;' : 'opacity:0.4;'}" title="${c.flagged ? 'Remover sinalização' : 'Sinalizar para revisar depois'}" onclick="toggleCardFlag('${deck.id}','${c.id}')">🚩</button>`;
+      const priorityBtn = `<button class="icon-btn" style="width:28px; height:28px; font-size:13px; ${c.priority ? 'color:var(--accent);' : 'opacity:0.4;'}" title="${c.priority ? 'Remover prioridade' : 'Marcar prioridade (aparece mais vezes)'}" onclick="toggleCardPriority('${deck.id}','${c.id}')">🔥</button>`;
+      const flagBtn = `<button class="icon-btn" style="width:28px; height:28px; font-size:13px; ${c.flagged ? 'color:var(--accent);' : 'opacity:0.4;'}" title="${c.flagged ? 'Remover sinalização' : 'Sinalizar para revisar depois'}" onclick="toggleCardFlag('${deck.id}','${c.id}')">🚩</button>`;
       const stateDot = renderStateDot(c);
       const rowStyle = c.learned ? 'style="background:rgba(110,231,183,0.06); border-color:rgba(110,231,183,0.3);"' : c.flagged ? 'style="background:rgba(245,166,35,0.07); border-color:rgba(245,166,35,0.35);"' : '';
       return isLanguage ? `
@@ -3244,7 +3298,7 @@ function renderStudyPicker(deck){
         `).join('')}
       </div>
       ${enabled.length === 0 ? `<p style="font-size:11.5px; color:var(--error); margin-top:8px;">Ative pelo menos 1 tipo de exercício pra estudar.</p>` : ''}
-      ${usesAI && carryCount > 0 ? `<p style="font-size:11.5px; color:#F5A623; margin-top:8px;">🔁 ${carryCount} exercício(s) pendente(s) da sessão anterior serão priorizados agora.</p>` : ''}
+      ${usesAI && carryCount > 0 ? `<p style="font-size:11.5px; color:var(--accent); margin-top:8px;">🔁 ${carryCount} exercício(s) pendente(s) da sessão anterior serão priorizados agora.</p>` : ''}
     </div>
     <div class="mode-grid" style="grid-template-columns:1fr;">
       <button class="mode-card" ${enabled.length===0?'disabled style="opacity:0.5; cursor:not-allowed;"':''} onclick="${enabled.length>0 ? `startLanguageSession('${deck.id}')` : ''}">
@@ -3291,7 +3345,7 @@ function renderStudyPicker(deck){
       ` : ''}
     </div>
     ${enabledStd.length === 0 ? `<p style="font-size:11.5px; color:var(--error); margin-top:8px;">Ative pelo menos 1 tipo de exercício pra estudar.</p>` : ''}
-    ${aiOn && carryStdCount > 0 ? `<p style="font-size:11.5px; color:#F5A623; margin-top:8px;">🔁 ${carryStdCount} exercício(s) pendente(s) da sessão anterior serão priorizados agora.</p>` : ''}
+    ${aiOn && carryStdCount > 0 ? `<p style="font-size:11.5px; color:var(--accent); margin-top:8px;">🔁 ${carryStdCount} exercício(s) pendente(s) da sessão anterior serão priorizados agora.</p>` : ''}
   </div>
   <div class="mode-grid" style="grid-template-columns:1fr;">
     <button class="mode-card" ${enabledStd.length===0?'disabled style="opacity:0.5; cursor:not-allowed;"':''} onclick="${enabledStd.length>0 ? `startMixedStandardSession('${deck.id}')` : ''}">
@@ -3388,14 +3442,14 @@ function renderStudyView(){
         </div>
       </div>
       <div class="session-badges" style="display:flex; align-items:center; gap:10px;">
-        ${(s.streak||0) >= 2 ? `<div style="font-size:12.5px; color:#F5A623; font-weight:600; white-space:nowrap;">🔥 ${s.streak}</div>` : ''}
-        <div style="font-size:12.5px; color:#6EE7B7; font-weight:600; white-space:nowrap;">🏆 ${s.points||0} pts</div>
+        ${(s.streak||0) >= 2 ? `<div style="font-size:12.5px; color:var(--accent); font-weight:600; white-space:nowrap;">🔥 ${s.streak}</div>` : ''}
+        <div style="font-size:12.5px; color:var(--success); font-weight:600; white-space:nowrap;">🏆 ${s.points||0} pts</div>
         <div class="timer mono">${fmtTime(elapsed)}</div>
       </div>
     </div>
     ${(!s.memorizeMode && s.mode !== 'copy-memorize' && (card.missStreak||0) >= 3) ? `
     <div style="background:rgba(245,166,35,0.12); border:1px solid rgba(245,166,35,0.4); border-radius:10px; padding:10px 14px; margin-bottom:14px; display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
-      <span style="font-size:12.5px; color:#F5A623;">Você errou essa questão 3 vezes seguidas.</span>
+      <span style="font-size:12.5px; color:var(--accent);">Você errou essa questão 3 vezes seguidas.</span>
       <button class="primary-btn" style="padding:8px 14px; font-size:12.5px; white-space:nowrap;" onclick="${s.mode === 'lang-mixed' ? 'startMemorizeMode()' : 'startCopyMemorize()'}">🎯 Memorizar</button>
     </div>
     ` : ''}
@@ -3415,8 +3469,8 @@ function renderStudyView(){
         <div style="display:flex; gap:4px;">
           ${card.note ? `<button class="icon-btn" style="width:26px; height:26px; font-size:13px; ${s.showNote ? 'color:#F5D76E;' : 'opacity:0.5;'}" title="Ver nota (L)" onclick="toggleNoteView()">💡</button>` : ''}
           <button class="icon-btn" style="width:26px; height:26px; font-size:13px; ${card.learned ? 'color:var(--success);' : 'opacity:0.4;'}" title="${card.learned ? 'Desmarcar como aprendido' : 'Marcar como aprendido (some das próximas sessões)'}" onclick="toggleLearnedCurrentCard()">✅</button>
-          <button class="icon-btn" style="width:26px; height:26px; font-size:13px; ${card.priority ? 'color:#F5A623;' : 'opacity:0.4;'}" title="${card.priority ? 'Remover prioridade' : 'Marcar prioridade (aparece mais vezes)'}" onclick="togglePriorityCurrentCard()">🔥</button>
-          <button class="icon-btn" style="width:26px; height:26px; font-size:13px; ${card.flagged ? 'color:#F5A623;' : 'opacity:0.4;'}" title="${card.flagged ? 'Remover sinalização' : 'Sinalizar esta pergunta para editar/revisar depois'}" onclick="toggleFlagCurrentCard()">🚩</button>
+          <button class="icon-btn" style="width:26px; height:26px; font-size:13px; ${card.priority ? 'color:var(--accent);' : 'opacity:0.4;'}" title="${card.priority ? 'Remover prioridade' : 'Marcar prioridade (aparece mais vezes)'}" onclick="togglePriorityCurrentCard()">🔥</button>
+          <button class="icon-btn" style="width:26px; height:26px; font-size:13px; ${card.flagged ? 'color:var(--accent);' : 'opacity:0.4;'}" title="${card.flagged ? 'Remover sinalização' : 'Sinalizar esta pergunta para editar/revisar depois'}" onclick="toggleFlagCurrentCard()">🚩</button>
         </div>
       </div>
       ${(card.note && s.showNote) ? `<div style="background:var(--accent-soft); border:1px solid var(--accent-dim); border-radius:10px; padding:10px 14px; margin:10px 0 0 0; font-size:13px; color:var(--text); text-align:left; white-space:pre-wrap;">💡 ${escapeHtml(card.note)}</div>` : ''}
@@ -3484,7 +3538,7 @@ function renderImagePinMarkers(card, highlightCurrent){
     const size = (highlightCurrent && isCurrent) ? 24 : 14;
     const bg = (highlightCurrent && isCurrent) ? 'var(--accent)' : 'rgba(244,241,234,0.4)';
     const ring = (highlightCurrent && isCurrent) ? 'box-shadow:0 0 0 6px rgba(245,166,35,0.25);' : '';
-    return `<div style="position:absolute; left:${p.pinX}%; top:${p.pinY}%; transform:translate(-50%,-50%); width:${size}px; height:${size}px; border-radius:50%; background:${bg}; border:2px solid #1B1200; ${ring} pointer-events:none;"></div>`;
+    return `<div style="position:absolute; left:${p.pinX}%; top:${p.pinY}%; transform:translate(-50%,-50%); width:${size}px; height:${size}px; border-radius:50%; background:${bg}; border:2px solid var(--brand-text); ${ring} pointer-events:none;"></div>`;
   }).join('');
 }
 function renderImageBroken(){
@@ -3629,7 +3683,7 @@ function renderOpenGradedMode(s, card, extraTop){
         <p style="color:var(--text-muted); font-size:13.5px; margin-top:4px;">Sua resposta é diferente da referência. Como foi pra você?</p>
         <div style="display:flex; gap:8px; width:100%;">
           <button class="ghost-btn" style="flex:1; border-color:var(--error); color:var(--error);" onclick="answerOpenGraded('hard')">😖 Difícil</button>
-          <button class="ghost-btn" style="flex:1; border-color:#F5A623; color:#F5A623;" onclick="answerOpenGraded('medium')">😐 Médio</button>
+          <button class="ghost-btn" style="flex:1; border-color:var(--accent); color:var(--accent);" onclick="answerOpenGraded('medium')">😐 Médio</button>
           <button class="ghost-btn" style="flex:1; border-color:var(--success); color:var(--success);" onclick="answerOpenGraded('easy')">😌 Fácil</button>
         </div>
       </div>
@@ -3839,7 +3893,7 @@ function renderResultsView(){
       <div class="res-chip"><div class="num mono">${fmtTime(elapsed)}</div><div class="lbl">tempo total</div></div>
       <div class="res-chip"><div class="num mono">${s.correct}/${total}</div><div class="lbl">acertos</div></div>
       <div class="res-chip"><div class="num mono">${avgSec.toFixed(1)}s</div><div class="lbl">média por cartão</div></div>
-      <div class="res-chip"><div class="num mono" style="color:#6EE7B7;">🏆 ${s.points||0}</div><div class="lbl">pontos ganhos</div></div>
+      <div class="res-chip"><div class="num mono" style="color:var(--success);">🏆 ${s.points||0}</div><div class="lbl">pontos ganhos</div></div>
     </div>
     <div class="action-row">
       <button class="ghost-btn" onclick="backToDeck()">Voltar ao baralho</button>
