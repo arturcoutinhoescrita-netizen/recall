@@ -435,6 +435,7 @@ async function loadData(){
           state.decks = d.decks || [];
           state.cards = d.cards || {};
           state.stats = d.stats || { totalPoints: 0 };
+          if(d.geminiApiKey) setApiKey(d.geminiApiKey);
         }
       } else if(hasFirebaseUser()){
         const snap = await db.collection('users').doc(state.firebaseUser.uid).get();
@@ -443,6 +444,9 @@ async function loadData(){
           state.decks = d.decks || [];
           state.cards = d.cards || {};
           state.stats = d.stats || { totalPoints: 0 };
+          // sincroniza a chave do Gemini entre aparelhos logados na mesma conta —
+          // assim não precisa configurar de novo em cada navegador/celular.
+          if(d.geminiApiKey) setApiKey(d.geminiApiKey);
         }
       }
       break; // sucesso, não precisa repetir
@@ -454,7 +458,7 @@ async function loadData(){
   render();
 }
 async function saveData(){
-  const payload = JSON.parse(JSON.stringify({decks: state.decks, cards: state.cards, stats: state.stats}));
+  const payload = JSON.parse(JSON.stringify({decks: state.decks, cards: state.cards, stats: state.stats, geminiApiKey: getApiKey()}));
   for(let attempt=0; attempt<2; attempt++){
     try{
       if(hasClaudeStorage()){
@@ -3311,7 +3315,7 @@ function renderApiKeyModal(m){
     <div class="modal">
       <h3>Chave de API do Gemini</h3>
       <p style="font-size:12.5px; color:var(--text-muted); line-height:1.5; margin:0;">
-        Os recursos de IA (gerar frases, alternativas, verificar respostas) usam o Google Gemini e precisam de uma chave sua pra funcionar. Ela fica salva só no seu navegador, neste computador — nunca é enviada a nenhum lugar além da API do Google. Crie a sua grátis em <strong>aistudio.google.com</strong> (Get API key).
+        Os recursos de IA (gerar frases, alternativas, verificar respostas, cartões a partir de foto) usam o Google Gemini e precisam de uma chave sua pra funcionar. Ela é enviada só à API do Google e fica salva junto com seus baralhos, sincronizada automaticamente com qualquer aparelho onde você fizer login com esta mesma conta — não precisa configurar de novo a cada navegador. Crie a sua grátis em <strong>aistudio.google.com</strong> (Get API key).
       </p>
       <div class="field">
         <label>CHAVE DO GEMINI</label>
@@ -3329,6 +3333,7 @@ function confirmApiKey(){
   setApiKey(key);
   state.modal = null;
   render();
+  saveData(); // sincroniza a chave via Firestore pros outros aparelhos logados na mesma conta
 }
 function renderKindleImportModal(m){
   const totalHighlights = m.books.reduce((sum,b)=>sum+b.highlights.length, 0);
