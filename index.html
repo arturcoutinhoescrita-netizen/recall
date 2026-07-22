@@ -610,13 +610,21 @@ function signOutUser(){
 function epubStoragePath(bookId){
   return `users/${state.firebaseUser.uid}/epubs/${bookId}.epub`;
 }
+// evita ficar "carregando pra sempre" se o Storage não estiver ativado/configurado
+// no projeto Firebase — sem isso, o SDK pode tentar de novo sozinho por minutos.
+function withTimeout(promise, ms, timeoutMessage){
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(timeoutMessage || 'timeout')), ms))
+  ]);
+}
 async function uploadEpubForBook(bookId, file){
   const ref = storage.ref(epubStoragePath(bookId));
-  await ref.put(file);
+  await withTimeout(ref.put(file), 25000, 'upload_timeout');
 }
 async function downloadEpubForBook(bookId){
   const ref = storage.ref(epubStoragePath(bookId));
-  const url = await ref.getDownloadURL();
+  const url = await withTimeout(ref.getDownloadURL(), 15000, 'download_timeout');
   const resp = await fetch(url);
   if(!resp.ok) throw new Error('epub_download_error');
   return await resp.blob();
@@ -2809,14 +2817,35 @@ async function parseEpubFile(blob){
   const author = (authorEl && authorEl.textContent.trim()) || '';
 
   const manifestItems = {};
-  Array.from(opfDoc.querySelectorAll('manifest > item')).forEach(item => {
+  const manifestItemEls = Array.from(opfDoc.querySelectorAll('manifest > item'));
+  manifestItemEls.forEach(item => {
     manifestItems[item.getAttribute('id')] = item.getAttribute('href');
   });
   const spineIds = Array.from(opfDoc.querySelectorAll('spine > itemref')).map(ir => ir.getAttribute('idref'));
   const chapterPaths = spineIds.map(id => manifestItems[id]).filter(Boolean).map(href => opfDir + href);
   if(chapterPaths.length === 0) throw new Error('epub_sem_capitulos');
 
-  return { zip, title, author, chapterPaths };
+  // capa: tenta o padrão EPUB3 (properties="cover-image") e cai pro EPUB2
+  // (<meta name="cover" content="ID"/> apontando pro item no manifesto).
+  let coverHref = null;
+  const coverItemEl = manifestItemEls.find(item => (item.getAttribute('properties')||'').split(/\s+/).includes('cover-image'));
+  if(coverItemEl) coverHref = coverItemEl.getAttribute('href');
+  if(!coverHref){
+    const metaCover = opfDoc.querySelector('metadata > meta[name="cover"]');
+    if(metaCover) coverHref = manifestItems[metaCover.getAttribute('content')];
+  }
+  let coverUrl = '';
+  if(coverHref){
+    const coverFile = zip.file(opfDir + coverHref);
+    if(coverFile){
+      const base64 = await coverFile.async('base64');
+      const ext = coverHref.split('.').pop().toLowerCase();
+      const mime = ext==='png' ? 'image/png' : ext==='svg' ? 'image/svg+xml' : ext==='gif' ? 'image/gif' : 'image/jpeg';
+      coverUrl = `data:${mime};base64,${base64}`;
+    }
+  }
+
+  return { zip, title, author, chapterPaths, coverUrl };
 }
 async function loadEpubChapterParagraphs(bookId, index){
   const runtime = epubRuntime[bookId];
@@ -2859,6 +2888,7 @@ function openEpubUploadPicker(bookId){
         title: parsed.title, author: parsed.author, fileName: file.name,
         chapterCount: parsed.chapterPaths.length, currentChapterIndex: 0, scrollFraction: 0, uploadedAt: Date.now()
       };
+      if(!book.coverUrl && parsed.coverUrl) book.coverUrl = parsed.coverUrl;
       delete book.epubStatus;
       saveData(); render();
       showToast('Livro carregado!');
@@ -2866,7 +2896,44 @@ function openEpubUploadPicker(bookId){
       console.error('Falha ao carregar epub', err);
       delete book.epubStatus;
       render();
-      showToast('Não consegui abrir esse arquivo. Confira se é um .epub válido, sem proteção DRM.', 'error');
+      showToast(epubErrorMessage(err), 'error');
+    }
+  };
+  input.click();
+}
+/* atalho pra quem já tem o arquivo em mãos: cria o livro na hora, preenchendo
+   título/autor/capa a partir do próprio epub, e já abre a leitura. */
+function openEpubUploadForNewBook(){
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.epub,application/epub+zip';
+  input.onchange = async (e) => {
+    const file = e.target.files[0];
+    if(!file) return;
+    const book = makeBook('Carregando...', '');
+    book.epubStatus = 'uploading';
+    state.books.push(book);
+    render();
+    try{
+      const parsed = await parseEpubFile(file);
+      await uploadEpubForBook(book.id, file);
+      epubRuntime[book.id] = { zip: parsed.zip, chapterPaths: parsed.chapterPaths, paragraphsCache: {} };
+      book.title = parsed.title;
+      book.author = parsed.author;
+      book.coverUrl = parsed.coverUrl || '';
+      book.epub = {
+        title: parsed.title, author: parsed.author, fileName: file.name,
+        chapterCount: parsed.chapterPaths.length, currentChapterIndex: 0, scrollFraction: 0, uploadedAt: Date.now()
+      };
+      delete book.epubStatus;
+      saveData();
+      showToast('Livro carregado!');
+      openEpubReader(book.id);
+    }catch(err){
+      console.error('Falha ao carregar epub', err);
+      state.books = state.books.filter(b => b.id !== book.id); // desfaz o placeholder se falhar
+      render();
+      showToast(epubErrorMessage(err), 'error');
     }
   };
   input.click();
@@ -2883,10 +2950,15 @@ async function ensureEpubLoaded(bookId){
     epubRuntime[bookId] = { zip: parsed.zip, chapterPaths: parsed.chapterPaths, paragraphsCache: {} };
   }catch(err){
     console.error('Falha ao baixar/abrir epub salvo', err);
-    showToast('Não consegui abrir o livro salvo. Tente carregar o arquivo de novo.', 'error');
+    showToast(epubErrorMessage(err), 'error');
   }
   delete book.epubStatus;
   render();
+}
+function epubErrorMessage(err){
+  if(err && err.message === 'upload_timeout') return 'O envio demorou demais e foi cancelado. Confirme se o Firebase Storage está ativado no console (Build → Storage) e tente de novo.';
+  if(err && err.message === 'download_timeout') return 'Demorou demais pra abrir o livro salvo. Confirme se o Firebase Storage está ativado no console (Build → Storage) e tente de novo.';
+  return 'Não consegui abrir esse arquivo. Confira se é um .epub válido, sem proteção DRM.';
 }
 function goToEpubChapter(bookId, index){
   const book = state.books.find(b=>b.id===bookId);
@@ -3311,7 +3383,10 @@ function renderLibraryView(){
   <button class="ghost-btn mobile-back-btn" onclick="backToHome()">← Início</button>
   <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:10px;">
     <h2 style="margin:0;">📚 Leituras</h2>
-    <button class="primary-btn" onclick="openAddBookModal()">＋ Adicionar livro</button>
+    <div style="display:flex; gap:8px;">
+      <button class="ghost-btn" onclick="openEpubUploadForNewBook()">📖 Carregar EPUB</button>
+      <button class="primary-btn" onclick="openAddBookModal()">＋ Adicionar livro</button>
+    </div>
   </div>
   <div style="font-size:13px; color:var(--text-muted); margin-bottom:18px;">📖 ${stats.month} livro(s) lido(s) este mês · ${stats.year} este ano</div>
   <div style="display:flex; gap:14px; flex-wrap:wrap; margin-bottom:20px;">
