@@ -15,6 +15,8 @@
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-storage-compat.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <style>
   :root{
     /* tema escuro (padrão) */
@@ -550,7 +552,7 @@ const firebaseConfig = {
   messagingSenderId: "272502529779",
   appId: "1:272502529779:web:402568fc9f335a3ae6a186"
 };
-let auth = null, db = null;
+let auth = null, db = null, storage = null;
 function isMobileDevice(){
   return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 }
@@ -566,6 +568,7 @@ function initFirebase(){
   firebase.initializeApp(firebaseConfig);
   auth = firebase.auth();
   db = firebase.firestore();
+  storage = firebase.storage();
   db.enablePersistence({ synchronizeTabs: true }).catch(e => console.error('Persistência offline do Firestore não disponível', e));
 
   // no celular, signInWithPopup costuma ser bloqueado/travar — usamos redirect lá,
@@ -601,6 +604,26 @@ function signInWithGoogle(){
 }
 function signOutUser(){
   auth.signOut();
+}
+
+/* ============ FIREBASE STORAGE (arquivos .epub, sincronizados entre aparelhos) ============ */
+function epubStoragePath(deckId){
+  return `users/${state.firebaseUser.uid}/epubs/${deckId}.epub`;
+}
+async function uploadEpubForDeck(deckId, file){
+  const ref = storage.ref(epubStoragePath(deckId));
+  await ref.put(file);
+}
+async function downloadEpubForDeck(deckId){
+  const ref = storage.ref(epubStoragePath(deckId));
+  const url = await ref.getDownloadURL();
+  const resp = await fetch(url);
+  if(!resp.ok) throw new Error('epub_download_error');
+  return await resp.blob();
+}
+async function deleteEpubForDeck(deckId){
+  const ref = storage.ref(epubStoragePath(deckId));
+  await ref.delete().catch(()=>{}); // se não existir, ignora
 }
 function renderAuthGate(){
   if(!state.authReady){
@@ -790,8 +813,11 @@ function deleteDeck(id){
   const deck = state.decks.find(d=>d.id===id);
   const cardCount = (state.cards[id]||[]).length;
   askConfirm(`Excluir o baralho "${deck ? deck.name : ''}" e ${cardCount} cartão(ões)? Essa ação não pode ser desfeita.`, () => {
+    const hadEpub = deck && deck.epub;
     state.decks = state.decks.filter(d=>d.id!==id);
     delete state.cards[id];
+    delete epubRuntime[id];
+    if(hadEpub && state.firebaseUser) deleteEpubForDeck(id);
     if(state.currentDeckId === id){ state.currentDeckId = null; state.view = 'home'; }
     saveData(); render();
     showToast('Baralho excluído.');
@@ -2428,12 +2454,15 @@ function renderClickableSentence(sentence){
     return escapeHtml(tok);
   }).join('');
 }
-function lookupWord(word){
-  const s = state.session;
-  const sentence = (s && s.content && s.content.sentence) || '';
+/* deckId/sentenceOverride ficam de fora quando chamado durante uma sessão de estudo
+   (usa o baralho e a frase da sessão atual); o leitor de EPUB passa os dois explicitamente,
+   já que ali não existe uma sessão de estudo ativa. */
+function lookupWord(word, deckId, sentenceOverride){
+  const targetDeckId = deckId || (state.session && state.session.deckId);
+  const sentence = sentenceOverride != null ? sentenceOverride : ((state.session && state.session.content && state.session.content.sentence) || '');
   const cleanWord = (word||'').trim();
   if(!cleanWord) return;
-  state.modal = { type:'word-lookup', word: cleanWord, sentence, status:'loading', translation:'' };
+  state.modal = { type:'word-lookup', word: cleanWord, sentence, deckId: targetDeckId, status:'loading', translation:'' };
   render();
   translateWordInContext(cleanWord, sentence).then(translation => {
     if(state.modal && state.modal.type === 'word-lookup' && state.modal.word === cleanWord){
@@ -2453,12 +2482,10 @@ function lookupWord(word){
 function addLookupWordToDeck(){
   const m = state.modal;
   if(!m || m.type !== 'word-lookup' || m.status !== 'done') return;
-  const s = state.session;
-  if(!s || !s.deckId){ state.modal = null; render(); return; }
+  if(!m.deckId || !state.cards[m.deckId]){ state.modal = null; render(); return; }
   const card = makeCard(m.word, m.translation);
   card.note = `Frase de exemplo: "${m.sentence}"`;
-  state.cards[s.deckId] = state.cards[s.deckId] || [];
-  state.cards[s.deckId].push(card);
+  state.cards[m.deckId].push(card);
   state.modal = null;
   saveData(); render();
   showToast(`"${m.word}" adicionado ao baralho.`);
@@ -2748,6 +2775,184 @@ function endSessionEarly(){
   finalizeCarryOver();
   state.view = 'results';
   render();
+}
+
+/* ============ LEITOR DE EPUB (baralhos de idioma) ============ */
+// dados "vivos" (zip aberto, caminhos dos capítulos) ficam FORA de state — não são
+// serializáveis e não fazem sentido sincronizar; só os metadados leves (deck.epub)
+// e os cartões criados a partir da leitura sincronizam normalmente.
+let epubRuntime = {}; // deckId -> { zip, chapterPaths, paragraphsCache: {index: [parágrafos]} }
+
+async function parseEpubFile(blob){
+  const zip = await JSZip.loadAsync(blob);
+  const containerFile = zip.file('META-INF/container.xml');
+  if(!containerFile) throw new Error('epub_invalido');
+  const containerXml = await containerFile.async('text');
+  const containerDoc = new DOMParser().parseFromString(containerXml, 'application/xml');
+  const opfPath = containerDoc.querySelector('rootfile').getAttribute('full-path');
+  const opfFile = zip.file(opfPath);
+  if(!opfFile) throw new Error('epub_invalido');
+  const opfXml = await opfFile.async('text');
+  const opfDoc = new DOMParser().parseFromString(opfXml, 'application/xml');
+  const opfDir = opfPath.includes('/') ? opfPath.slice(0, opfPath.lastIndexOf('/')+1) : '';
+
+  const titleEl = opfDoc.getElementsByTagNameNS('http://purl.org/dc/elements/1.1/', 'title')[0];
+  const authorEl = opfDoc.getElementsByTagNameNS('http://purl.org/dc/elements/1.1/', 'creator')[0];
+  const title = (titleEl && titleEl.textContent.trim()) || 'Sem título';
+  const author = (authorEl && authorEl.textContent.trim()) || '';
+
+  const manifestItems = {};
+  Array.from(opfDoc.querySelectorAll('manifest > item')).forEach(item => {
+    manifestItems[item.getAttribute('id')] = item.getAttribute('href');
+  });
+  const spineIds = Array.from(opfDoc.querySelectorAll('spine > itemref')).map(ir => ir.getAttribute('idref'));
+  const chapterPaths = spineIds.map(id => manifestItems[id]).filter(Boolean).map(href => opfDir + href);
+  if(chapterPaths.length === 0) throw new Error('epub_sem_capitulos');
+
+  return { zip, title, author, chapterPaths };
+}
+async function loadEpubChapterParagraphs(deckId, index){
+  const runtime = epubRuntime[deckId];
+  if(!runtime) throw new Error('epub_nao_carregado');
+  if(runtime.paragraphsCache[index]) return runtime.paragraphsCache[index];
+  const path = runtime.chapterPaths[index];
+  const file = runtime.zip.file(path);
+  if(!file) throw new Error('capitulo_nao_encontrado');
+  const xhtml = await file.async('text');
+  let doc = new DOMParser().parseFromString(xhtml, 'application/xhtml+xml');
+  if(doc.querySelector('parsererror')) doc = new DOMParser().parseFromString(xhtml, 'text/html'); // fallback pra epubs com xhtml malformado
+  const paragraphs = Array.from(doc.querySelectorAll('p, h1, h2, h3, h4, li, blockquote'))
+    .map(el => el.textContent.replace(/\s+/g,' ').trim())
+    .filter(Boolean);
+  runtime.paragraphsCache[index] = paragraphs;
+  return paragraphs;
+}
+function openEpubUploadPicker(deckId){
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.epub,application/epub+zip';
+  input.onchange = async (e) => {
+    const file = e.target.files[0];
+    if(!file) return;
+    const deck = state.decks.find(d=>d.id===deckId);
+    if(!deck) return;
+    deck.epubStatus = 'uploading';
+    render();
+    try{
+      const parsed = await parseEpubFile(file);
+      await uploadEpubForDeck(deckId, file);
+      epubRuntime[deckId] = { zip: parsed.zip, chapterPaths: parsed.chapterPaths, paragraphsCache: {} };
+      deck.epub = {
+        title: parsed.title, author: parsed.author, fileName: file.name,
+        chapterCount: parsed.chapterPaths.length, currentChapterIndex: 0, uploadedAt: Date.now()
+      };
+      delete deck.epubStatus;
+      saveData(); render();
+      showToast('Livro carregado!');
+    }catch(err){
+      console.error('Falha ao carregar epub', err);
+      delete deck.epubStatus;
+      render();
+      showToast('Não consegui abrir esse arquivo. Confira se é um .epub válido, sem proteção DRM.', 'error');
+    }
+  };
+  input.click();
+}
+async function ensureEpubLoaded(deckId){
+  if(epubRuntime[deckId]) return;
+  const deck = state.decks.find(d=>d.id===deckId);
+  if(!deck || !deck.epub) return;
+  deck.epubStatus = 'downloading';
+  render();
+  try{
+    const blob = await downloadEpubForDeck(deckId);
+    const parsed = await parseEpubFile(blob);
+    epubRuntime[deckId] = { zip: parsed.zip, chapterPaths: parsed.chapterPaths, paragraphsCache: {} };
+  }catch(err){
+    console.error('Falha ao baixar/abrir epub salvo', err);
+    showToast('Não consegui abrir o livro salvo. Tente carregar o arquivo de novo.', 'error');
+  }
+  delete deck.epubStatus;
+  render();
+}
+function goToEpubChapter(deckId, index){
+  const deck = state.decks.find(d=>d.id===deckId);
+  if(!deck || !deck.epub) return;
+  const clamped = Math.max(0, Math.min(deck.epub.chapterCount-1, index));
+  deck.epub.currentChapterIndex = clamped;
+  saveData(); render();
+}
+function deleteEpubFromDeck(deckId){
+  const deck = state.decks.find(d=>d.id===deckId);
+  if(!deck) return;
+  askConfirm('Remover o livro carregado deste baralho? Os cartões já criados continuam normalmente.', () => {
+    delete deck.epub;
+    delete epubRuntime[deckId];
+    if(state.firebaseUser) deleteEpubForDeck(deckId);
+    saveData(); render();
+    showToast('Livro removido.');
+  });
+}
+/* transforma o texto de um parágrafo em HTML com cada palavra clicável, agrupada
+   por frase (guardada num atributo data-sentence) pra dar contexto à tradução. */
+function renderEpubParagraph(text, deckId){
+  const sentences = text.split(/(?<=[.!?])\s+/).filter(Boolean);
+  return sentences.map(sentence => {
+    const wordsHtml = sentence.split(/(\s+)/).map(tok => {
+      const m = tok.match(/^([A-Za-zÀ-ÿ']+)(.*)$/);
+      if(m && m[1]){
+        return `<span class="clickable-word" onclick="lookupWord('${m[1].replace(/'/g,"\\'")}', '${deckId}', this.closest('[data-sentence]').getAttribute('data-sentence'))">${escapeHtml(m[1])}</span>${escapeHtml(m[2])}`;
+      }
+      return escapeHtml(tok);
+    }).join('');
+    return `<span data-sentence="${escapeHtml(sentence)}">${wordsHtml}</span>`;
+  }).join(' ');
+}
+function renderEpubReaderTab(deck){
+  if(!deck.epub){
+    return `
+    <div style="text-align:center; padding:50px 20px;">
+      <div style="font-size:40px;">📖</div>
+      <h3>Nenhum livro carregado</h3>
+      <p style="color:var(--text-muted); font-size:13px; max-width:400px; margin:8px auto 20px auto;">Carregue um arquivo .epub (sem proteção DRM) pra ler em inglês aqui dentro. Toque em qualquer palavra pra ver a tradução ou criar um cartão na hora.</p>
+      <button class="primary-btn" onclick="openEpubUploadPicker('${deck.id}')" ${deck.epubStatus==='uploading'?'disabled':''}>${deck.epubStatus==='uploading' ? 'Carregando...' : '＋ Carregar EPUB'}</button>
+    </div>`;
+  }
+  if(deck.epubStatus === 'downloading'){
+    return `<div class="loading-line" style="justify-content:center; padding:50px;"><div class="spinner"></div> Abrindo o livro...</div>`;
+  }
+  if(!epubRuntime[deck.id]){
+    ensureEpubLoaded(deck.id); // dispara o download em segundo plano (efeito colateral do render, guardado por epubRuntime)
+    return `<div class="loading-line" style="justify-content:center; padding:50px;"><div class="spinner"></div> Abrindo o livro...</div>`;
+  }
+  const idx = deck.epub.currentChapterIndex;
+  const runtime = epubRuntime[deck.id];
+  if(!runtime.paragraphsCache[idx]){
+    loadEpubChapterParagraphs(deck.id, idx).then(() => render()).catch(err => {
+      console.error('Falha ao carregar capítulo', err);
+      showToast('Não consegui carregar esse capítulo.', 'error');
+    });
+    return `<div class="loading-line" style="justify-content:center; padding:50px;"><div class="spinner"></div> Carregando capítulo...</div>`;
+  }
+  const paragraphs = runtime.paragraphsCache[idx];
+  return `
+  <div style="margin-bottom:14px;">
+    <h3 style="margin:0;">${escapeHtml(deck.epub.title)}</h3>
+    ${deck.epub.author ? `<p style="color:var(--text-muted); font-size:12.5px; margin:2px 0 0 0;">${escapeHtml(deck.epub.author)}</p>` : ''}
+  </div>
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+    <button class="ghost-btn" ${idx===0?'disabled':''} onclick="goToEpubChapter('${deck.id}', ${idx-1})">← Anterior</button>
+    <span style="font-size:12.5px; color:var(--text-muted);">Capítulo ${idx+1} de ${deck.epub.chapterCount}</span>
+    <button class="ghost-btn" ${idx>=deck.epub.chapterCount-1?'disabled':''} onclick="goToEpubChapter('${deck.id}', ${idx+1})">Próximo →</button>
+  </div>
+  <p style="font-size:11px; color:var(--text-faint); text-align:center; margin:0 0 14px 0;">💡 Toque numa palavra pra ver a tradução</p>
+  <div style="max-width:640px; margin:0 auto; line-height:1.9; font-size:15.5px;">
+    ${paragraphs.length===0 ? `<p style="color:var(--text-faint);">(Capítulo sem texto legível)</p>` : paragraphs.map(p => `<p>${renderEpubParagraph(p, deck.id)}</p>`).join('')}
+  </div>
+  <div style="text-align:center; margin-top:24px;">
+    <button class="ghost-btn" style="color:var(--error); border-color:var(--error);" onclick="deleteEpubFromDeck('${deck.id}')">🗑 Remover livro deste baralho</button>
+  </div>
+  `;
 }
 
 /* ============ RENDER ============ */
@@ -3128,8 +3333,9 @@ function renderDeckView(){
   <div class="tab-row">
     <button class="tab ${state.tab==='cards'?'active':''}" onclick="setTab('cards')">Cartões</button>
     <button class="tab ${state.tab==='study'?'active':''}" onclick="setTab('study')">Estudar</button>
+    ${deck.type==='language' ? `<button class="tab ${state.tab==='read'?'active':''}" onclick="setTab('read')">📖 Ler</button>` : ''}
   </div>
-  ${state.tab === 'cards' ? renderCardsTab(deck) : renderStudyPicker(deck)}
+  ${state.tab === 'cards' ? renderCardsTab(deck) : (state.tab === 'read' && deck.type==='language') ? renderEpubReaderTab(deck) : renderStudyPicker(deck)}
   `;
 }
 function setTab(t){ state.tab = t; render(); }
