@@ -607,22 +607,22 @@ function signOutUser(){
 }
 
 /* ============ FIREBASE STORAGE (arquivos .epub, sincronizados entre aparelhos) ============ */
-function epubStoragePath(deckId){
-  return `users/${state.firebaseUser.uid}/epubs/${deckId}.epub`;
+function epubStoragePath(bookId){
+  return `users/${state.firebaseUser.uid}/epubs/${bookId}.epub`;
 }
-async function uploadEpubForDeck(deckId, file){
-  const ref = storage.ref(epubStoragePath(deckId));
+async function uploadEpubForBook(bookId, file){
+  const ref = storage.ref(epubStoragePath(bookId));
   await ref.put(file);
 }
-async function downloadEpubForDeck(deckId){
-  const ref = storage.ref(epubStoragePath(deckId));
+async function downloadEpubForBook(bookId){
+  const ref = storage.ref(epubStoragePath(bookId));
   const url = await ref.getDownloadURL();
   const resp = await fetch(url);
   if(!resp.ok) throw new Error('epub_download_error');
   return await resp.blob();
 }
-async function deleteEpubForDeck(deckId){
-  const ref = storage.ref(epubStoragePath(deckId));
+async function deleteEpubForBook(bookId){
+  const ref = storage.ref(epubStoragePath(bookId));
   await ref.delete().catch(()=>{}); // se não existir, ignora
 }
 function renderAuthGate(){
@@ -813,11 +813,8 @@ function deleteDeck(id){
   const deck = state.decks.find(d=>d.id===id);
   const cardCount = (state.cards[id]||[]).length;
   askConfirm(`Excluir o baralho "${deck ? deck.name : ''}" e ${cardCount} cartão(ões)? Essa ação não pode ser desfeita.`, () => {
-    const hadEpub = deck && deck.epub;
     state.decks = state.decks.filter(d=>d.id!==id);
     delete state.cards[id];
-    delete epubRuntime[id];
-    if(hadEpub && state.firebaseUser) deleteEpubForDeck(id);
     if(state.currentDeckId === id){ state.currentDeckId = null; state.view = 'home'; }
     saveData(); render();
     showToast('Baralho excluído.');
@@ -1800,12 +1797,13 @@ function makeBook(title, author){
   return {
     id: uid(), title: (title||'').trim(), author: (author||'').trim(), categories:[], coverUrl:'', rating:0,
     quotes:[], linkedDeckId:null, addedAt: Date.now(),
-    status:'quero-ler', dateFinished:null, totalPages:0, pagesRead:0
+    status:'quero-ler', dateFinished:null, totalPages:0, pagesRead:0,
+    isEnglish:false, epub:null
   };
 }
 const BOOK_STATUS_LABELS = { 'quero-ler':'📌 Quero ler', 'lendo':'📖 Lendo', 'lido':'✅ Lido' };
 // livros salvos antes dessa atualização tinham "category" (string única) em vez de
-// "categories" (array) e não tinham status/páginas — normaliza pro formato novo.
+// "categories" (array) e não tinham status/páginas/epub — normaliza pro formato novo.
 function normalizeBook(b){
   return {
     id: b.id || uid(),
@@ -1820,8 +1818,16 @@ function normalizeBook(b){
     status: b.status || 'quero-ler',
     dateFinished: b.dateFinished || null,
     totalPages: b.totalPages || 0,
-    pagesRead: b.pagesRead || 0
+    pagesRead: b.pagesRead || 0,
+    isEnglish: b.isEnglish || false,
+    epub: b.epub || null
   };
+}
+function setBookIsEnglish(id, value){
+  const book = state.books.find(b=>b.id===id);
+  if(!book) return;
+  book.isEnglish = !!value;
+  saveData(); render();
 }
 function todayStr(){
   const d = new Date();
@@ -2777,11 +2783,12 @@ function endSessionEarly(){
   render();
 }
 
-/* ============ LEITOR DE EPUB (baralhos de idioma) ============ */
+/* ============ LEITOR DE EPUB (dentro de Leituras) ============ */
 // dados "vivos" (zip aberto, caminhos dos capítulos) ficam FORA de state — não são
-// serializáveis e não fazem sentido sincronizar; só os metadados leves (deck.epub)
-// e os cartões criados a partir da leitura sincronizam normalmente.
-let epubRuntime = {}; // deckId -> { zip, chapterPaths, paragraphsCache: {index: [parágrafos]} }
+// serializáveis e não fazem sentido sincronizar; só os metadados leves (book.epub)
+// e as citações/cartões criados a partir da leitura sincronizam normalmente.
+let epubRuntime = {}; // bookId -> { zip, chapterPaths, paragraphsCache: {index: [parágrafos]} }
+let epubScrollSaveTimer = null;
 
 async function parseEpubFile(blob){
   const zip = await JSZip.loadAsync(blob);
@@ -2811,8 +2818,8 @@ async function parseEpubFile(blob){
 
   return { zip, title, author, chapterPaths };
 }
-async function loadEpubChapterParagraphs(deckId, index){
-  const runtime = epubRuntime[deckId];
+async function loadEpubChapterParagraphs(bookId, index){
+  const runtime = epubRuntime[bookId];
   if(!runtime) throw new Error('epub_nao_carregado');
   if(runtime.paragraphsCache[index]) return runtime.paragraphsCache[index];
   const path = runtime.chapterPaths[index];
@@ -2827,130 +2834,274 @@ async function loadEpubChapterParagraphs(deckId, index){
   runtime.paragraphsCache[index] = paragraphs;
   return paragraphs;
 }
-function openEpubUploadPicker(deckId){
+function getEpubReadPercent(book){
+  if(!book || !book.epub || !book.epub.chapterCount) return 0;
+  const idx = book.epub.currentChapterIndex || 0;
+  const frac = book.epub.scrollFraction || 0;
+  return Math.max(0, Math.min(100, Math.round(((idx + frac) / book.epub.chapterCount) * 100)));
+}
+function openEpubUploadPicker(bookId){
   const input = document.createElement('input');
   input.type = 'file';
   input.accept = '.epub,application/epub+zip';
   input.onchange = async (e) => {
     const file = e.target.files[0];
     if(!file) return;
-    const deck = state.decks.find(d=>d.id===deckId);
-    if(!deck) return;
-    deck.epubStatus = 'uploading';
+    const book = state.books.find(b=>b.id===bookId);
+    if(!book) return;
+    book.epubStatus = 'uploading';
     render();
     try{
       const parsed = await parseEpubFile(file);
-      await uploadEpubForDeck(deckId, file);
-      epubRuntime[deckId] = { zip: parsed.zip, chapterPaths: parsed.chapterPaths, paragraphsCache: {} };
-      deck.epub = {
+      await uploadEpubForBook(bookId, file);
+      epubRuntime[bookId] = { zip: parsed.zip, chapterPaths: parsed.chapterPaths, paragraphsCache: {} };
+      book.epub = {
         title: parsed.title, author: parsed.author, fileName: file.name,
-        chapterCount: parsed.chapterPaths.length, currentChapterIndex: 0, uploadedAt: Date.now()
+        chapterCount: parsed.chapterPaths.length, currentChapterIndex: 0, scrollFraction: 0, uploadedAt: Date.now()
       };
-      delete deck.epubStatus;
+      delete book.epubStatus;
       saveData(); render();
       showToast('Livro carregado!');
     }catch(err){
       console.error('Falha ao carregar epub', err);
-      delete deck.epubStatus;
+      delete book.epubStatus;
       render();
       showToast('Não consegui abrir esse arquivo. Confira se é um .epub válido, sem proteção DRM.', 'error');
     }
   };
   input.click();
 }
-async function ensureEpubLoaded(deckId){
-  if(epubRuntime[deckId]) return;
-  const deck = state.decks.find(d=>d.id===deckId);
-  if(!deck || !deck.epub) return;
-  deck.epubStatus = 'downloading';
+async function ensureEpubLoaded(bookId){
+  if(epubRuntime[bookId]) return;
+  const book = state.books.find(b=>b.id===bookId);
+  if(!book || !book.epub) return;
+  book.epubStatus = 'downloading';
   render();
   try{
-    const blob = await downloadEpubForDeck(deckId);
+    const blob = await downloadEpubForBook(bookId);
     const parsed = await parseEpubFile(blob);
-    epubRuntime[deckId] = { zip: parsed.zip, chapterPaths: parsed.chapterPaths, paragraphsCache: {} };
+    epubRuntime[bookId] = { zip: parsed.zip, chapterPaths: parsed.chapterPaths, paragraphsCache: {} };
   }catch(err){
     console.error('Falha ao baixar/abrir epub salvo', err);
     showToast('Não consegui abrir o livro salvo. Tente carregar o arquivo de novo.', 'error');
   }
-  delete deck.epubStatus;
+  delete book.epubStatus;
   render();
 }
-function goToEpubChapter(deckId, index){
-  const deck = state.decks.find(d=>d.id===deckId);
-  if(!deck || !deck.epub) return;
-  const clamped = Math.max(0, Math.min(deck.epub.chapterCount-1, index));
-  deck.epub.currentChapterIndex = clamped;
+function goToEpubChapter(bookId, index){
+  const book = state.books.find(b=>b.id===bookId);
+  if(!book || !book.epub) return;
+  const clamped = Math.max(0, Math.min(book.epub.chapterCount-1, index));
+  book.epub.currentChapterIndex = clamped;
+  book.epub.scrollFraction = 0;
   saveData(); render();
+  requestAnimationFrame(() => { const m = document.querySelector('.main'); if(m) m.scrollTop = 0; });
 }
-function deleteEpubFromDeck(deckId){
-  const deck = state.decks.find(d=>d.id===deckId);
-  if(!deck) return;
-  askConfirm('Remover o livro carregado deste baralho? Os cartões já criados continuam normalmente.', () => {
-    delete deck.epub;
-    delete epubRuntime[deckId];
-    if(state.firebaseUser) deleteEpubForDeck(deckId);
+function deleteEpubFromBook(bookId){
+  const book = state.books.find(b=>b.id===bookId);
+  if(!book) return;
+  askConfirm('Remover o arquivo (.epub) carregado? As citações e cartões já criados continuam normalmente.', () => {
+    delete book.epub;
+    delete epubRuntime[bookId];
+    if(state.firebaseUser) deleteEpubForBook(bookId);
+    if(state.view === 'epub-reader' && state.currentBookId === bookId){ state.view = 'book'; }
     saveData(); render();
-    showToast('Livro removido.');
+    showToast('Arquivo removido.');
   });
 }
+
+/* --- página dedicada de leitura --- */
+function openEpubReader(bookId){
+  const book = state.books.find(b=>b.id===bookId);
+  if(!book) return;
+  state.currentBookId = bookId;
+  state.view = 'epub-reader';
+  state._epubRestorePending = true;
+  playBookOpen();
+  render();
+}
+function closeEpubReader(){
+  saveEpubScrollPosition();
+  state.view = 'library';
+  state.currentBookId = null;
+  render();
+}
+function restoreEpubScrollPosition(){
+  const book = state.books.find(b=>b.id===state.currentBookId);
+  const m = document.querySelector('.main');
+  if(!book || !book.epub || !m) return;
+  const frac = book.epub.scrollFraction || 0;
+  m.scrollTop = frac * Math.max(0, m.scrollHeight - m.clientHeight);
+}
+function onEpubReaderScroll(){
+  if(epubScrollSaveTimer) clearTimeout(epubScrollSaveTimer);
+  epubScrollSaveTimer = setTimeout(saveEpubScrollPosition, 500);
+}
+function saveEpubScrollPosition(){
+  if(state.view !== 'epub-reader') return;
+  const book = state.books.find(b=>b.id===state.currentBookId);
+  const m = document.querySelector('.main');
+  if(!book || !book.epub || !m) return;
+  const maxScroll = m.scrollHeight - m.clientHeight;
+  book.epub.scrollFraction = maxScroll > 0 ? Math.max(0, Math.min(1, m.scrollTop / maxScroll)) : 0;
+  saveData();
+}
+// escuta o scroll de ".main" via captura no document — necessário porque o innerHTML
+// de #app (incluindo .main) é recriado a cada render(), o que perderia um listener
+// preso diretamente ao elemento antigo. "scroll" não borbulha, então usamos capture:true.
+document.addEventListener('scroll', (e) => {
+  if(e.target && e.target.classList && e.target.classList.contains('main')) onEpubReaderScroll();
+}, true);
+
 /* transforma o texto de um parágrafo em HTML com cada palavra clicável, agrupada
-   por frase (guardada num atributo data-sentence) pra dar contexto à tradução. */
-function renderEpubParagraph(text, deckId){
+   por frase (guardada num atributo data-sentence) pra dar contexto à tradução —
+   usado só em livros marcados como "em inglês". */
+function renderEpubParagraphClickable(text, targetDeckId){
   const sentences = text.split(/(?<=[.!?])\s+/).filter(Boolean);
   return sentences.map(sentence => {
     const wordsHtml = sentence.split(/(\s+)/).map(tok => {
       const m = tok.match(/^([A-Za-zÀ-ÿ']+)(.*)$/);
       if(m && m[1]){
-        return `<span class="clickable-word" onclick="lookupWord('${m[1].replace(/'/g,"\\'")}', '${deckId}', this.closest('[data-sentence]').getAttribute('data-sentence'))">${escapeHtml(m[1])}</span>${escapeHtml(m[2])}`;
+        return `<span class="clickable-word" onclick="lookupWord('${m[1].replace(/'/g,"\\'")}', '${targetDeckId}', this.closest('[data-sentence]').getAttribute('data-sentence'))">${escapeHtml(m[1])}</span>${escapeHtml(m[2])}`;
       }
       return escapeHtml(tok);
     }).join('');
     return `<span data-sentence="${escapeHtml(sentence)}">${wordsHtml}</span>`;
   }).join(' ');
 }
-function renderEpubReaderTab(deck){
-  if(!deck.epub){
+
+/* --- livros que NÃO são em inglês: seleciona um trecho pra guardar como
+   citação ou pedir um cartão de flashcard gerado pela IA --- */
+document.addEventListener('mouseup', handleReaderSelection);
+document.addEventListener('touchend', handleReaderSelection);
+function handleReaderSelection(){
+  if(state.view !== 'epub-reader') return;
+  const book = state.books.find(b=>b.id===state.currentBookId);
+  if(!book || book.isEnglish) return; // seleção de trecho só faz sentido pra livros que não são em inglês
+  const bar = document.getElementById('reader-selection-bar');
+  if(!bar) return;
+  const sel = window.getSelection();
+  const text = sel ? sel.toString().trim() : '';
+  if(text){
+    state.readerSelection = text;
+    bar.style.display = 'flex';
+  } else {
+    state.readerSelection = null;
+    bar.style.display = 'none';
+  }
+}
+function saveReaderSelectionAsQuote(){
+  const text = state.readerSelection;
+  const book = state.books.find(b=>b.id===state.currentBookId);
+  if(!text || !book) return;
+  book.quotes = book.quotes || [];
+  book.quotes.push({ id: uid(), text, createdAt: Date.now() });
+  state.readerSelection = null;
+  window.getSelection().removeAllRanges();
+  saveData(); render();
+  showToast('Citação guardada.');
+}
+async function generateCardFromPassage(passageText){
+  const prompt = `Trecho de um livro:\n"${passageText}"\n\nCrie 1 flashcard de pergunta e resposta em português sobre o conteúdo principal desse trecho, com pergunta objetiva e resposta curta e direta. Escreva também uma nota breve (1-2 frases) com uma explicação um pouco mais elaborada.\n\nResponda SOMENTE com um JSON válido, exatamente neste formato:\n{"front":"pergunta","back":"resposta objetiva","note":"breve explicação"}`;
+  const text = (await callGemini(prompt, { maxTokens: 300 })).trim();
+  const clean = text.replace(/```json|```/g,"").trim();
+  const obj = JSON.parse(clean);
+  return {
+    front: String((obj && obj.front) || '').trim(),
+    back: String((obj && obj.back) || '').trim(),
+    note: String((obj && obj.note) || '').trim()
+  };
+}
+function requestCardFromReaderSelection(){
+  const text = state.readerSelection;
+  const book = state.books.find(b=>b.id===state.currentBookId);
+  if(!text || !book) return;
+  window.getSelection().removeAllRanges();
+  const bar = document.getElementById('reader-selection-bar');
+  if(bar) bar.style.display = 'none';
+  state.modal = { type:'passage-card', status:'loading', passage:text, card:{front:'',back:'',note:''}, deckId: book.linkedDeckId || '' };
+  render();
+  generateCardFromPassage(text).then(card => {
+    if(state.modal && state.modal.type === 'passage-card'){
+      state.modal.status = 'review';
+      state.modal.card = card;
+      render();
+    }
+  }).catch(err => {
+    console.error('Falha ao gerar cartão a partir do trecho', err);
+    if(state.modal && state.modal.type === 'passage-card'){
+      state.modal.status = 'error';
+      state.modal.error = friendlyAiErrorMsg(err);
+      render();
+    }
+  });
+}
+function confirmPassageCard(){
+  const m = state.modal;
+  if(!m || m.type !== 'passage-card') return;
+  const front = (m.card.front||'').trim(), back = (m.card.back||'').trim();
+  if(!front || !back){ showToast('Preencha pergunta e resposta.', 'error'); return; }
+  if(!m.deckId || !state.cards[m.deckId]){ showToast('Escolha um baralho.', 'error'); return; }
+  const card = makeCard(front, back);
+  card.note = (m.card.note||'').trim();
+  state.cards[m.deckId].push(card);
+  state.modal = null;
+  saveData(); render();
+  showToast('Cartão adicionado ao baralho.');
+}
+
+function renderEpubReaderView(){
+  const book = state.books.find(b=>b.id===state.currentBookId);
+  if(!book) return '';
+  if(!book.epub){
+    // não deveria acontecer (só se navegar aqui sem epub), volta pro detalhe do livro
+    state.view = 'book';
+    return '';
+  }
+  const gearBtn = `<button class="icon-btn" title="Editar propriedades do livro" onclick="saveEpubScrollPosition(); state.view='book'; render();">⚙️</button>`;
+  if(book.epubStatus === 'downloading' || !epubRuntime[book.id]){
+    if(!epubRuntime[book.id] && book.epubStatus !== 'downloading') ensureEpubLoaded(book.id);
     return `
-    <div style="text-align:center; padding:50px 20px;">
-      <div style="font-size:40px;">📖</div>
-      <h3>Nenhum livro carregado</h3>
-      <p style="color:var(--text-muted); font-size:13px; max-width:400px; margin:8px auto 20px auto;">Carregue um arquivo .epub (sem proteção DRM) pra ler em inglês aqui dentro. Toque em qualquer palavra pra ver a tradução ou criar um cartão na hora.</p>
-      <button class="primary-btn" onclick="openEpubUploadPicker('${deck.id}')" ${deck.epubStatus==='uploading'?'disabled':''}>${deck.epubStatus==='uploading' ? 'Carregando...' : '＋ Carregar EPUB'}</button>
-    </div>`;
+    <button class="ghost-btn mobile-back-btn" onclick="closeEpubReader()">← Leituras</button>
+    <div class="loading-line" style="justify-content:center; padding:60px;"><div class="spinner"></div> Abrindo o livro...</div>`;
   }
-  if(deck.epubStatus === 'downloading'){
-    return `<div class="loading-line" style="justify-content:center; padding:50px;"><div class="spinner"></div> Abrindo o livro...</div>`;
-  }
-  if(!epubRuntime[deck.id]){
-    ensureEpubLoaded(deck.id); // dispara o download em segundo plano (efeito colateral do render, guardado por epubRuntime)
-    return `<div class="loading-line" style="justify-content:center; padding:50px;"><div class="spinner"></div> Abrindo o livro...</div>`;
-  }
-  const idx = deck.epub.currentChapterIndex;
-  const runtime = epubRuntime[deck.id];
+  const idx = book.epub.currentChapterIndex;
+  const runtime = epubRuntime[book.id];
   if(!runtime.paragraphsCache[idx]){
-    loadEpubChapterParagraphs(deck.id, idx).then(() => render()).catch(err => {
+    loadEpubChapterParagraphs(book.id, idx).then(() => render()).catch(err => {
       console.error('Falha ao carregar capítulo', err);
       showToast('Não consegui carregar esse capítulo.', 'error');
     });
-    return `<div class="loading-line" style="justify-content:center; padding:50px;"><div class="spinner"></div> Carregando capítulo...</div>`;
+    return `
+    <button class="ghost-btn mobile-back-btn" onclick="closeEpubReader()">← Leituras</button>
+    <div class="loading-line" style="justify-content:center; padding:60px;"><div class="spinner"></div> Carregando capítulo...</div>`;
+  }
+  if(state._epubRestorePending){
+    state._epubRestorePending = false;
+    requestAnimationFrame(restoreEpubScrollPosition);
   }
   const paragraphs = runtime.paragraphsCache[idx];
   return `
-  <div style="margin-bottom:14px;">
-    <h3 style="margin:0;">${escapeHtml(deck.epub.title)}</h3>
-    ${deck.epub.author ? `<p style="color:var(--text-muted); font-size:12.5px; margin:2px 0 0 0;">${escapeHtml(deck.epub.author)}</p>` : ''}
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; gap:10px;">
+    <button class="ghost-btn" onclick="closeEpubReader()">← Leituras</button>
+    ${gearBtn}
+  </div>
+  <div style="margin-bottom:14px; text-align:center;">
+    <h3 style="margin:0;">${escapeHtml(book.epub.title)}</h3>
+    ${book.epub.author ? `<p style="color:var(--text-muted); font-size:12.5px; margin:2px 0 0 0;">${escapeHtml(book.epub.author)}</p>` : ''}
   </div>
   <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-    <button class="ghost-btn" ${idx===0?'disabled':''} onclick="goToEpubChapter('${deck.id}', ${idx-1})">← Anterior</button>
-    <span style="font-size:12.5px; color:var(--text-muted);">Capítulo ${idx+1} de ${deck.epub.chapterCount}</span>
-    <button class="ghost-btn" ${idx>=deck.epub.chapterCount-1?'disabled':''} onclick="goToEpubChapter('${deck.id}', ${idx+1})">Próximo →</button>
+    <button class="ghost-btn" ${idx===0?'disabled':''} onclick="goToEpubChapter('${book.id}', ${idx-1})">← Anterior</button>
+    <span style="font-size:12.5px; color:var(--text-muted);">Capítulo ${idx+1} de ${book.epub.chapterCount} · ${getEpubReadPercent(book)}% lido</span>
+    <button class="ghost-btn" ${idx>=book.epub.chapterCount-1?'disabled':''} onclick="goToEpubChapter('${book.id}', ${idx+1})">Próximo →</button>
   </div>
-  <p style="font-size:11px; color:var(--text-faint); text-align:center; margin:0 0 14px 0;">💡 Toque numa palavra pra ver a tradução</p>
+  <p style="font-size:11px; color:var(--text-faint); text-align:center; margin:0 0 14px 0;">${book.isEnglish ? '💡 Toque numa palavra pra ver a tradução' : '💡 Selecione um trecho pra guardar como citação ou pedir um cartão'}</p>
   <div style="max-width:640px; margin:0 auto; line-height:1.9; font-size:15.5px;">
-    ${paragraphs.length===0 ? `<p style="color:var(--text-faint);">(Capítulo sem texto legível)</p>` : paragraphs.map(p => `<p>${renderEpubParagraph(p, deck.id)}</p>`).join('')}
+    ${paragraphs.length===0 ? `<p style="color:var(--text-faint);">(Capítulo sem texto legível)</p>` : paragraphs.map(p => `<p>${book.isEnglish ? renderEpubParagraphClickable(p, book.linkedDeckId||'') : escapeHtml(p)}</p>`).join('')}
   </div>
-  <div style="text-align:center; margin-top:24px;">
-    <button class="ghost-btn" style="color:var(--error); border-color:var(--error);" onclick="deleteEpubFromDeck('${deck.id}')">🗑 Remover livro deste baralho</button>
+  <div id="reader-selection-bar" style="display:none; position:fixed; left:0; right:0; bottom:0; background:var(--surface); border-top:1px solid var(--border); padding:12px 20px; align-items:center; justify-content:center; gap:10px; box-shadow:0 -4px 16px rgba(0,0,0,0.2); z-index:50;">
+    <button class="ghost-btn" onclick="saveReaderSelectionAsQuote()">📌 Guardar como citação</button>
+    <button class="primary-btn" onclick="requestCardFromReaderSelection()">🤖 Pedir cartão à IA</button>
   </div>
   `;
 }
@@ -3112,6 +3263,7 @@ function backToHome(){
 function renderMain(){
   if(state.view === 'library') return renderLibraryView();
   if(state.view === 'book') return renderBookDetailView();
+  if(state.view === 'epub-reader') return renderEpubReaderView();
   if(state.view === 'home' || !state.currentDeckId){
     return `
     <div class="empty-state">
@@ -3185,9 +3337,12 @@ function renderLibraryView(){
   ${filteredBooks.length===0 ? `<div style="color:var(--text-faint); font-size:13px;">${state.books.length===0 ? 'Nenhum livro na estante ainda. Clique em "Adicionar livro" pra começar.' : 'Nenhum livro bate com essa busca.'}</div>` : `
   <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(140px,1fr)); gap:18px;">
     ${filteredBooks.map(b => `
-      <div style="cursor:pointer;" onclick="openBook('${b.id}')">
-        <div class="book-cover-hover" style="width:100%; aspect-ratio:2/3; background:var(--bg-2); border:1px solid var(--border); border-radius:8px; overflow:hidden; display:flex; align-items:center; justify-content:center; font-size:32px;">
+      <div style="cursor:pointer;" onclick="${b.epub ? `openEpubReader('${b.id}')` : `openBook('${b.id}')`}">
+        <div class="book-cover-hover" style="width:100%; aspect-ratio:2/3; background:var(--bg-2); border:1px solid var(--border); border-radius:8px; overflow:hidden; display:flex; align-items:center; justify-content:center; font-size:32px; position:relative;">
           ${b.coverUrl ? `<img src="${escapeHtml(b.coverUrl)}" style="width:100%; height:100%; object-fit:cover;" onerror="this.style.display='none'; this.parentElement.textContent='📖';">` : '📖'}
+          ${b.epub ? `<div style="position:absolute; top:6px; left:6px; background:var(--accent); color:var(--brand-text); font-size:9.5px; font-weight:700; padding:2px 6px; border-radius:5px;">📖 EPUB</div>` : ''}
+          <button class="icon-btn" style="position:absolute; top:4px; right:4px; width:24px; height:24px; font-size:12px; background:rgba(0,0,0,0.45); border:none; color:#fff;" title="Editar propriedades" onclick="event.stopPropagation(); openBook('${b.id}')">⚙️</button>
+          ${b.epub ? `<div style="position:absolute; bottom:0; left:0; right:0; background:rgba(0,0,0,0.55); color:#fff; font-size:10px; font-weight:600; text-align:center; padding:3px 0;">${getEpubReadPercent(b)}% lido</div>` : ''}
         </div>
         <div style="font-size:12.5px; font-weight:600; margin-top:6px; line-height:1.3;">${escapeHtml(b.title)}</div>
         ${b.author ? `<div style="font-size:11px; color:var(--text-muted);">${escapeHtml(b.author)}</div>` : ''}
@@ -3279,6 +3434,25 @@ function renderBookDetailView(){
           ${linkedDeck ? `<button class="ghost-btn" onclick="goToLinkedDeck('${linkedDeck.id}')">🔗 Ir pro baralho</button>` : ''}
         </div>
       </div>
+      <div class="field">
+        <label style="font-size:10px;">IDIOMA DO LIVRO</label>
+        <div style="display:flex; gap:8px;">
+          <button type="button" class="ghost-btn" style="flex:1; ${!book.isEnglish?'border-color:var(--accent); color:var(--accent);':''}" onclick="setBookIsEnglish('${book.id}', false)">Outro idioma</button>
+          <button type="button" class="ghost-btn" style="flex:1; ${book.isEnglish?'border-color:var(--accent); color:var(--accent);':''}" onclick="setBookIsEnglish('${book.id}', true)">Inglês</button>
+        </div>
+        <p style="font-size:11px; color:var(--text-faint); margin:4px 0 0 0;">${book.isEnglish ? 'No leitor, as palavras do texto ficam clicáveis pra ver a tradução e criar um cartão.' : 'No leitor, selecionar um trecho oferece guardar como citação ou pedir um cartão à IA.'}</p>
+      </div>
+      <div class="field">
+        <label style="font-size:10px;">ARQUIVO EPUB</label>
+        ${book.epub ? `
+        <div style="display:flex; align-items:center; gap:10px; background:var(--bg-2); border:1px solid var(--border); border-radius:8px; padding:10px 12px; flex-wrap:wrap;">
+          <div style="flex:1; min-width:160px; font-size:12.5px;">${escapeHtml(book.epub.fileName)} · ${book.epub.chapterCount} capítulo(s) · ${getEpubReadPercent(book)}% lido</div>
+          <button class="ghost-btn" onclick="openEpubReader('${book.id}')">📖 Ler</button>
+          <button class="ghost-btn" style="color:var(--error); border-color:var(--error);" onclick="deleteEpubFromBook('${book.id}')">🗑</button>
+        </div>` : `
+        <button type="button" class="ghost-btn" onclick="openEpubUploadPicker('${book.id}')" ${book.epubStatus==='uploading'?'disabled':''}>${book.epubStatus==='uploading' ? 'Carregando...' : '＋ Carregar EPUB'}</button>
+        <p style="font-size:11px; color:var(--text-faint); margin:4px 0 0 0;">Arquivo .epub sem proteção DRM.</p>`}
+      </div>
       <button class="ghost-btn" style="align-self:flex-start; color:var(--error); border-color:var(--error);" onclick="deleteBook('${book.id}')">🗑 Excluir livro</button>
     </div>
   </div>
@@ -3333,9 +3507,8 @@ function renderDeckView(){
   <div class="tab-row">
     <button class="tab ${state.tab==='cards'?'active':''}" onclick="setTab('cards')">Cartões</button>
     <button class="tab ${state.tab==='study'?'active':''}" onclick="setTab('study')">Estudar</button>
-    ${deck.type==='language' ? `<button class="tab ${state.tab==='read'?'active':''}" onclick="setTab('read')">📖 Ler</button>` : ''}
   </div>
-  ${state.tab === 'cards' ? renderCardsTab(deck) : (state.tab === 'read' && deck.type==='language') ? renderEpubReaderTab(deck) : renderStudyPicker(deck)}
+  ${state.tab === 'cards' ? renderCardsTab(deck) : renderStudyPicker(deck)}
   `;
 }
 function setTab(t){ state.tab = t; render(); }
@@ -4184,6 +4357,7 @@ function renderModal(){
   if(m.type === 'add-book') return renderAddBookModal(m);
   if(m.type === 'quote-capture') return renderQuoteCaptureModal(m);
   if(m.type === 'word-lookup') return renderWordLookupModal(m);
+  if(m.type === 'passage-card') return renderPassageCardModal(m);
   if(m.type === 'confirm') return renderConfirmModal(m);
   return `
   <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
@@ -4492,9 +4666,65 @@ function renderWordLookupModal(m){
       ${m.status === 'loading' ? `<div class="loading-line"><div class="spinner"></div> Traduzindo...</div>` : ''}
       ${m.status === 'error' ? `<p style="font-size:13px; color:var(--error);">${escapeHtml(m.error)}</p>` : ''}
       ${m.status === 'done' ? `<p style="font-size:18px; font-weight:700; color:var(--accent); margin:4px 0 0 0;">${escapeHtml(m.translation)}</p>` : ''}
+      ${(m.status==='done' && !m.deckId) ? `<p style="font-size:11.5px; color:var(--text-faint); margin:8px 0 0 0;">Vincule um baralho a este livro (⚙️ nas propriedades) pra poder criar cartões por aqui.</p>` : ''}
       <div class="modal-actions">
         <button class="ghost-btn" onclick="closeModal()">Fechar</button>
-        ${m.status==='done' ? `<button class="primary-btn" onclick="addLookupWordToDeck()">+ Adicionar ao baralho</button>` : ''}
+        ${(m.status==='done' && m.deckId) ? `<button class="primary-btn" onclick="addLookupWordToDeck()">+ Adicionar ao baralho</button>` : ''}
+      </div>
+    </div>
+  </div>`;
+}
+function renderPassageCardModal(m){
+  if(m.status === 'loading'){
+    return `
+    <div class="modal-overlay">
+      <div class="modal" style="width:420px;">
+        <h3>Gerando cartão…</h3>
+        <p style="font-size:11.5px; color:var(--text-faint);">"${escapeHtml(m.passage.length>200 ? m.passage.slice(0,200)+'…' : m.passage)}"</p>
+        <div class="loading-line"><div class="spinner"></div> A IA está lendo o trecho...</div>
+      </div>
+    </div>`;
+  }
+  if(m.status === 'error'){
+    return `
+    <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
+      <div class="modal" style="width:420px;">
+        <h3>Não deu pra gerar o cartão</h3>
+        <p style="font-size:13px; color:var(--text-muted); line-height:1.5;">${escapeHtml(m.error)}</p>
+        <div class="modal-actions">
+          <button class="ghost-btn" onclick="closeModal()">Fechar</button>
+        </div>
+      </div>
+    </div>`;
+  }
+  const standardDecks = state.decks.filter(d => d.type !== 'language');
+  return `
+  <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
+    <div class="modal" style="width:480px; max-height:86vh; overflow-y:auto;">
+      <h3>Revisar cartão</h3>
+      <p style="font-size:11.5px; color:var(--text-faint); margin:0 0 10px 0;">Trecho: "${escapeHtml(m.passage.length>200 ? m.passage.slice(0,200)+'…' : m.passage)}"</p>
+      <div class="field">
+        <label>PERGUNTA</label>
+        <textarea rows="2" onkeyup="state.modal.card.front=this.value">${escapeHtml(m.card.front)}</textarea>
+      </div>
+      <div class="field" style="margin-top:10px;">
+        <label>RESPOSTA</label>
+        <textarea rows="2" onkeyup="state.modal.card.back=this.value">${escapeHtml(m.card.back)}</textarea>
+      </div>
+      <div class="field" style="margin-top:10px;">
+        <label>NOTA</label>
+        <textarea rows="2" onkeyup="state.modal.card.note=this.value">${escapeHtml(m.card.note)}</textarea>
+      </div>
+      <div class="field" style="margin-top:10px;">
+        <label>ADICIONAR AO BARALHO</label>
+        <select onchange="state.modal.deckId=this.value; render();">
+          <option value="" ${!m.deckId?'selected':''}>Escolher baralho...</option>
+          ${standardDecks.map(d=>`<option value="${d.id}" ${m.deckId===d.id?'selected':''}>${escapeHtml(d.name)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="modal-actions">
+        <button class="ghost-btn" onclick="closeModal()">Cancelar</button>
+        <button class="primary-btn" onclick="confirmPassageCard()" ${!m.deckId?'disabled':''}>Adicionar cartão</button>
       </div>
     </div>
   </div>`;
