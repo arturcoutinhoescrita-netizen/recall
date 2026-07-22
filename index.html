@@ -1205,7 +1205,19 @@ async function generateDistractors(question, correctAnswer){
 
 async function verifyOpenAnswer(question, referenceAnswer, userAnswer){
   const prompt = `Pergunta: ${question}\nResposta de referência: ${referenceAnswer}\nResposta dada pelo usuário: ${userAnswer}\n\nUse a busca na internet se precisar checar fatos atuais ou específicos. Avalie se a resposta do usuário está correta em conteúdo (não precisa ser idêntica em palavras). Termine sua resposta com uma linha, exatamente neste formato: "VEREDITO: CORRETO" ou "VEREDITO: INCORRETO", seguida de uma explicação de no máximo 2 frases sobre por quê.`;
-  const text = await callGemini(prompt, { maxTokens: 600, useSearch: true });
+  // a busca no Google (useSearch) tem uma cota gratuita bem mais restrita que as
+  // chamadas comuns e costuma estourar (429) rapidinho; se isso acontecer, refaz
+  // a verificação sem busca (só com o conhecimento do modelo) em vez de falhar.
+  let text;
+  try{
+    text = await callGemini(prompt, { maxTokens: 600, useSearch: true });
+  }catch(e){
+    if(e && e.code === 'api_error' && e.status === 429){
+      text = await callGemini(prompt, { maxTokens: 600, useSearch: false });
+    } else {
+      throw e;
+    }
+  }
   const isIncorrect = /VEREDITO:\s*INCORRETO/i.test(text);
   const isCorrect = !isIncorrect && /VEREDITO:\s*CORRETO/i.test(text);
   let explanation = text.split(/VEREDITO:\s*(CORRETO|INCORRETO)/i).pop().trim();
