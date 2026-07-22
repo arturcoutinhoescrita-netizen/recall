@@ -15,7 +15,6 @@
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-storage-compat.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <style>
   :root{
@@ -552,7 +551,7 @@ const firebaseConfig = {
   messagingSenderId: "272502529779",
   appId: "1:272502529779:web:402568fc9f335a3ae6a186"
 };
-let auth = null, db = null, storage = null;
+let auth = null, db = null;
 function isMobileDevice(){
   return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 }
@@ -568,7 +567,6 @@ function initFirebase(){
   firebase.initializeApp(firebaseConfig);
   auth = firebase.auth();
   db = firebase.firestore();
-  storage = firebase.storage();
   db.enablePersistence({ synchronizeTabs: true }).catch(e => console.error('Persistência offline do Firestore não disponível', e));
 
   // no celular, signInWithPopup costuma ser bloqueado/travar — usamos redirect lá,
@@ -606,32 +604,47 @@ function signOutUser(){
   auth.signOut();
 }
 
-/* ============ FIREBASE STORAGE (arquivos .epub, sincronizados entre aparelhos) ============ */
-function epubStoragePath(bookId){
-  return `users/${state.firebaseUser.uid}/epubs/${bookId}.epub`;
-}
-// evita ficar "carregando pra sempre" se o Storage não estiver ativado/configurado
-// no projeto Firebase — sem isso, o SDK pode tentar de novo sozinho por minutos.
+/* ============ CLOUDFLARE R2 (arquivos .epub, via Worker) ============
+   Não falamos com o R2 direto — o Worker confere o login do Firebase
+   (ID token) antes de liberar leitura/escrita do arquivo de cada um. */
+const EPUB_WORKER_URL = 'https://recall-epub-bridge.arturcoutinho-escrita.workers.dev';
+// evita ficar "carregando pra sempre" se o Worker não responder — sem isso,
+// uma falha de rede podia deixar a tela girando pra sempre.
 function withTimeout(promise, ms, timeoutMessage){
   return Promise.race([
     promise,
     new Promise((_, reject) => setTimeout(() => reject(new Error(timeoutMessage || 'timeout')), ms))
   ]);
 }
+async function getFirebaseIdToken(){
+  if(!auth || !auth.currentUser) throw new Error('not_logged_in');
+  return await auth.currentUser.getIdToken();
+}
 async function uploadEpubForBook(bookId, file){
-  const ref = storage.ref(epubStoragePath(bookId));
-  await withTimeout(ref.put(file), 25000, 'upload_timeout');
+  const token = await getFirebaseIdToken();
+  const resp = await withTimeout(fetch(`${EPUB_WORKER_URL}/epub/${bookId}`, {
+    method: 'PUT',
+    headers: { 'Authorization': `Bearer ${token}` },
+    body: file
+  }), 25000, 'upload_timeout');
+  if(!resp.ok) throw new Error('epub_upload_error');
 }
 async function downloadEpubForBook(bookId){
-  const ref = storage.ref(epubStoragePath(bookId));
-  const url = await withTimeout(ref.getDownloadURL(), 15000, 'download_timeout');
-  const resp = await fetch(url);
+  const token = await getFirebaseIdToken();
+  const resp = await withTimeout(fetch(`${EPUB_WORKER_URL}/epub/${bookId}`, {
+    headers: { 'Authorization': `Bearer ${token}` }
+  }), 15000, 'download_timeout');
   if(!resp.ok) throw new Error('epub_download_error');
   return await resp.blob();
 }
 async function deleteEpubForBook(bookId){
-  const ref = storage.ref(epubStoragePath(bookId));
-  await ref.delete().catch(()=>{}); // se não existir, ignora
+  try{
+    const token = await getFirebaseIdToken();
+    await fetch(`${EPUB_WORKER_URL}/epub/${bookId}`, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+  }catch(e){ console.error('Falha ao excluir epub no R2', e); } // se falhar, ignora — não trava a exclusão do livro
 }
 function renderAuthGate(){
   if(!state.authReady){
@@ -2956,8 +2969,10 @@ async function ensureEpubLoaded(bookId){
   render();
 }
 function epubErrorMessage(err){
-  if(err && err.message === 'upload_timeout') return 'O envio demorou demais e foi cancelado. Confirme se o Firebase Storage está ativado no console (Build → Storage) e tente de novo.';
-  if(err && err.message === 'download_timeout') return 'Demorou demais pra abrir o livro salvo. Confirme se o Firebase Storage está ativado no console (Build → Storage) e tente de novo.';
+  if(err && err.message === 'not_logged_in') return 'Faça login pra guardar ou abrir livros.';
+  if(err && err.message === 'upload_timeout') return 'O envio demorou demais e foi cancelado. Tente de novo.';
+  if(err && err.message === 'download_timeout') return 'Demorou demais pra abrir o livro salvo. Tente de novo.';
+  if(err && err.message === 'epub_upload_error') return 'Não consegui salvar esse arquivo agora. Tente de novo.';
   return 'Não consegui abrir esse arquivo. Confira se é um .epub válido, sem proteção DRM.';
 }
 function goToEpubChapter(bookId, index){
