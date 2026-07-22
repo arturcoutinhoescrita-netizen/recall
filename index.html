@@ -310,6 +310,8 @@ const STORAGE_KEY = 'flashcards_app_data';
 const DECK_COLORS = ['#F5A623','#6EE7B7','#7DA9FA','#FB7185','#C99CF7','#F5D76E'];
 const EXERCISE_TYPES = ['translate','reverseTranslate','write','mc','translateOther'];
 const EXERCISE_LABELS = { translate:'Tradução direta', reverseTranslate:'Tradução invertida', write:'Tradução de frase', mc:'Múltipla escolha', translateOther:'Tradução alternativa', 'copy-translation':'Copiar tradução' };
+const STANDARD_STUDY_TYPES = ['mc', 'open', 'image'];
+const STD_TYPE_LABELS = { mc:'Múltipla escolha', open:'Aberta', 'image-answer':'Com imagem' };
 function getCardTranslations(card){
   return String((card&&card.back)||'').split('/').map(t=>t.trim()).filter(Boolean);
 }
@@ -1160,20 +1162,24 @@ function handleImportFile(deckId, filename, content){
 }
 
 /* ============ AI CALLS ============ */
-function getApiKey(){ return localStorage.getItem('recall_api_key') || ''; }
-function setApiKey(key){ localStorage.setItem('recall_api_key', (key||'').trim()); }
+function getApiKey(){ return localStorage.getItem('recall_gemini_api_key') || ''; }
+function setApiKey(key){ localStorage.setItem('recall_gemini_api_key', (key||'').trim()); }
 
-async function callClaude(body){
-  const headers = { "Content-Type": "application/json" };
-  if(!hasClaudeStorage()){
-    const key = getApiKey();
-    if(!key){ const err = new Error('missing_api_key'); err.code = 'missing_api_key'; throw err; }
-    headers["x-api-key"] = key;
-    headers["anthropic-version"] = "2023-06-01";
-    headers["anthropic-dangerous-direct-browser-access"] = "true";
-  }
-  const resp = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST", headers, body: JSON.stringify(body)
+const GEMINI_MODEL = "gemini-flash-latest";
+async function callGemini(prompt, opts){
+  opts = opts || {};
+  const key = getApiKey();
+  if(!key){ const err = new Error('missing_api_key'); err.code = 'missing_api_key'; throw err; }
+  const body = { contents: [{ parts: [{ text: prompt }] }] };
+  // os modelos "flash" atuais do Gemini gastam uma parte imprevisível do limite de tokens
+  // em raciocínio interno (não aparece na resposta) antes de escrever o texto visível —
+  // sem essa folga, respostas curtas saem cortadas no meio (finishReason: MAX_TOKENS).
+  body.generationConfig = { maxOutputTokens: (opts.maxTokens||400) + 800 };
+  if(opts.useSearch) body.tools = [{ google_search: {} }];
+  const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(key)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
   });
   if(!resp.ok){
     const errBody = await resp.text().catch(()=> '');
@@ -1181,17 +1187,16 @@ async function callClaude(body){
     err.code = 'api_error'; err.status = resp.status; err.detail = errBody;
     throw err;
   }
-  return resp.json();
+  const data = await resp.json();
+  const candidate = (data.candidates||[])[0];
+  const text = (candidate && candidate.content && candidate.content.parts) ? candidate.content.parts.map(p=>p.text||'').join('') : '';
+  if(!text){ const err = new Error('empty_response'); err.code = 'empty_response'; throw err; }
+  return text;
 }
 
 async function generateDistractors(question, correctAnswer){
   const prompt = `Pergunta: ${question}\nResposta correta: ${correctAnswer}\n\nGere exatamente 3 alternativas ERRADAS, plausíveis, curtas e no mesmo estilo/formato da resposta correta, para um quiz de múltipla escolha. As alternativas devem poder confundir alguém que não sabe bem o assunto, mas precisam estar objetivamente erradas. Responda SOMENTE com um array JSON de 3 strings, sem nenhum texto antes ou depois. Exemplo de formato: ["alternativa 1", "alternativa 2", "alternativa 3"]`;
-  const data = await callClaude({
-    model: "claude-sonnet-5",
-    max_tokens: 300,
-    messages: [{ role: "user", content: prompt }]
-  });
-  const text = (data.content||[]).map(b=>b.text||"").join("").trim();
+  const text = (await callGemini(prompt, { maxTokens: 300 })).trim();
   const clean = text.replace(/```json|```/g,"").trim();
   const arr = JSON.parse(clean);
   if(!Array.isArray(arr) || arr.length < 3) throw new Error('formato inesperado');
@@ -1200,13 +1205,7 @@ async function generateDistractors(question, correctAnswer){
 
 async function verifyOpenAnswer(question, referenceAnswer, userAnswer){
   const prompt = `Pergunta: ${question}\nResposta de referência: ${referenceAnswer}\nResposta dada pelo usuário: ${userAnswer}\n\nUse a busca na internet se precisar checar fatos atuais ou específicos. Avalie se a resposta do usuário está correta em conteúdo (não precisa ser idêntica em palavras). Termine sua resposta com uma linha, exatamente neste formato: "VEREDITO: CORRETO" ou "VEREDITO: INCORRETO", seguida de uma explicação de no máximo 2 frases sobre por quê.`;
-  const data = await callClaude({
-    model: "claude-sonnet-5",
-    max_tokens: 600,
-    messages: [{ role: "user", content: prompt }],
-    tools: [{ type: "web_search_20250305", name: "web_search" }]
-  });
-  const text = (data.content||[]).map(b=>b.text||"").join("\n");
+  const text = await callGemini(prompt, { maxTokens: 600, useSearch: true });
   const isIncorrect = /VEREDITO:\s*INCORRETO/i.test(text);
   const isCorrect = !isIncorrect && /VEREDITO:\s*CORRETO/i.test(text);
   let explanation = text.split(/VEREDITO:\s*(CORRETO|INCORRETO)/i).pop().trim();
@@ -1216,15 +1215,13 @@ async function verifyOpenAnswer(question, referenceAnswer, userAnswer){
 
 async function generateSentenceForTerm(term){
   const prompt = `Termo em inglês a treinar: "${term}"\n\nEscreva UMA frase natural em inglês, de nível intermediário, que use claramente o termo "${term}" em contexto. Responda SOMENTE com a frase em inglês, sem aspas e sem nenhum texto adicional.`;
-  const data = await callClaude({ model: "claude-sonnet-5", max_tokens: 150, messages: [{ role: "user", content: prompt }] });
-  const text = (data.content||[]).map(b=>b.text||"").join("").trim();
+  const text = (await callGemini(prompt, { maxTokens: 150 })).trim();
   return text.replace(/^"|"$/g,'');
 }
 
 async function verifyTranslation(term, sentence, userTranslation){
   const prompt = `Frase em inglês: "${sentence}"\nTermo sendo treinado: "${term}"\nTradução para português dada pelo usuário: "${userTranslation}"\n\nAvalie se a tradução está correta em sentido geral e no uso específico do termo "${term}" (pequenas variações de palavras são aceitáveis se o sentido estiver certo). Se houver erro, explique claramente qual foi o erro e qual seria uma tradução mais adequada. Termine sua resposta com uma linha exatamente neste formato: "VEREDITO: CORRETO" ou "VEREDITO: INCORRETO", seguida de uma explicação em português (máximo 3 frases).`;
-  const data = await callClaude({ model: "claude-sonnet-5", max_tokens: 400, messages: [{ role: "user", content: prompt }] });
-  const text = (data.content||[]).map(b=>b.text||"").join("\n");
+  const text = await callGemini(prompt, { maxTokens: 400 });
   const isIncorrect = /VEREDITO:\s*INCORRETO/i.test(text);
   const isCorrect = !isIncorrect && /VEREDITO:\s*CORRETO/i.test(text);
   let explanation = text.split(/VEREDITO:\s*(CORRETO|INCORRETO)/i).pop().trim();
@@ -1233,8 +1230,7 @@ async function verifyTranslation(term, sentence, userTranslation){
 }
 
 async function aiVerify(prompt, maxTokens){
-  const data = await callClaude({ model: "claude-sonnet-5", max_tokens: maxTokens||400, messages: [{ role: "user", content: prompt }] });
-  const text = (data.content||[]).map(b=>b.text||"").join("\n");
+  const text = await callGemini(prompt, { maxTokens: maxTokens||400 });
   const isIncorrect = /VEREDITO:\s*INCORRETO/i.test(text);
   const isCorrect = !isIncorrect && /VEREDITO:\s*CORRETO/i.test(text);
   let explanation = text.split(/VEREDITO:\s*(CORRETO|INCORRETO)/i).pop().trim();
@@ -1302,8 +1298,7 @@ const LANG_BATCH_SIZE = 6; // itens processados por chamada de IA
 async function generateSentencesBatch(terms){
   const listText = terms.map((t,i)=>`${i}. "${t}"`).join('\n');
   const prompt = `Você vai receber uma lista numerada de termos em inglês para treinar.\n\n${listText}\n\nPara CADA termo, escreva UMA frase natural em inglês, de nível intermediário, que use claramente o termo em contexto.\n\nResponda SOMENTE com um JSON válido, sem nenhum texto antes ou depois, exatamente neste formato:\n[{"i": 0, "sentence": "frase em inglês"}, ...]\n\nO campo "i" deve corresponder ao número do termo na lista acima (começando em 0).`;
-  const data = await callClaude({ model: "claude-sonnet-5", max_tokens: 120*terms.length, messages: [{ role: "user", content: prompt }] });
-  const text = (data.content||[]).map(b=>b.text||"").join("").trim();
+  const text = (await callGemini(prompt, { maxTokens: 120*terms.length })).trim();
   const clean = text.replace(/```json|```/g,"").trim();
   const parsed = JSON.parse(clean);
   if(!Array.isArray(parsed)) throw new Error('formato inesperado');
@@ -1373,8 +1368,7 @@ function dedupeStrings(arr){
 async function generateQuestionsForHighlights(highlights){
   const listText = highlights.map((h,i)=>`${i}. "${h}"`).join('\n\n');
   const prompt = `Você vai receber uma lista numerada de marcações (trechos destacados) de um livro.\n\n${listText}\n\nPara CADA marcação da lista, crie exatamente 2 perguntas de flashcard em português que ajudem a fixar a ideia central daquele trecho (podem ser perguntas de compreensão, definição de conceito, ou reflexão sobre o conteúdo). As respostas devem ser objetivas, curtas e baseadas no trecho.\n\nResponda SOMENTE com um JSON válido, sem nenhum texto antes ou depois, exatamente neste formato:\n[{"i": 0, "q": [{"front":"pergunta 1","back":"resposta 1"},{"front":"pergunta 2","back":"resposta 2"}]}, ...]\n\nO campo "i" deve ser o número da marcação na lista acima (começando em 0).`;
-  const data = await callClaude({ model: "claude-sonnet-5", max_tokens: 2000, messages: [{ role: "user", content: prompt }] });
-  const text = (data.content||[]).map(b=>b.text||"").join("").trim();
+  const text = (await callGemini(prompt, { maxTokens: 2000 })).trim();
   const clean = text.replace(/```json|```/g,"").trim();
   const parsed = JSON.parse(clean);
   if(!Array.isArray(parsed)) throw new Error('formato inesperado');
@@ -1525,6 +1519,15 @@ function finalizeCarryOver(){
     });
     deck.carryOverLang = existing;
     saveData();
+  } else if(s.mode === 'std-mixed'){
+    const existing = deck.carryOverStd || [];
+    const seen = new Set(existing.map(i=>`${i.cardId}:${i.exType}`));
+    remainder.forEach(item => {
+      const key = `${item.cardId}:${item.exType}`;
+      if(!seen.has(key)){ existing.push(item); seen.add(key); }
+    });
+    deck.carryOverStd = existing;
+    saveData();
   } else if(s.mode === 'mc' || s.mode === 'open'){
     deck.carryOverByMode = deck.carryOverByMode || {};
     const existing = deck.carryOverByMode[s.mode] || [];
@@ -1567,6 +1570,68 @@ function toggleExerciseType(deckId, exType){
   else enabled.push(exType);
   deck.enabledExercises = enabled;
   saveData(); render();
+}
+function getEnabledStandardTypes(deck){
+  if(deck.enabledStandardTypes && deck.enabledStandardTypes.length) return deck.enabledStandardTypes;
+  return [...STANDARD_STUDY_TYPES]; // padrão: todos ativos
+}
+function toggleStandardType(deckId, type){
+  const deck = state.decks.find(d=>d.id===deckId);
+  if(!deck) return;
+  let enabled = getEnabledStandardTypes(deck).slice();
+  if(enabled.includes(type)) enabled = enabled.filter(t=>t!==type);
+  else enabled.push(type);
+  deck.enabledStandardTypes = enabled;
+  saveData(); render();
+}
+function startMixedStandardSession(deckId){
+  const deck = state.decks.find(d=>d.id===deckId);
+  const enabledTypes = deck ? getEnabledStandardTypes(deck) : STANDARD_STUDY_TYPES;
+  if(enabledTypes.length === 0){ showToast('Ative pelo menos 1 tipo de exercício antes de estudar.', 'error'); return; }
+  const due = getDueCards(deckId);
+  const basePool = due.length ? due : getStudyPool(deckId);
+  if(basePool.length === 0){ showToast('Este baralho ainda não tem cartões.', 'error'); return; }
+  const pool = expandPoolForPriority(basePool);
+  let fullQueue = [];
+  pool.forEach(c => {
+    if(isImageCard(c)){
+      if(enabledTypes.includes('image')) fullQueue.push({ cardId: c.id, exType: 'image-answer' });
+    } else {
+      if(enabledTypes.includes('mc')) fullQueue.push({ cardId: c.id, exType: 'mc' });
+      if(enabledTypes.includes('open')) fullQueue.push({ cardId: c.id, exType: 'open' });
+    }
+  });
+  if(fullQueue.length === 0){ showToast('Nenhum cartão combina com os tipos ativos — ajuste os tipos ou adicione cartões.', 'error'); return; }
+
+  const aiOn = isAiEnabled(deck);
+  const usesAI = aiOn && (enabledTypes.includes('mc') || enabledTypes.includes('open') || enabledTypes.includes('image'));
+  let queue;
+  if(usesAI){
+    const fullKeys = new Set(fullQueue.map(i => `${i.cardId}:${i.exType}`));
+    const carry = ((deck && deck.carryOverStd) || []).filter(i => fullKeys.has(`${i.cardId}:${i.exType}`));
+    const carrySet = new Set(carry.map(i => `${i.cardId}:${i.exType}`));
+    const fresh = shuffle(fullQueue.filter(i => !carrySet.has(`${i.cardId}:${i.exType}`)));
+    const ordered = [...shuffle(carry), ...fresh];
+    queue = ordered.slice(0, AI_SESSION_CAP);
+    const leftover = ordered.slice(AI_SESSION_CAP);
+    if(deck){ deck.carryOverStd = leftover; saveData(); }
+  } else {
+    queue = shuffle(fullQueue);
+  }
+
+  state.session = {
+    deckId, mode: 'std-mixed',
+    usesGradedOpen: !aiOn,
+    queue, index: 0,
+    correct: 0, total: queue.length,
+    startTime: Date.now(), cardStart: Date.now(),
+    revealed: false, userInput: '', options: null, loadingOptions: false,
+    verifying: false, verifyResult: null, lastFeedback: null, chosenIndex: null,
+    graded: false, gradeChosen: null, autoMatched: false
+  };
+  state.view = 'study';
+  render();
+  if(getCurrentExType() === 'mc') loadOptionsForCurrent();
 }
 function startLanguageSession(deckId){
   const deck = state.decks.find(d=>d.id===deckId);
@@ -1614,7 +1679,7 @@ function startLanguageSession(deckId){
   prefetchSessionContent(state.session).then(() => loadContentForCurrent());
 }
 function friendlyAiErrorMsg(e){
-  if(e && e.code === 'missing_api_key') return 'É preciso configurar sua chave de API da Anthropic (link no rodapé da barra lateral) para usar os recursos de IA fora do Claude.ai.';
+  if(e && e.code === 'missing_api_key') return 'É preciso configurar sua chave de API do Gemini (link no rodapé da barra lateral) para usar os recursos de IA.';
   return 'Não foi possível verificar agora. Tente novamente.';
 }
 async function loadContentForCurrent(){
@@ -1706,7 +1771,8 @@ function startMemorizeMode(){
 }
 function dontKnowOpen(){
   const s = state.session; const card = getCurrentCard();
-  if(!s || !card || s.mode !== 'open' || s.revealed) return;
+  const inOpenContext = s && (s.mode === 'open' || (s.mode === 'std-mixed' && getCurrentExType() === 'open'));
+  if(!s || !card || !inOpenContext || s.revealed) return;
   if(s.usesGradedOpen){
     scheduleCardGraded(card, 'hard');
     awardPoints(card, false, 'open-graded', 'hard');
@@ -1791,6 +1857,7 @@ function endMemorizeMode(){
     render();
     if(prev.mode === 'mc') loadOptionsForCurrent();
     else if(prev.mode === 'lang-mixed') loadContentForCurrent();
+    else if(prev.mode === 'std-mixed' && getCurrentExType() === 'mc') loadOptionsForCurrent();
   } else {
     state.view = 'results';
     render();
@@ -2033,6 +2100,7 @@ function nextCard(){
   render();
   if(s.mode === 'mc') loadOptionsForCurrent();
   else if(s.mode === 'lang-mixed') loadContentForCurrent();
+  else if(s.mode === 'std-mixed' && getCurrentExType() === 'mc') loadOptionsForCurrent();
 }
 function endSessionEarly(){
   if(state.session && state.session.memorizeMode){ endMemorizeMode(); return; }
@@ -2118,6 +2186,12 @@ function focusStudyInput(){
   if(s.mode === 'open' && !s.usesGradedOpen) id = 'open-input';
   else if(s.mode === 'open' && s.usesGradedOpen && !s.revealed) id = 'open-graded-input';
   else if(s.mode === 'copy-memorize') id = 'copy-input';
+  else if(s.mode === 'std-mixed'){
+    const exType = getCurrentExType();
+    if(exType === 'open' || exType === 'image-answer'){
+      id = s.usesGradedOpen ? 'open-graded-input' : 'open-input';
+    }
+  }
   else if(s.mode === 'lang-mixed'){
     const exType = getCurrentExType();
     if(exType === 'translate') id = 'lang-input';
@@ -2169,7 +2243,7 @@ function renderSidebar(){
       <a href="#" style="color:var(--text-muted); text-decoration:underline;" onclick="event.preventDefault(); openFromFileSystem();">📂 Abrir arquivo local</a>
       ${state.pendingFileHandle ? `<br><a href="#" style="color:#F5A623; text-decoration:underline;" onclick="event.preventDefault(); reconnectFileHandle();">🔌 Reconectar ao arquivo local usado antes</a>` : ''}
       ` : ''}
-      ${!hasClaudeStorage() ? `<br><a href="#" style="color:var(--text-muted); text-decoration:underline;" onclick="event.preventDefault(); openApiKeyModal();">${getApiKey() ? 'Chave de API configurada ✓' : '⚠ Configurar chave de API'}</a>` : ''}
+      <br><a href="#" style="color:var(--text-muted); text-decoration:underline;" onclick="event.preventDefault(); openApiKeyModal();">${getApiKey() ? 'Chave de API do Gemini configurada ✓' : '⚠ Configurar chave de API do Gemini'}</a>
     </div>
   </div>`;
 }
@@ -2474,6 +2548,9 @@ function renderStudyPicker(deck){
     </div>`;
   }
   const aiOn = isAiEnabled(deck);
+  const hasImageCards = (state.cards[deck.id]||[]).some(isImageCard);
+  const enabledStd = getEnabledStandardTypes(deck).filter(t => t !== 'image' || hasImageCards);
+  const carryStdCount = (deck.carryOverStd || []).length;
   return `
   ${dueLine}
   <div style="margin-bottom:16px;">
@@ -2485,41 +2562,46 @@ function renderStudyPicker(deck){
       <p style="font-size:11.5px; color:var(--text-faint); margin-top:6px;">
         ${aiOn
           ? 'Múltipla escolha usa a IA pra criar alternativas, e pergunta aberta verifica sua resposta com busca na internet.'
-          : 'Múltipla escolha usa respostas de outros cartões do baralho como alternativas, e pergunta aberta vira autoavaliação (fácil/médio/difícil) — tudo local, sem gastar IA.'}
+          : 'Múltipla escolha usa respostas de outros cartões do baralho como alternativas, e pergunta aberta (e cartões de imagem) vira autoavaliação (fácil/médio/difícil) — tudo local, sem gastar IA.'}
       </p>
     </div>
   </div>
-  <div class="mode-grid">
-    <button class="mode-card" onclick="startSession('${deck.id}','direct')">
-      <div class="m-icon">✍️</div>
-      <h3>Resposta direta</h3>
-      <p>Veja a pergunta, pense na resposta e revele para se autoavaliar.</p>
+  <div style="margin-bottom:16px;">
+    <label style="font-size:11px; letter-spacing:0.06em; color:var(--text-faint); text-transform:uppercase; font-weight:600;">Tipos de cartão ativos nesta sessão</label>
+    <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">
+      <button type="button" class="ghost-btn" style="padding:8px 14px; font-size:12.5px; ${enabledStd.includes('mc') ? 'border-color:var(--accent); color:var(--accent);' : 'opacity:0.55;'}" onclick="toggleStandardType('${deck.id}','mc')">
+        ${enabledStd.includes('mc') ? '✓ ' : ''}🎯 Múltipla escolha
+      </button>
+      <button type="button" class="ghost-btn" style="padding:8px 14px; font-size:12.5px; ${enabledStd.includes('open') ? 'border-color:var(--accent); color:var(--accent);' : 'opacity:0.55;'}" onclick="toggleStandardType('${deck.id}','open')">
+        ${enabledStd.includes('open') ? '✓ ' : ''}🌐 Aberta
+      </button>
+      ${hasImageCards ? `
+      <button type="button" class="ghost-btn" style="padding:8px 14px; font-size:12.5px; ${enabledStd.includes('image') ? 'border-color:var(--accent); color:var(--accent);' : 'opacity:0.55;'}" onclick="toggleStandardType('${deck.id}','image')">
+        ${enabledStd.includes('image') ? '✓ ' : ''}🖼️ Com imagem
+      </button>
+      ` : ''}
+    </div>
+    ${enabledStd.length === 0 ? `<p style="font-size:11.5px; color:var(--error); margin-top:8px;">Ative pelo menos 1 tipo de exercício pra estudar.</p>` : ''}
+    ${aiOn && carryStdCount > 0 ? `<p style="font-size:11.5px; color:#F5A623; margin-top:8px;">🔁 ${carryStdCount} exercício(s) pendente(s) da sessão anterior serão priorizados agora.</p>` : ''}
+  </div>
+  <div class="mode-grid" style="grid-template-columns:1fr;">
+    <button class="mode-card" ${enabledStd.length===0?'disabled style="opacity:0.5; cursor:not-allowed;"':''} onclick="${enabledStd.length>0 ? `startMixedStandardSession('${deck.id}')` : ''}">
+      <div class="m-icon">🧠</div>
+      <h3>Começar sessão</h3>
+      <p>Mistura os tipos ativos acima. Múltipla escolha e aberta ${aiOn ? 'usam IA' : 'ficam locais, sem IA'}; cartões de imagem sempre são digitados e autoavaliados.</p>
+      ${aiOn ? `<p style="margin-top:6px; font-size:11.5px;">⚡ Sessões com IA são limitadas a ${AI_SESSION_CAP} perguntas — o resto fica pendente pra próxima vez.</p>` : ''}
     </button>
-    <button class="mode-card" onclick="startSession('${deck.id}','mc')">
-      <div class="m-icon">🎯</div>
-      <h3>Múltipla escolha</h3>
-      <p>${aiOn ? 'A IA gera 3 alternativas erradas plausíveis com base na resposta certa.' : 'Usa as respostas de outros cartões do baralho como alternativas erradas — sem IA.'}</p>
-      ${aiOn ? `<p style="margin-top:6px; font-size:11.5px;">⚡ Limitada a ${AI_SESSION_CAP} perguntas por sessão.${(deck.carryOverByMode && deck.carryOverByMode.mc && deck.carryOverByMode.mc.length) ? ` 🔁 ${deck.carryOverByMode.mc.length} pendente(s) serão priorizadas.` : ''}</p>` : `<p style="margin-top:6px; font-size:11.5px;">Precisa de pelo menos 4 cartões com respostas diferentes no baralho.</p>`}
-    </button>
-    <button class="mode-card" onclick="startSession('${deck.id}','open')">
-      <div class="m-icon">🌐</div>
-      <h3>Pergunta aberta</h3>
-      <p>${aiOn ? 'Digite sua resposta livremente — a IA busca na internet e confere se está certa.' : 'Revele a resposta e diga se foi fácil, médio ou difícil — sem IA.'}</p>
-      ${aiOn ? `<p style="margin-top:6px; font-size:11.5px;">⚡ Limitada a ${AI_SESSION_CAP} perguntas por sessão.${(deck.carryOverByMode && deck.carryOverByMode.open && deck.carryOverByMode.open.length) ? ` 🔁 ${deck.carryOverByMode.open.length} pendente(s) serão priorizadas.` : ''}</p>` : `<p style="margin-top:6px; font-size:11.5px;">Sem limite de perguntas — não gasta IA.</p>`}
-    </button>
-    ${(state.cards[deck.id]||[]).some(isImageCard) ? `
-    <button class="mode-card" onclick="startSession('${deck.id}','image-answer')">
-      <div class="m-icon">📍</div>
-      <h3>Responder</h3>
-      <p>Mostra o pino escolhido destacado na imagem e a pergunta dele — digite a resposta e se autoavalie.</p>
-    </button>
+  </div>
+  ${hasImageCards ? `
+  <div class="mode-grid" style="grid-template-columns:1fr; margin-top:10px;">
     <button class="mode-card" onclick="startSession('${deck.id}','image-locate')">
-      <div class="m-icon">🎯</div>
-      <h3>Localizar</h3>
-      <p>Mostra só a pergunta, sem revelar onde fica — clique no ponto certo da imagem.</p>
+      <div class="m-icon">📍</div>
+      <h3>Localizar (só imagem)</h3>
+      <p>Modo separado: mostra só a pergunta, sem revelar onde fica o pino — clique no ponto certo da imagem. Não entra na sessão mista acima.</p>
     </button>
-    ` : ''}
-  </div>`;
+  </div>
+  ` : ''}
+  `;
 }
 
 function renderPrefetchLoading(s){
@@ -2561,6 +2643,11 @@ function renderStudyView(){
     body = renderImageAnswerMode(s, card);
   } else if(s.mode === 'image-locate'){
     body = renderImageLocateMode(s, card);
+  } else if(s.mode === 'std-mixed'){
+    const stdExType = getCurrentExType();
+    if(stdExType === 'mc') body = renderMCMode(s, card);
+    else if(stdExType === 'open') body = renderOpenMode(s, card);
+    else if(stdExType === 'image-answer') body = renderImageAnswerMode(s, card);
   } else if(s.mode === 'lang-mixed'){
     const exType = getCurrentExType();
     if(exType === 'translate') body = renderTranslateExercise(s, card);
@@ -2571,9 +2658,9 @@ function renderStudyView(){
     else if(exType === 'copy-translation') body = renderCopyTranslationExercise(s, card);
   }
 
-  const exLabel = s.mode === 'lang-mixed' ? ` · ${EXERCISE_LABELS[getCurrentExType()]}` : '';
+  const exLabel = s.mode === 'lang-mixed' ? ` · ${EXERCISE_LABELS[getCurrentExType()]}` : (s.mode === 'std-mixed' ? ` · ${STD_TYPE_LABELS[getCurrentExType()]}` : '');
   const remaining = s.queue.length - s.index;
-  const currentExType = s.mode === 'lang-mixed' ? getCurrentExType() : null;
+  const currentExType = (s.mode === 'lang-mixed' || s.mode === 'std-mixed') ? getCurrentExType() : null;
   const isReverse = currentExType === 'reverseTranslate';
   const hideTopQuestion = currentExType === 'mc'; // a pergunta real já aparece dentro do quadro de alternativas
   const questionText = isReverse
@@ -2695,37 +2782,15 @@ function renderImageBroken(){
   return `<div style="display:none; padding:36px 16px; text-align:center; color:var(--error); font-size:13px; background:var(--bg-2); border-radius:12px;">⚠ Não foi possível carregar essa imagem.</div>`;
 }
 function renderImageAnswerMode(s, card){
+  // reaproveita 100% a mesma lógica de pergunta aberta (digita, autoavalia fácil/médio/difícil
+  // quando a IA tá desligada, ou verificação por IA quando ligada) — só acrescenta a imagem em cima.
   const imageBlock = `
-  <div style="position:relative; max-width:420px; width:100%; margin:0 auto;">
+  <div style="position:relative; max-width:420px; width:100%; margin:0 auto 14px;">
     <img src="${escapeHtml(card.imageUrl)}" style="width:100%; display:block; border-radius:12px;" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
     ${renderImageBroken()}
     ${renderImagePinMarkers(card, true)}
   </div>`;
-  if(!s.revealed){
-    return `
-    <div class="answer-zone" style="align-items:center;">
-      ${imageBlock}
-      <button class="primary-btn" onclick="submitDirectReveal()">Revelar resposta</button>
-    </div>`;
-  }
-  return `
-  <div class="answer-zone">
-    ${imageBlock}
-    <div class="reveal-zone">
-      <div class="answer-box">${escapeHtml(card.back)}</div>
-      ${s.lastFeedback === null ? `
-        <p style="color:var(--text-muted); font-size:13.5px;">Você acertou?</p>
-        <div class="action-row">
-          <button class="ghost-btn" style="border-color:var(--error); color:var(--error);" onclick="answerDirect(false)">✕ Errei</button>
-          <button class="primary-btn" onclick="answerDirect(true)">✓ Acertei</button>
-        </div>
-      ` : `
-        <div class="feedback-banner ${s.lastFeedback?'ok':'no'}">${s.lastFeedback? '✓ Mandou bem!' : '✕ Vamos revisar de novo em breve.'}</div>
-        ${renderPointsBadge(s)}
-        <div class="action-row"><button class="primary-btn" onclick="nextCard()">Próximo →</button></div>
-      `}
-    </div>
-  </div>`;
+  return renderOpenMode(s, card, imageBlock);
 }
 const IMAGE_LOCATE_TOLERANCE_PCT = 7;
 function answerImageLocate(e){
@@ -2801,11 +2866,12 @@ function renderMCMode(s, card){
   </div>`;
 }
 
-function renderOpenMode(s, card){
-  if(s.usesGradedOpen) return renderOpenGradedMode(s, card);
+function renderOpenMode(s, card, extraTop){
+  if(s.usesGradedOpen) return renderOpenGradedMode(s, card, extraTop);
   if(!s.revealed){
     return `
     <div class="answer-zone">
+      ${extraTop||''}
       <textarea id="open-input" rows="3" placeholder="Digite sua resposta... (Enter para confirmar, Shift+Enter para quebrar linha)" autofocus autocomplete="off" autocorrect="off" spellcheck="false" ${s.verifying?'disabled':''} onkeydown="if(event.key==='Enter' && !event.shiftKey){ event.preventDefault(); if(!${s.verifying}) submitOpenAnswerFromInput(); }" onkeyup="state.session.userInput=this.value">${escapeHtml(s.userInput||'')}</textarea>
       <div class="action-row">
         <button class="primary-btn" ${s.verifying?'disabled':''} onclick="submitOpenAnswerFromInput()">
@@ -2821,6 +2887,7 @@ function renderOpenMode(s, card){
   const r = s.verifyResult;
   return `
   <div class="answer-zone">
+    ${extraTop||''}
     <div class="reveal-zone">
       <div class="answer-box"><strong>Resposta de referência:</strong> ${escapeHtml(card.back)}</div>
       <div class="feedback-banner ${r.correct?'ok':'no'}">${r.correct? '✓ Correto' : '✕ Incorreto'} — ${escapeHtml(r.explanation)}</div>
@@ -2829,10 +2896,11 @@ function renderOpenMode(s, card){
     </div>
   </div>`;
 }
-function renderOpenGradedMode(s, card){
+function renderOpenGradedMode(s, card, extraTop){
   if(!s.revealed){
     return `
     <div class="answer-zone">
+      ${extraTop||''}
       <textarea id="open-graded-input" rows="3" placeholder="Digite sua resposta... (Enter para confirmar, Shift+Enter para quebrar linha)" autofocus autocomplete="off" autocorrect="off" spellcheck="false" onkeydown="if(event.key==='Enter' && !event.shiftKey){ event.preventDefault(); submitOpenGraded(); }" onkeyup="state.session.userInput=this.value">${escapeHtml(s.userInput||'')}</textarea>
       <div class="action-row">
         <button class="primary-btn" onclick="submitOpenGraded()">Verificar resposta</button>
@@ -2845,6 +2913,7 @@ function renderOpenGradedMode(s, card){
   if(!s.graded){
     return `
     <div class="answer-zone">
+      ${extraTop||''}
       <div class="reveal-zone">
         <div class="answer-box"><strong>Sua resposta:</strong> ${escapeHtml(s.userInput||'')}</div>
         <div class="answer-box"><strong>Resposta de referência:</strong> ${escapeHtml(card.back)}</div>
@@ -2860,6 +2929,7 @@ function renderOpenGradedMode(s, card){
   const gradeLabels = { easy: '😌 Fácil', medium: '😐 Médio', hard: '😖 Difícil' };
   return `
   <div class="answer-zone">
+    ${extraTop||''}
     <div class="reveal-zone">
       <div class="feedback-banner ${s.lastFeedback?'ok':'no'}">${s.autoMatched ? '✓ Bateu certinho com a resposta de referência!' : `Marcado como ${gradeLabels[s.gradeChosen]}${s.gradeChosen==='hard' ? ' — vai voltar a aparecer em breve' : ''}`}</div>
       ${renderPointsBadge(s)}
@@ -2875,7 +2945,7 @@ function submitOpenAnswerFromInput(){
 
 function langLoadError(s){
   if(s && s.content && s.content.missingKey){
-    return `<div class="answer-zone" style="align-items:center;"><p style="color:var(--error); font-size:13.5px; text-align:center;">É preciso configurar sua chave de API para gerar exercícios de IA fora do Claude.ai. <button class="ghost-btn" onclick="openApiKeyModal()">Configurar chave</button></p></div>`;
+    return `<div class="answer-zone" style="align-items:center;"><p style="color:var(--error); font-size:13.5px; text-align:center;">É preciso configurar sua chave de API do Gemini pra gerar exercícios de IA. <button class="ghost-btn" onclick="openApiKeyModal()">Configurar chave</button></p></div>`;
   }
   return `<div class="answer-zone" style="align-items:center;"><p style="color:var(--error); font-size:13.5px; text-align:center;">Não foi possível gerar o exercício. <button class="ghost-btn" onclick="loadContentForCurrent()">Tentar de novo</button></p></div>`;
 }
@@ -3127,13 +3197,13 @@ function renderApiKeyModal(m){
   return `
   <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
     <div class="modal">
-      <h3>Chave de API da Anthropic</h3>
+      <h3>Chave de API do Gemini</h3>
       <p style="font-size:12.5px; color:var(--text-muted); line-height:1.5; margin:0;">
-        Como você está abrindo este arquivo fora do Claude.ai, os recursos de IA (gerar frases, alternativas, verificar respostas) precisam de uma chave de API sua para funcionar. Ela fica salva só no seu navegador, neste computador — nunca é enviada a nenhum lugar além da API da Anthropic.
+        Os recursos de IA (gerar frases, alternativas, verificar respostas) usam o Google Gemini e precisam de uma chave sua pra funcionar. Ela fica salva só no seu navegador, neste computador — nunca é enviada a nenhum lugar além da API do Google. Crie a sua grátis em <strong>aistudio.google.com</strong> (Get API key).
       </p>
       <div class="field">
-        <label>CHAVE (começa com sk-ant-...)</label>
-        <input type="text" id="api-key-input" placeholder="sk-ant-..." value="${escapeHtml(m.key||'')}" onkeyup="state.modal.key=this.value">
+        <label>CHAVE DO GEMINI</label>
+        <input type="text" id="api-key-input" placeholder="Cole sua chave aqui" value="${escapeHtml(m.key||'')}" onkeyup="state.modal.key=this.value">
       </div>
       <div class="modal-actions">
         <button class="ghost-btn" onclick="closeModal()">Cancelar</button>
@@ -3201,9 +3271,11 @@ document.addEventListener('keydown', function(e){
   if(e.key !== 'Enter') return;
   if(state.view !== 'study' || !state.session) return;
   const s = state.session;
+  const stdMixedExType = s.mode === 'std-mixed' ? getCurrentExType() : null;
+  const isGradedContext = (s.mode === 'open' || stdMixedExType === 'open' || stdMixedExType === 'image-answer') && s.usesGradedOpen;
   const nextVisible = s.mode === 'direct'
     ? (s.revealed && s.lastFeedback !== null)
-    : (s.mode === 'open' && s.usesGradedOpen)
+    : isGradedContext
       ? (s.revealed && s.graded)
       : (s.revealed && !s.verifying);
   if(nextVisible){
@@ -3219,7 +3291,7 @@ document.addEventListener('keydown', function(e){
   const s = state.session;
   if(s.revealed || s.verifying) return;
   const idx = parseInt(e.key, 10) - 1;
-  if(s.mode === 'mc' && s.options && !s.loadingOptions){
+  if((s.mode === 'mc' || (s.mode === 'std-mixed' && getCurrentExType() === 'mc')) && s.options && !s.loadingOptions){
     if(idx < s.options.length){ e.preventDefault(); answerMC(idx); }
   } else if(s.mode === 'lang-mixed' && getCurrentExType() === 'mc' && s.content && s.content.options && !s.loadingContent){
     if(idx < s.content.options.length){ e.preventDefault(); answerLangMC(idx); }
@@ -3231,7 +3303,8 @@ document.addEventListener('keydown', function(e){
   if(e.key !== 'Escape') return;
   if(state.view !== 'study' || !state.session) return;
   const s = state.session;
-  if(s.mode === 'open' && !s.revealed && !s.verifying){
+  const stdMixedExType = s.mode === 'std-mixed' ? getCurrentExType() : null;
+  if((s.mode === 'open' || stdMixedExType === 'open' || stdMixedExType === 'image-answer') && !s.revealed && !s.verifying){
     e.preventDefault();
     dontKnowOpen();
   } else if(s.mode === 'lang-mixed' && !s.revealed && !s.memorizeMode){
