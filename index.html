@@ -1169,11 +1169,15 @@ function handleImportFile(deckId, filename, content){
 function getApiKey(){ return localStorage.getItem('recall_gemini_api_key') || ''; }
 function setApiKey(key){ localStorage.setItem('recall_gemini_api_key', (key||'').trim()); }
 
-const GEMINI_MODEL = "gemini-flash-latest";
+// modelo usado só pra ler foto e gerar as perguntas (função da câmera); o resto do
+// app (pergunta aberta, tradução, múltipla escolha etc.) usa GEMINI_MODEL_TEXT.
+const GEMINI_MODEL_VISION = "gemini-3.1-flash-lite";
+const GEMINI_MODEL_TEXT = "gemini-3.5-flash-lite";
 async function callGemini(prompt, opts){
   opts = opts || {};
   const key = getApiKey();
   if(!key){ const err = new Error('missing_api_key'); err.code = 'missing_api_key'; throw err; }
+  const model = opts.model || GEMINI_MODEL_TEXT;
   const parts = [{ text: prompt }];
   if(opts.imageBase64) parts.push({ inline_data: { mime_type: opts.imageMime || 'image/jpeg', data: opts.imageBase64 } });
   const body = { contents: [{ parts }] };
@@ -1182,7 +1186,7 @@ async function callGemini(prompt, opts){
   // sem essa folga, respostas curtas saem cortadas no meio (finishReason: MAX_TOKENS).
   body.generationConfig = { maxOutputTokens: (opts.maxTokens||400) + 800 };
   if(opts.useSearch) body.tools = [{ google_search: {} }];
-  const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(key)}`, {
+  const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body)
@@ -1231,13 +1235,17 @@ async function verifyOpenAnswer(question, referenceAnswer, userAnswer){
   return { correct: isCorrect, explanation };
 }
 
-async function generateFlashcardsFromImage(base64Data, mimeType){
-  const prompt = `Esta imagem é uma foto de uma página de livro. Leia e entenda o texto da página e crie exatamente 3 flashcards de pergunta e resposta em português sobre o conteúdo principal dela. As perguntas devem ser objetivas e as respostas curtas e diretas. Para cada flashcard, escreva também uma nota breve (1-2 frases) com uma explicação um pouco mais elaborada do conteúdo, pra consultar depois durante o estudo.\n\nResponda SOMENTE com um JSON válido, sem nenhum texto antes ou depois, exatamente neste formato:\n[{"front":"pergunta","back":"resposta objetiva","note":"breve explicação do conteúdo"}, ...]`;
-  const text = (await callGemini(prompt, { maxTokens: 900, imageBase64: base64Data, imageMime: mimeType })).trim();
+async function generateFlashcardsFromImage(base64Data, mimeType, count, avoidFronts){
+  count = count || 3;
+  const avoidText = (avoidFronts && avoidFronts.length)
+    ? `\n\nJá existem estes flashcards aprovados sobre essa mesma imagem — NÃO repita essas perguntas nem o mesmo foco, gere outras diferentes:\n${avoidFronts.map(f => `- ${f}`).join('\n')}`
+    : '';
+  const prompt = `Esta imagem é uma foto de uma página de livro. Leia e entenda o texto da página e crie exatamente ${count} flashcard(s) de pergunta e resposta em português sobre o conteúdo principal dela. As perguntas devem ser objetivas e as respostas curtas e diretas. Para cada flashcard, escreva também uma nota breve (1-2 frases) com uma explicação um pouco mais elaborada do conteúdo, pra consultar depois durante o estudo.${avoidText}\n\nResponda SOMENTE com um JSON válido, sem nenhum texto antes ou depois, exatamente neste formato:\n[{"front":"pergunta","back":"resposta objetiva","note":"breve explicação do conteúdo"}, ...]`;
+  const text = (await callGemini(prompt, { maxTokens: 300*count, imageBase64: base64Data, imageMime: mimeType, model: GEMINI_MODEL_VISION })).trim();
   const clean = text.replace(/```json|```/g,"").trim();
   const arr = JSON.parse(clean);
   if(!Array.isArray(arr) || arr.length === 0) throw new Error('formato inesperado');
-  return arr.slice(0,3).map(c => ({
+  return arr.slice(0,count).map(c => ({
     front: String((c && c.front) || '').trim(),
     back: String((c && c.back) || '').trim(),
     note: String((c && c.note) || '').trim()
@@ -1482,11 +1490,11 @@ function drawImageRegionToBase64(imgEl, sx, sy, sw, sh){
   const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
   return { dataUrl, base64: dataUrl.split(',')[1], mime: 'image/jpeg' };
 }
-function openPhotoImportPicker(){
+function openPhotoImportPicker(useCamera){
   const input = document.createElement('input');
   input.type = 'file';
   input.accept = 'image/*';
-  input.capture = 'environment';
+  if(useCamera) input.capture = 'environment'; // só força abrir a câmera nesse caso; sem isso, abre a galeria/arquivos normalmente
   input.onchange = (e) => {
     const file = e.target.files[0];
     if(!file) return;
@@ -1610,7 +1618,7 @@ function confirmCrop(){
 }
 async function runPhotoImportGeneration(img){
   const defaultDeck = state.decks.find(d => d.id === state.currentDeckId && d.type !== 'language') || state.decks.find(d => d.type !== 'language');
-  state.modal = { type:'photo-import', status:'processing', imageDataUrl: img.dataUrl, cards: [], deckId: defaultDeck ? defaultDeck.id : '__new__', newDeckName:'' };
+  state.modal = { type:'photo-import', status:'processing', imageDataUrl: img.dataUrl, base64: img.base64, mime: img.mime, cards: [], deckId: defaultDeck ? defaultDeck.id : '__new__', newDeckName:'', regenerating:false };
   render();
   try{
     const cards = await generateFlashcardsFromImage(img.base64, img.mime);
@@ -1627,6 +1635,24 @@ async function runPhotoImportGeneration(img){
     }
   }
   render();
+}
+function regenerateUncheckedCards(){
+  const m = state.modal;
+  if(!m || m.type !== 'photo-import' || m.status !== 'review' || m.regenerating) return;
+  const uncheckedIdx = m.cards.map((c,i)=>i).filter(i => !m.cards[i].include);
+  if(uncheckedIdx.length === 0){ showToast('Desmarque os cartões que quer trocar antes de gerar de novo.', 'error'); return; }
+  m.regenerating = true; render();
+  const keptFronts = m.cards.filter(c => c.include).map(c => c.front);
+  generateFlashcardsFromImage(m.base64, m.mime, uncheckedIdx.length, keptFronts).then(newCards => {
+    if(!state.modal || state.modal.type !== 'photo-import' || state.modal.status !== 'review') return;
+    uncheckedIdx.forEach((idx,i) => { if(newCards[i]) state.modal.cards[idx] = { ...newCards[i], include:false }; });
+  }).catch(err => {
+    console.error('Falha ao gerar novos cartões', err);
+    if(state.modal && state.modal.type === 'photo-import') showToast(friendlyAiErrorMsg(err), 'error');
+  }).finally(() => {
+    if(state.modal && state.modal.type === 'photo-import') state.modal.regenerating = false;
+    render();
+  });
 }
 function confirmPhotoImport(){
   const m = state.modal;
@@ -2432,7 +2458,8 @@ function renderSidebar(){
       </div>
     </div>
     <button class="new-deck-btn" onclick="openNewDeckModal()">＋ Novo baralho</button>
-    <button class="ghost-btn" style="font-size:12.5px; padding:9px 12px;" onclick="openPhotoImportPicker()">📷 Criar cartões de uma foto</button>
+    <button class="ghost-btn" style="font-size:12.5px; padding:9px 12px;" onclick="openPhotoImportPicker(true)">📷 Tirar foto (cartões)</button>
+    <button class="ghost-btn" style="font-size:12.5px; padding:9px 12px;" onclick="openPhotoImportPicker(false)">🖼️ Carregar imagem (cartões)</button>
     <button class="ghost-btn" style="font-size:12.5px; padding:9px 12px;" onclick="openKindleImportPicker()">📖 Importar marcações do Kindle</button>
     <div class="deck-list">
       ${state.decks.length === 0 ? `<div style="color:var(--text-faint); font-size:12.5px; padding:8px 4px;">Nenhum baralho ainda.</div>` : ''}
@@ -3518,17 +3545,18 @@ function renderPhotoImportModal(m){
   }
   const standardDecks = state.decks.filter(d => d.type !== 'language');
   const includedCount = m.cards.filter(c => c.include).length;
+  const uncheckedCount = m.cards.length - includedCount;
   return `
   <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
     <div class="modal" style="width:520px; max-height:86vh; overflow-y:auto;">
       <h3>Revisar cartões da foto</h3>
       <p style="font-size:12.5px; color:var(--text-muted); line-height:1.5; margin:0;">
-        A IA sugeriu estes 3 cartões a partir da foto. Edite o que quiser, desmarque os que não interessam e escolha o baralho antes de adicionar.
+        A IA sugeriu estes cartões a partir da foto. Desmarque os que não gostou e clique em "Gerar novamente" pra trocá-los por outros — os marcados ficam como estão. Edite o texto à vontade e escolha o baralho antes de adicionar.
       </p>
       <div style="display:flex; flex-direction:column; gap:10px; margin:8px 0;">
         ${m.cards.map((c,i) => `
           <div style="display:flex; gap:10px; padding:12px; background:var(--bg-2); border:1px solid var(--border); border-radius:10px; ${!c.include ? 'opacity:0.5;' : ''}">
-            <input type="checkbox" style="margin-top:4px;" ${c.include?'checked':''} onchange="state.modal.cards[${i}].include=this.checked; render();">
+            <input type="checkbox" style="margin-top:4px;" ${c.include?'checked':''} ${m.regenerating?'disabled':''} onchange="state.modal.cards[${i}].include=this.checked; render();">
             <div style="flex:1; display:flex; flex-direction:column; gap:8px;">
               <div class="field" style="gap:4px;">
                 <label style="font-size:10px;">PERGUNTA</label>
@@ -3546,7 +3574,10 @@ function renderPhotoImportModal(m){
           </div>
         `).join('')}
       </div>
-      <div class="field">
+      <button type="button" class="ghost-btn" style="width:100%;" onclick="regenerateUncheckedCards()" ${(uncheckedCount===0||m.regenerating)?'disabled':''}>
+        ${m.regenerating ? '⏳ Gerando novos cartões…' : `🔄 Gerar novamente (${uncheckedCount} ${uncheckedCount===1?'desmarcado':'desmarcados'})`}
+      </button>
+      <div class="field" style="margin-top:10px;">
         <label>ADICIONAR AO BARALHO</label>
         <select id="photo-import-deck-select" onchange="state.modal.deckId=this.value; render();">
           <option value="" ${!m.deckId?'selected':''}>Escolher baralho...</option>
