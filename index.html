@@ -370,6 +370,38 @@ const STD_TYPE_LABELS = { mc:'Múltipla escolha', open:'Aberta', 'image-answer':
 function getCardTranslations(card){
   return String((card&&card.back)||'').split('/').map(t=>t.trim()).filter(Boolean);
 }
+// card.contextNotes é um array paralelo a getCardTranslations(card) — uma nota
+// de contexto por opção de tradução (a frase de onde a IA tirou, ou uma breve
+// explicação). O índice 0 é sempre a tradução DIRETA e fica em branco de
+// propósito: ela não depende de contexto nenhum.
+function getContextNoteForIndex(card, idx){
+  if(idx == null || idx <= 0) return '';
+  const notes = (card && card.contextNotes) || [];
+  return notes[idx] || '';
+}
+// acha em qual posição de getCardTranslations(card) uma resposta digitada cai —
+// usado depois que o usuário responde, pra saber qual nota de contexto mostrar
+// (ou nenhuma, se a resposta bateu com a tradução direta).
+function findTranslationIndexForAnswer(card, answer){
+  const list = getCardTranslations(card);
+  const norm = normalizeAnswer(answer);
+  return list.findIndex(a => normalizeAnswer(a) === norm);
+}
+function renderContextNoteBox(note){
+  if(!note) return '';
+  return `<div style="background:var(--bg-2); border:1px solid var(--border); border-radius:10px; padding:10px 14px; margin-top:10px; font-size:12.5px; color:var(--text-muted); text-align:left; white-space:pre-wrap;">📎 <strong>Nota de contexto:</strong> ${escapeHtml(note)}</div>`;
+}
+// usado pela múltipla escolha, que às vezes tem mais de uma resposta certa
+// (traduções diferentes do mesmo cartão) — junta as notas sem repetir.
+function collectContextNotes(card, indexes){
+  const notes = [];
+  const seen = new Set();
+  (indexes||[]).forEach(i => {
+    const n = getContextNoteForIndex(card, i);
+    if(n && !seen.has(n)){ notes.push(n); seen.add(n); }
+  });
+  return notes;
+}
 
 function stripParens(str){
   return String(str||'').replace(/\([^)]*\)/g, '').replace(/\s+/g,' ').trim();
@@ -1468,22 +1500,36 @@ function generateLocalMC(card, deckCards){
     const opts = String(backStr||'').split('/').map(s=>s.trim()).filter(Boolean);
     return opts[Math.floor(Math.random()*opts.length)] || backStr;
   };
+  // igual pickOne, mas também devolve o índice escolhido (só faz sentido pra
+  // tradução do PRÓPRIO cartão — pra puxar a nota de contexto certa depois).
+  const pickOneWithIndex = (backStr) => {
+    const opts = String(backStr||'').split('/').map(s=>s.trim()).filter(Boolean);
+    const idx = Math.floor(Math.random()*opts.length);
+    return { text: opts[idx] || backStr, index: idx };
+  };
   const distractorCards = shuffle(eligibleOthers.slice()).slice(0, 3);
   const direction = Math.random() < 0.5 ? 'term' : 'translation';
   const cardTranslations = getCardTranslations(card);
   let promptText, correctTexts, distractorTexts;
+  let correctTranslationIndexes = [], promptTranslationIndex = null;
   if(direction === 'term'){
     promptText = `Qual é a tradução de "${card.front}"?`;
     if(cardTranslations.length >= 2){
       // termo com 2+ traduções aceitas: inclui 2 delas como certas, pra reforçar que mais de uma resposta vale
-      correctTexts = shuffle(cardTranslations.slice()).slice(0, 2);
+      const shuffledIdx = shuffle(cardTranslations.map((_,i)=>i)).slice(0, 2);
+      correctTexts = shuffledIdx.map(i => cardTranslations[i]);
+      correctTranslationIndexes = shuffledIdx;
       distractorTexts = distractorCards.map(c => pickOne(c.back)).slice(0, 2);
     } else {
-      correctTexts = [pickOne(card.back)];
+      const picked = pickOneWithIndex(card.back);
+      correctTexts = [picked.text];
+      correctTranslationIndexes = [picked.index];
       distractorTexts = distractorCards.map(c => pickOne(c.back));
     }
   } else {
-    promptText = `Qual termo em inglês significa "${pickOne(card.back)}"?`;
+    const picked = pickOneWithIndex(card.back);
+    promptTranslationIndex = picked.index;
+    promptText = `Qual termo em inglês significa "${picked.text}"?`;
     correctTexts = [stripParens(card.front)];
     distractorTexts = distractorCards.map(c => stripParens(c.front));
   }
@@ -1494,7 +1540,9 @@ function generateLocalMC(card, deckCards){
   return {
     prompt: promptText,
     options: entries.map(e => e.text),
-    correctIndexes: entries.map((e,i) => e.correct ? i : -1).filter(i => i !== -1)
+    correctIndexes: entries.map((e,i) => e.correct ? i : -1).filter(i => i !== -1),
+    correctTranslationIndexes,
+    promptTranslationIndex
   };
 }
 function generateLocalMCStandard(card, deckCards){
@@ -2314,8 +2362,9 @@ async function loadContentForCurrent(){
   if(exType === 'translate'){ s.loadingContent = false; s.content = {}; render(); return; } // local, sem IA
   if(exType === 'reverseTranslate'){
     const options = String(card.back||'').split('/').map(o=>o.trim()).filter(Boolean);
-    const chosen = options[Math.floor(Math.random()*options.length)] || card.back;
-    s.loadingContent = false; s.content = { chosenTranslation: chosen }; render(); return; // local, sem IA
+    const idx = Math.floor(Math.random()*options.length);
+    const chosen = options[idx] || card.back;
+    s.loadingContent = false; s.content = { chosenTranslation: chosen, chosenIndex: idx }; render(); return; // local, sem IA
   }
   if(exType === 'mc'){
     const mc = generateLocalMC(card, state.cards[s.deckId]);
@@ -2337,7 +2386,7 @@ async function loadContentForCurrent(){
     const options = getCardTranslations(card);
     const idx = Math.min((item && item.translationIndex) || 0, options.length-1);
     s.loadingContent = false;
-    s.content = { targetTranslation: options[idx] };
+    s.content = { targetTranslation: options[idx], translationIndex: idx };
     render();
     return; // local, sem IA
   }
@@ -2494,17 +2543,32 @@ function lookupWord(word, deckId, sentenceOverride){
 // já espera pra virar respostas alternativas) — sem repetir se a direta já
 // coincidir com uma das contextuais. note = explicação breve da IA, category =
 // classe gramatical (substantivo/verbo/etc.) mostrada durante o estudo.
+// contextNotes = uma nota por opção (mesma ordem de allTranslations): em branco
+// pra tradução direta (índice 0, não depende de contexto nenhum) e a frase
+// original + explicação da IA pras opções contextuais — sem isso, meses depois
+// o usuário vê "margem" como resposta aceita de "bank" sem lembrar por quê.
 function buildLookupCard(m){
   const seen = new Set();
   const allTranslations = [];
-  if(m.direct){ allTranslations.push(m.direct); seen.add(normalizeAnswer(m.direct)); }
+  const contextNotes = [];
+  const sharedContext = [m.note, m.sentence ? `Frase original: "${m.sentence}"` : ''].filter(Boolean).join('\n\n');
+  if(m.direct){
+    allTranslations.push(m.direct);
+    contextNotes.push(''); // direta não depende de contexto
+    seen.add(normalizeAnswer(m.direct));
+  }
   (m.contextual||[]).forEach(t => {
     const norm = normalizeAnswer(t);
-    if(!seen.has(norm)){ allTranslations.push(t); seen.add(norm); }
+    if(!seen.has(norm)){
+      allTranslations.push(t);
+      contextNotes.push(sharedContext);
+      seen.add(norm);
+    }
   });
   const card = makeCard(m.word, allTranslations.join(' / '));
   card.note = m.note || '';
   card.category = m.category || '';
+  card.contextNotes = contextNotes;
   return card;
 }
 function addLookupWordToDeck(){
@@ -4678,6 +4742,7 @@ function renderLangMCExercise(s, card){
     ${!s.revealed ? renderDontKnowLangLink() : ''}
     ${s.revealed ? `
       <div class="feedback-banner ${s.lastFeedback?'ok':'no'}">${s.lastFeedback? '✓ Isso aí!' : '✕ Não foi dessa vez.'}</div>
+      ${collectContextNotes(card, s.content.promptTranslationIndex != null ? [s.content.promptTranslationIndex] : s.content.correctTranslationIndexes).map(renderContextNoteBox).join('')}
       ${renderPointsBadge(s)}
       <div class="action-row"><button class="primary-btn" onclick="nextCard()">Próximo →</button></div>
     ` : ''}
@@ -4697,10 +4762,15 @@ function renderTranslateOtherExercise(s, card){
     </div>`;
   }
   const r = s.verifyResult;
+  const matchedIdx = findTranslationIndexForAnswer(card, s.userInput||'');
+  const contextNote = matchedIdx >= 0
+    ? getContextNoteForIndex(card, matchedIdx)
+    : ((card.contextNotes||[]).find(Boolean) || '');
   return `
   <div class="answer-zone">
     <div class="reveal-zone">
       <div class="feedback-banner ${r.correct?'ok':'no'}">${r.correct? '✓ Correto' : `✕ ${escapeHtml(r.explanation)}`}</div>
+      ${renderContextNoteBox(contextNote)}
       ${renderPointsBadge(s)}
       <div class="action-row"><button class="primary-btn" onclick="nextCard()">Próximo →</button></div>
     </div>
@@ -4713,6 +4783,7 @@ function renderCopyTranslationExercise(s, card){
     <div class="answer-zone">
       <p style="color:var(--text-muted); font-size:12.5px; text-align:center;">Copie a tradução abaixo, digitando ela certinho, pra fixar:</p>
       <div class="answer-box">${escapeHtml(s.content.targetTranslation)}</div>
+      ${renderContextNoteBox(getContextNoteForIndex(card, s.content.translationIndex))}
       <input type="text" id="lang-input" placeholder="Digite a tradução..." value="${escapeHtml(s.userInput||'')}" autofocus autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" onkeyup="if(event.key==='Enter') submitFromInput('lang-input'); else state.session.userInput=this.value">
       <div class="action-row">
         <button class="primary-btn" onclick="submitFromInput('lang-input')">Verificar</button>
@@ -4742,10 +4813,18 @@ function renderTranslateExercise(s, card){
     </div>`;
   }
   const r = s.verifyResult;
+  // se a resposta digitada bateu com uma tradução específica, mostra a nota de
+  // contexto dela; senão (errou, ou digitou algo que não bate exatamente com
+  // nenhuma opção) mostra a nota de alguma tradução contextual do cartão, se houver.
+  const matchedIdx = findTranslationIndexForAnswer(card, s.userInput||'');
+  const contextNote = matchedIdx >= 0
+    ? getContextNoteForIndex(card, matchedIdx)
+    : ((card.contextNotes||[]).find(Boolean) || '');
   return `
   <div class="answer-zone">
     <div class="reveal-zone">
       <div class="feedback-banner ${r.correct?'ok':'no'}">${r.correct? `✓ Correto${r.explanation ? ` — ${escapeHtml(r.explanation)}` : ''}` : `✕ ${escapeHtml(r.explanation)}`}</div>
+      ${renderContextNoteBox(contextNote)}
       ${renderPointsBadge(s)}
       <div class="action-row"><button class="primary-btn" onclick="nextCard()">Próximo →</button></div>
     </div>
@@ -4768,6 +4847,7 @@ function renderReverseTranslateExercise(s, card){
   <div class="answer-zone">
     <div class="reveal-zone">
       <div class="feedback-banner ${r.correct?'ok':'no'}">${r.correct? '✓ Correto' : `✕ ${escapeHtml(r.explanation)}`}</div>
+      ${renderContextNoteBox(getContextNoteForIndex(card, s.content && s.content.chosenIndex))}
       ${renderPointsBadge(s)}
       <div class="action-row"><button class="primary-btn" onclick="nextCard()">Próximo →</button></div>
     </div>
