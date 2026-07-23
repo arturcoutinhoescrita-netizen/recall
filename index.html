@@ -495,6 +495,7 @@ async function loadData(){
           state.stats = d.stats || { totalPoints: 0 };
           state.books = (d.books || []).map(normalizeBook);
           if(d.geminiApiKey) setApiKey(d.geminiApiKey);
+          if(d.geminiApiKey2) setApiKey2(d.geminiApiKey2);
           if(d.booksApiKey) setBooksApiKey(d.booksApiKey);
         }
       } else if(hasFirebaseUser()){
@@ -508,6 +509,7 @@ async function loadData(){
           // sincroniza a chave do Gemini entre aparelhos logados na mesma conta —
           // assim não precisa configurar de novo em cada navegador/celular.
           if(d.geminiApiKey) setApiKey(d.geminiApiKey);
+          if(d.geminiApiKey2) setApiKey2(d.geminiApiKey2);
           if(d.booksApiKey) setBooksApiKey(d.booksApiKey);
         }
       }
@@ -520,7 +522,7 @@ async function loadData(){
   render();
 }
 async function saveData(){
-  const payload = JSON.parse(JSON.stringify({decks: state.decks, cards: state.cards, stats: state.stats, books: state.books, geminiApiKey: getApiKey(), booksApiKey: getBooksApiKey()}));
+  const payload = JSON.parse(JSON.stringify({decks: state.decks, cards: state.cards, stats: state.stats, books: state.books, geminiApiKey: getApiKey(), geminiApiKey2: getApiKey2(), booksApiKey: getBooksApiKey()}));
   for(let attempt=0; attempt<2; attempt++){
     try{
       if(hasClaudeStorage()){
@@ -1297,18 +1299,19 @@ function toggleTheme(){
 
 function getApiKey(){ return localStorage.getItem('recall_gemini_api_key') || ''; }
 function setApiKey(key){ localStorage.setItem('recall_gemini_api_key', (key||'').trim()); }
+// segunda chave opcional (de outra conta Google) — usada como reforço quando a
+// principal estoura a cota, pra somar os limites gratuitos das duas contas.
+function getApiKey2(){ return localStorage.getItem('recall_gemini_api_key_2') || ''; }
+function setApiKey2(key){ localStorage.setItem('recall_gemini_api_key_2', (key||'').trim()); }
 function getBooksApiKey(){ return localStorage.getItem('recall_books_api_key') || ''; }
 function setBooksApiKey(key){ localStorage.setItem('recall_books_api_key', (key||'').trim()); }
 
 // modelo usado só pra ler foto e gerar as perguntas (função da câmera); o resto do
 // app (pergunta aberta, tradução, múltipla escolha etc.) usa GEMINI_MODEL_TEXT.
+// Os dois também servem de fallback um do outro quando a cota estoura (veja callGemini).
 const GEMINI_MODEL_VISION = "gemini-3.1-flash-lite";
 const GEMINI_MODEL_TEXT = "gemini-3.5-flash-lite";
-async function callGemini(prompt, opts){
-  opts = opts || {};
-  const key = getApiKey();
-  if(!key){ const err = new Error('missing_api_key'); err.code = 'missing_api_key'; throw err; }
-  const model = opts.model || GEMINI_MODEL_TEXT;
+async function callGeminiOnce(prompt, opts, key, model){
   const parts = [{ text: prompt }];
   if(opts.imageBase64) parts.push({ inline_data: { mime_type: opts.imageMime || 'image/jpeg', data: opts.imageBase64 } });
   const body = { contents: [{ parts }] };
@@ -1333,6 +1336,34 @@ async function callGemini(prompt, opts){
   const text = (candidate && candidate.content && candidate.content.parts) ? candidate.content.parts.map(p=>p.text||'').join('') : '';
   if(!text){ const err = new Error('empty_response'); err.code = 'empty_response'; throw err; }
   return text;
+}
+// tenta o modelo pedido na chave principal; se a cota estourar (429) ou o serviço
+// estiver sobrecarregado (503), cai pro outro modelo na mesma chave e, se houver
+// uma segunda chave configurada (outra conta Google), repete a mesma dupla de
+// modelos nela — assim usa toda cota disponível nas duas contas antes de desistir.
+// Qualquer outro tipo de erro (prompt ruim, resposta vazia etc.) não é retentado,
+// já que trocar de chave/modelo não resolveria.
+async function callGemini(prompt, opts){
+  opts = opts || {};
+  const key1 = getApiKey();
+  if(!key1){ const err = new Error('missing_api_key'); err.code = 'missing_api_key'; throw err; }
+  const key2 = getApiKey2();
+  const preferredModel = opts.model || GEMINI_MODEL_TEXT;
+  const otherModel = preferredModel === GEMINI_MODEL_TEXT ? GEMINI_MODEL_VISION : GEMINI_MODEL_TEXT;
+  const attempts = [{ key: key1, model: preferredModel }, { key: key1, model: otherModel }];
+  if(key2) attempts.push({ key: key2, model: preferredModel }, { key: key2, model: otherModel });
+
+  let lastErr;
+  for(let i=0; i<attempts.length; i++){
+    try{
+      return await callGeminiOnce(prompt, opts, attempts[i].key, attempts[i].model);
+    }catch(e){
+      lastErr = e;
+      const isQuotaError = e && e.code === 'api_error' && (e.status === 429 || e.status === 503);
+      if(!isQuotaError) throw e;
+    }
+  }
+  throw lastErr;
 }
 
 async function generateDistractors(question, correctAnswer){
@@ -4758,7 +4789,7 @@ function backToDeck(){
 
 /* ============ MODALS ============ */
 function openNewDeckModal(){ state.modal = { type:'new-deck', name:'', color: DECK_COLORS[state.decks.length % DECK_COLORS.length], deckType:'standard' }; render(); }
-function openApiKeyModal(){ state.modal = { type:'api-key', key: getApiKey(), booksKey: getBooksApiKey() }; render(); }
+function openApiKeyModal(){ state.modal = { type:'api-key', key: getApiKey(), key2: getApiKey2(), booksKey: getBooksApiKey() }; render(); }
 function closeModal(){ state.modal = null; render(); }
 function renderModal(){
   const m = state.modal;
@@ -4827,6 +4858,13 @@ function renderApiKeyModal(m){
         <input type="text" id="api-key-input" placeholder="Cole sua chave aqui" value="${escapeHtml(m.key||'')}" onkeyup="state.modal.key=this.value">
       </div>
       <p style="font-size:12.5px; color:var(--text-muted); line-height:1.5; margin:14px 0 0 0;">
+        <strong>Opcional</strong> — chave de uma SEGUNDA conta Google, usada automaticamente como reforço quando a chave principal estourar a cota (soma o limite gratuito das duas contas). Cada chamada também tenta um modelo alternativo antes de trocar de chave.
+      </p>
+      <div class="field">
+        <label>CHAVE ALTERNATIVA DO GEMINI (opcional)</label>
+        <input type="text" id="api-key-2-input" placeholder="Cole a chave da segunda conta aqui" value="${escapeHtml(m.key2||'')}" onkeyup="state.modal.key2=this.value">
+      </div>
+      <p style="font-size:12.5px; color:var(--text-muted); line-height:1.5; margin:14px 0 0 0;">
         <strong>Opcional</strong> — a busca de livros em "Leituras" usa a API do Google Books sem chave por padrão, que tem uma cota compartilhada e pode falhar em horários de pico. Configurar sua própria chave (grátis, em <strong>console.cloud.google.com</strong>) garante uma cota só sua.
       </p>
       <div class="field">
@@ -4842,8 +4880,10 @@ function renderApiKeyModal(m){
 }
 function confirmApiKey(){
   const key = document.getElementById('api-key-input').value;
+  const key2 = document.getElementById('api-key-2-input').value;
   const booksKey = document.getElementById('books-api-key-input').value;
   setApiKey(key);
+  setApiKey2(key2);
   setBooksApiKey(booksKey);
   state.modal = null;
   render();
