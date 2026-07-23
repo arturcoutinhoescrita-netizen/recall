@@ -370,37 +370,37 @@ const STD_TYPE_LABELS = { mc:'Múltipla escolha', open:'Aberta', 'image-answer':
 function getCardTranslations(card){
   return String((card&&card.back)||'').split('/').map(t=>t.trim()).filter(Boolean);
 }
-// card.contextNotes é um array paralelo a getCardTranslations(card) — uma nota
-// de contexto por opção de tradução (a frase de onde a IA tirou, ou uma breve
-// explicação). O índice 0 é sempre a tradução DIRETA e fica em branco de
+// card.hints é um array paralelo a getCardTranslations(card) — uma dica curta
+// por opção de tradução (a situação/cenário, SEM citar a tradução — não é
+// spoiler). O índice 0 é sempre a tradução DIRETA e fica em branco de
 // propósito: ela não depende de contexto nenhum.
-function getContextNoteForIndex(card, idx){
+function getHintForIndex(card, idx){
   if(idx == null || idx <= 0) return '';
-  const notes = (card && card.contextNotes) || [];
-  return notes[idx] || '';
+  const hints = (card && card.hints) || [];
+  return hints[idx] || '';
 }
 // acha em qual posição de getCardTranslations(card) uma resposta digitada cai —
-// usado depois que o usuário responde, pra saber qual nota de contexto mostrar
-// (ou nenhuma, se a resposta bateu com a tradução direta).
+// usado depois que o usuário responde, pra saber qual dica mostrar (ou
+// nenhuma, se a resposta bateu com a tradução direta).
 function findTranslationIndexForAnswer(card, answer){
   const list = getCardTranslations(card);
   const norm = normalizeAnswer(answer);
   return list.findIndex(a => normalizeAnswer(a) === norm);
 }
-function renderContextNoteBox(note){
-  if(!note) return '';
-  return `<div style="background:var(--bg-2); border:1px solid var(--border); border-radius:10px; padding:10px 14px; margin-top:10px; font-size:12.5px; color:var(--text-muted); text-align:left; white-space:pre-wrap;">📎 <strong>Nota de contexto:</strong> ${escapeHtml(note)}</div>`;
+function renderHintBox(hint){
+  if(!hint) return '';
+  return `<div style="background:var(--accent-soft); border:1px solid var(--accent-dim); border-radius:10px; padding:10px 14px; margin-top:10px; font-size:12.5px; color:var(--text); text-align:left; white-space:pre-wrap;">🔎 <strong>Dica:</strong> ${escapeHtml(hint)}</div>`;
 }
 // usado pela múltipla escolha, que às vezes tem mais de uma resposta certa
-// (traduções diferentes do mesmo cartão) — junta as notas sem repetir.
-function collectContextNotes(card, indexes){
-  const notes = [];
+// (traduções diferentes do mesmo cartão) — junta as dicas sem repetir.
+function collectHints(card, indexes){
+  const hints = [];
   const seen = new Set();
   (indexes||[]).forEach(i => {
-    const n = getContextNoteForIndex(card, i);
-    if(n && !seen.has(n)){ notes.push(n); seen.add(n); }
+    const h = getHintForIndex(card, i);
+    if(h && !seen.has(h)){ hints.push(h); seen.add(h); }
   });
-  return notes;
+  return hints;
 }
 
 function stripParens(str){
@@ -1453,14 +1453,14 @@ async function generateSentenceForTerm(term){
 }
 
 async function translateWordInContext(word, sentence){
-  const prompt = `Frase em inglês: "${sentence}"\nPalavra específica dentro dessa frase: "${word}"\n\nPreciso de duas traduções pra essa palavra:\n1. DIRETA: a tradução mais comum/de dicionário dela, independente dessa frase (o sentido que a maioria das pessoas associaria à palavra isolada).\n2. NESSE CONTEXTO: a tradução considerando o sentido específico dela NESSA frase (pode ser igual à direta, ou diferente — a mesma palavra muda de sentido dependendo do contexto). Se houver mais de uma tradução igualmente válida pra esse sentido específico (sinônimos próximos, não sentidos diferentes), liste até 3, da mais natural pra menos natural.\n\nIdentifique também a categoria gramatical da palavra NESSA frase, em português (ex: substantivo, verbo, adjetivo, advérbio, pronome, preposição, conjunção, interjeição).\n\nEscreva também uma explicação breve (1-2 frases, em português) sobre o significado/uso do termo nesse contexto — algo que ajude a fixar e entender nuances, não só decorar.\n\nResponda SOMENTE com um JSON válido, sem nenhum texto antes ou depois, exatamente neste formato:\n{"direct":"tradução direta","contextual":["tradução no contexto","outra opção"],"category":"substantivo","note":"explicação breve"}`;
-  const text = (await callGemini(prompt, { maxTokens: 350 })).trim();
+  const prompt = `Frase em inglês: "${sentence}"\nPalavra específica dentro dessa frase: "${word}"\n\nPreciso de duas traduções pra essa palavra:\n1. DIRETA: a tradução mais comum/de dicionário dela, independente dessa frase (o sentido que a maioria das pessoas associaria à palavra isolada).\n2. NESSE CONTEXTO: a tradução considerando o sentido específico dela NESSA frase (pode ser igual à direta, ou diferente — a mesma palavra muda de sentido dependendo do contexto). Se houver mais de uma tradução igualmente válida pra esse sentido específico (sinônimos próximos, não sentidos diferentes), liste até 3, da mais natural pra menos natural.\n\nIdentifique também a categoria gramatical da palavra NESSA frase, em português (ex: substantivo, verbo, adjetivo, advérbio, pronome, preposição, conjunção, interjeição).\n\nEscreva uma DICA curta (no máximo 8 palavras, em português) sobre a SITUAÇÃO/CENÁRIO em que a palavra é usada nessa frase — algo que ajude a lembrar qual sentido é esse, tipo uma pista. IMPORTANTE: a dica NÃO PODE conter a tradução nem nenhuma palavra parecida com ela — é só uma pista da situação, sem entregar a resposta. Exemplo: se "bank" nessa frase significa margem de rio, uma dica válida seria "cenário ao ar livre, perto de água" — NUNCA "margem" ou "beira de rio" (isso entregaria a resposta).\n\nEscreva também uma explicação breve (1-2 frases, em português) sobre o significado/uso do termo nesse contexto, pra consultar depois se quiser entender mais — essa pode mencionar a tradução livremente, não precisa evitar spoiler.\n\nResponda SOMENTE com um JSON válido, sem nenhum texto antes ou depois, exatamente neste formato:\n{"direct":"tradução direta","contextual":["tradução no contexto","outra opção"],"category":"substantivo","hint":"pista curta sem spoiler","note":"explicação breve"}`;
+  const text = (await callGemini(prompt, { maxTokens: 400 })).trim();
   const clean = text.replace(/```json|```/g,"").trim();
   const obj = JSON.parse(clean);
   const direct = String(obj.direct||'').trim();
   const contextual = (Array.isArray(obj.contextual) ? obj.contextual : []).map(t=>String(t||'').trim()).filter(Boolean);
   if(!direct && contextual.length === 0) throw new Error('empty_response');
-  return { direct, contextual, category: String(obj.category||'').trim(), note: String(obj.note||'').trim() };
+  return { direct, contextual, category: String(obj.category||'').trim(), hint: String(obj.hint||'').trim(), note: String(obj.note||'').trim() };
 }
 
 async function verifyTranslation(term, sentence, userTranslation){
@@ -2359,7 +2359,13 @@ async function loadContentForCurrent(){
   const s = state.session; if(!s) return;
   const card = getCurrentCard(); if(!card) return;
   const exType = getCurrentExType();
-  if(exType === 'translate'){ s.loadingContent = false; s.content = {}; render(); return; } // local, sem IA
+  if(exType === 'translate'){
+    // sorteia qual sentido "focar" a dica dessa vez — a pontuação continua
+    // aceitando qualquer tradução válida, a dica só ajuda a lembrar uma delas.
+    const options = getCardTranslations(card);
+    const hintIndex = Math.floor(Math.random()*options.length);
+    s.loadingContent = false; s.content = { hintIndex }; render(); return; // local, sem IA
+  }
   if(exType === 'reverseTranslate'){
     const options = String(card.back||'').split('/').map(o=>o.trim()).filter(Boolean);
     const idx = Math.floor(Math.random()*options.length);
@@ -2518,7 +2524,7 @@ function lookupWord(word, deckId, sentenceOverride){
   const sentence = sentenceOverride != null ? sentenceOverride : ((state.session && state.session.content && state.session.content.sentence) || '');
   const cleanWord = (word||'').trim();
   if(!cleanWord) return;
-  state.modal = { type:'word-lookup', word: cleanWord, sentence, deckId: targetDeckId, status:'loading', direct:'', contextual:[], category:'', note:'' };
+  state.modal = { type:'word-lookup', word: cleanWord, sentence, deckId: targetDeckId, status:'loading', direct:'', contextual:[], category:'', hint:'', note:'' };
   render();
   translateWordInContext(cleanWord, sentence).then(result => {
     if(state.modal && state.modal.type === 'word-lookup' && state.modal.word === cleanWord){
@@ -2526,6 +2532,7 @@ function lookupWord(word, deckId, sentenceOverride){
       state.modal.direct = result.direct;
       state.modal.contextual = result.contextual;
       state.modal.category = result.category;
+      state.modal.hint = result.hint;
       state.modal.note = result.note;
       render();
     }
@@ -2541,34 +2548,44 @@ function lookupWord(word, deckId, sentenceOverride){
 // front = a palavra, back = tradução direta (a que mais importa) + as opções
 // contextuais, todas separadas por "/" (o mesmo formato que getCardTranslations
 // já espera pra virar respostas alternativas) — sem repetir se a direta já
-// coincidir com uma das contextuais. note = explicação breve da IA, category =
-// classe gramatical (substantivo/verbo/etc.) mostrada durante o estudo.
-// contextNotes = uma nota por opção (mesma ordem de allTranslations): em branco
-// pra tradução direta (índice 0, não depende de contexto nenhum) e a frase
-// original + explicação da IA pras opções contextuais — sem isso, meses depois
-// o usuário vê "margem" como resposta aceita de "bank" sem lembrar por quê.
+// coincidir com uma das contextuais. note = explicação breve da IA (livre pra
+// citar a tradução, só aparece se a pessoa clicar pra ver), category = classe
+// gramatical (substantivo/verbo/etc.) mostrada durante o estudo.
+// hints = uma DICA por opção (mesma ordem de allTranslations): em branco pra
+// tradução direta (índice 0, não depende de contexto nenhum) e uma pista curta
+// da situação pras opções contextuais — sem citar a tradução, só ajuda a
+// lembrar qual sentido usar sem entregar a resposta.
 function buildLookupCard(m){
   const seen = new Set();
   const allTranslations = [];
-  const contextNotes = [];
-  const sharedContext = [m.note, m.sentence ? `Frase original: "${m.sentence}"` : ''].filter(Boolean).join('\n\n');
+  const hints = [];
+  // rede de segurança: se por algum motivo a dica da IA citar uma das próprias
+  // traduções aceitas, é melhor não mostrar nada do que entregar a resposta.
+  const allAcceptedNorms = [m.direct, ...(m.contextual||[])].filter(Boolean).map(normalizeAnswer);
+  const safeHint = (() => {
+    const hint = (m.hint||'').trim();
+    if(!hint) return '';
+    const hintNorm = normalizeAnswer(hint);
+    const leaks = allAcceptedNorms.some(t => t && new RegExp(`\\b${t.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}\\b`).test(hintNorm));
+    return leaks ? '' : hint;
+  })();
   if(m.direct){
     allTranslations.push(m.direct);
-    contextNotes.push(''); // direta não depende de contexto
+    hints.push(''); // direta não depende de contexto
     seen.add(normalizeAnswer(m.direct));
   }
   (m.contextual||[]).forEach(t => {
     const norm = normalizeAnswer(t);
     if(!seen.has(norm)){
       allTranslations.push(t);
-      contextNotes.push(sharedContext);
+      hints.push(safeHint);
       seen.add(norm);
     }
   });
   const card = makeCard(m.word, allTranslations.join(' / '));
   card.note = m.note || '';
   card.category = m.category || '';
-  card.contextNotes = contextNotes;
+  card.hints = hints;
   return card;
 }
 function addLookupWordToDeck(){
@@ -4721,9 +4738,14 @@ function renderLangMCExercise(s, card){
   const correctIdx = s.content.correctIndexes || [];
   const checked = s.checkedIndexes || [];
   const multi = correctIdx.length > 1;
+  // a dica ajuda a escolher entre as opções, então mostra ANTES de responder —
+  // ela nunca cita a tradução, só descreve a situação, então não tem spoiler.
+  const hintIndexes = s.content.promptTranslationIndex != null ? [s.content.promptTranslationIndex] : (s.content.correctTranslationIndexes||[]);
+  const hints = collectHints(card, hintIndexes);
   return `
   <div class="answer-zone">
     <div class="answer-box" style="text-align:left;">${escapeHtml(s.content.prompt)}</div>
+    ${hints.map(renderHintBox).join('')}
     ${(multi && !s.revealed) ? `<p style="color:var(--text-muted); font-size:12px; text-align:center; margin:-4px 0 0 0;">Esse termo tem mais de uma tradução certa — marque todas antes de avançar.</p>` : ''}
     <div class="options-grid">
       ${s.content.options.map((opt, i) => {
@@ -4742,7 +4764,6 @@ function renderLangMCExercise(s, card){
     ${!s.revealed ? renderDontKnowLangLink() : ''}
     ${s.revealed ? `
       <div class="feedback-banner ${s.lastFeedback?'ok':'no'}">${s.lastFeedback? '✓ Isso aí!' : '✕ Não foi dessa vez.'}</div>
-      ${collectContextNotes(card, s.content.promptTranslationIndex != null ? [s.content.promptTranslationIndex] : s.content.correctTranslationIndexes).map(renderContextNoteBox).join('')}
       ${renderPointsBadge(s)}
       <div class="action-row"><button class="primary-btn" onclick="nextCard()">Próximo →</button></div>
     ` : ''}
@@ -4763,14 +4784,14 @@ function renderTranslateOtherExercise(s, card){
   }
   const r = s.verifyResult;
   const matchedIdx = findTranslationIndexForAnswer(card, s.userInput||'');
-  const contextNote = matchedIdx >= 0
-    ? getContextNoteForIndex(card, matchedIdx)
-    : ((card.contextNotes||[]).find(Boolean) || '');
+  const hint = matchedIdx >= 0
+    ? getHintForIndex(card, matchedIdx)
+    : ((card.hints||[]).find(Boolean) || '');
   return `
   <div class="answer-zone">
     <div class="reveal-zone">
       <div class="feedback-banner ${r.correct?'ok':'no'}">${r.correct? '✓ Correto' : `✕ ${escapeHtml(r.explanation)}`}</div>
-      ${renderContextNoteBox(contextNote)}
+      ${renderHintBox(hint)}
       ${renderPointsBadge(s)}
       <div class="action-row"><button class="primary-btn" onclick="nextCard()">Próximo →</button></div>
     </div>
@@ -4783,7 +4804,7 @@ function renderCopyTranslationExercise(s, card){
     <div class="answer-zone">
       <p style="color:var(--text-muted); font-size:12.5px; text-align:center;">Copie a tradução abaixo, digitando ela certinho, pra fixar:</p>
       <div class="answer-box">${escapeHtml(s.content.targetTranslation)}</div>
-      ${renderContextNoteBox(getContextNoteForIndex(card, s.content.translationIndex))}
+      ${renderHintBox(getHintForIndex(card, s.content.translationIndex))}
       <input type="text" id="lang-input" placeholder="Digite a tradução..." value="${escapeHtml(s.userInput||'')}" autofocus autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" onkeyup="if(event.key==='Enter') submitFromInput('lang-input'); else state.session.userInput=this.value">
       <div class="action-row">
         <button class="primary-btn" onclick="submitFromInput('lang-input')">Verificar</button>
@@ -4801,10 +4822,14 @@ function renderCopyTranslationExercise(s, card){
 }
 
 function renderTranslateExercise(s, card){
+  // sorteado uma vez ao carregar o exercício (loadContentForCurrent) — mesma
+  // dica antes e depois de responder, pra não parecer que "mudou de ideia".
+  const hint = getHintForIndex(card, s.content && s.content.hintIndex);
   if(!s.revealed){
     return `
     <div class="answer-zone">
       <p style="color:var(--text-muted); font-size:13.5px; text-align:center;">Digite a tradução direta do termo, em português.</p>
+      ${renderHintBox(hint)}
       <input type="text" id="lang-input" placeholder="Tradução..." value="${escapeHtml(s.userInput||'')}" autofocus autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" onkeyup="if(event.key==='Enter') submitFromInput('lang-input'); else state.session.userInput=this.value">
       <div class="action-row">
         <button class="primary-btn" onclick="submitFromInput('lang-input')">Verificar</button>
@@ -4813,18 +4838,11 @@ function renderTranslateExercise(s, card){
     </div>`;
   }
   const r = s.verifyResult;
-  // se a resposta digitada bateu com uma tradução específica, mostra a nota de
-  // contexto dela; senão (errou, ou digitou algo que não bate exatamente com
-  // nenhuma opção) mostra a nota de alguma tradução contextual do cartão, se houver.
-  const matchedIdx = findTranslationIndexForAnswer(card, s.userInput||'');
-  const contextNote = matchedIdx >= 0
-    ? getContextNoteForIndex(card, matchedIdx)
-    : ((card.contextNotes||[]).find(Boolean) || '');
   return `
   <div class="answer-zone">
     <div class="reveal-zone">
       <div class="feedback-banner ${r.correct?'ok':'no'}">${r.correct? `✓ Correto${r.explanation ? ` — ${escapeHtml(r.explanation)}` : ''}` : `✕ ${escapeHtml(r.explanation)}`}</div>
-      ${renderContextNoteBox(contextNote)}
+      ${renderHintBox(hint)}
       ${renderPointsBadge(s)}
       <div class="action-row"><button class="primary-btn" onclick="nextCard()">Próximo →</button></div>
     </div>
@@ -4832,9 +4850,11 @@ function renderTranslateExercise(s, card){
 }
 
 function renderReverseTranslateExercise(s, card){
+  const hint = getHintForIndex(card, s.content && s.content.chosenIndex);
   if(!s.revealed){
     return `
     <div class="answer-zone">
+      ${renderHintBox(hint)}
       <input type="text" id="lang-input" placeholder="Termo em inglês..." value="${escapeHtml(s.userInput||'')}" autofocus autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" onkeyup="if(event.key==='Enter') submitFromInput('lang-input'); else state.session.userInput=this.value">
       <div class="action-row">
         <button class="primary-btn" onclick="submitFromInput('lang-input')">Verificar</button>
@@ -4847,7 +4867,6 @@ function renderReverseTranslateExercise(s, card){
   <div class="answer-zone">
     <div class="reveal-zone">
       <div class="feedback-banner ${r.correct?'ok':'no'}">${r.correct? '✓ Correto' : `✕ ${escapeHtml(r.explanation)}`}</div>
-      ${renderContextNoteBox(getContextNoteForIndex(card, s.content && s.content.chosenIndex))}
       ${renderPointsBadge(s)}
       <div class="action-row"><button class="primary-btn" onclick="nextCard()">Próximo →</button></div>
     </div>
