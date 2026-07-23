@@ -4354,9 +4354,21 @@ function openNoteImageUploadPicker(){
    exato pra substituir depois — na prévia renderizada não tem como mapear
    de volta pro markdown original com segurança. --- */
 document.addEventListener('mouseup', handleNoteSelection);
-document.addEventListener('touchend', handleNoteSelection);
+// no celular, o touchend dispara antes da seleção "assentar" (e o usuário ainda
+// pode arrastar as alcinhas nativas depois, sem gerar outro touchend no editor) —
+// por isso, além do touchend com um pequeno atraso, também escutamos o
+// selectionchange do documento inteiro, que É disparado a cada ajuste das
+// alcinhas. Não funciona 100% em todo navegador/celular, mas quando funciona já
+// evita ter que copiar e colar o trecho pra usar os botões de IA.
+document.addEventListener('touchend', () => setTimeout(handleNoteSelection, 60));
 document.addEventListener('keyup', handleNoteSelection);
 document.addEventListener('select', handleNoteSelection);
+let noteSelectionChangeTimer = null;
+document.addEventListener('selectionchange', () => {
+  if(state.view !== 'notes' || !state.currentNoteId) return;
+  clearTimeout(noteSelectionChangeTimer);
+  noteSelectionChangeTimer = setTimeout(handleNoteSelection, 220);
+});
 function handleNoteSelection(e){
   if(state.view !== 'notes' || !state.currentNoteId) return;
   // clicar nos próprios botões da barra (Corrigir/Criar cartão) dispara um mouseup
@@ -4410,6 +4422,15 @@ function hideNoteSelectionBar(){
   const bar = document.getElementById('note-selection-bar');
   if(bar) bar.style.display = 'none';
   if(window.getSelection) window.getSelection().removeAllRanges();
+}
+// app roda tanto no Windows quanto no Mac — os atalhos de teclado da nota usam
+// Ctrl num e Cmd no outro, então o rótulo mostrado no título dos botões também
+// precisa mudar (senão um usuário de Mac vê "Ctrl" e não acha o atalho).
+function isMacPlatform(){
+  return /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent || '');
+}
+function noteShortcutLabel(letter){
+  return isMacPlatform() ? `⌘⇧${letter.toUpperCase()}` : `Ctrl+Shift+${letter.toUpperCase()}`;
 }
 function requestCardFromNoteSelection(){
   const sel = state.noteSelection;
@@ -5437,9 +5458,9 @@ function renderNoteEditor(note){
   </div>
   `}
   <div id="note-selection-bar" style="display:none; position:fixed; left:0; right:0; bottom:0; background:var(--surface); border-top:1px solid var(--border); padding:12px 20px; align-items:center; justify-content:center; gap:10px; box-shadow:0 -4px 16px rgba(0,0,0,0.2); z-index:50; flex-wrap:wrap;">
-    <button class="ghost-btn" id="note-correct-btn" onclick="requestNoteCorrection()">✏️ Corrigir</button>
-    <button class="ghost-btn" onclick="requestNoteOpinion()">💭 Opinião da IA</button>
-    <button class="primary-btn" onclick="requestCardFromNoteSelection()">📌 Criar cartão</button>
+    <button class="ghost-btn" id="note-correct-btn" title="Atalho: ${noteShortcutLabel('g')}" onclick="requestNoteCorrection()">✏️ Corrigir</button>
+    <button class="ghost-btn" title="Atalho: ${noteShortcutLabel('v')}" onclick="requestNoteOpinion()">💭 Opinião da IA</button>
+    <button class="primary-btn" title="Atalho: ${noteShortcutLabel('f')}" onclick="requestCardFromNoteSelection()">📌 Criar cartão</button>
   </div>
   `;
 }
@@ -5482,7 +5503,7 @@ function renderNotesToolbar(format){
     <button class="icon-btn" ${noSteal}title="Alinhar à direita" onclick="${alignRight}">➡</button>
     <button class="icon-btn" ${noSteal}title="Justificar" onclick="${alignJustify}">≡</button>
     <button class="icon-btn" ${noSteal}title="Link" onclick="${link}">🔗</button>
-    <button class="icon-btn" ${noSteal}title="Link pra outra nota" onclick="${wikiLink}">🔀</button>
+    <button class="icon-btn" ${noSteal}title="Link pra outra nota (${noteShortcutLabel('l')})" onclick="${wikiLink}">🔀</button>
     <button class="icon-btn" ${noSteal}title="Imagem por link" onclick="openInsertImageModal()">🖼️</button>
     <button class="icon-btn" ${noSteal}title="Enviar imagem do aparelho" onclick="openNoteImageUploadPicker()">📤</button>
     <span style="width:1px; background:var(--border); margin:2px 2px;"></span>
@@ -7504,6 +7525,32 @@ document.addEventListener('keydown', function(e){
   if(!card || !card.note) return;
   e.preventDefault();
   toggleNoteView();
+});
+
+/* Atalhos de teclado pra escrever nas notas: Ctrl (Windows/Linux) ou Cmd (Mac) +
+   Shift + uma letra — sempre com Shift junto pra reduzir chance de colidir com
+   atalhos padrão do navegador (Ctrl/Cmd sozinho com letra é praticamente todo
+   reservado por algum navegador: salvar, imprimir, localizar, etc). */
+document.addEventListener('keydown', function(e){
+  if(state.view !== 'notes' || !state.currentNoteId || state.modal) return;
+  if(!(e.ctrlKey || e.metaKey) || !e.shiftKey) return;
+  const key = e.key.toLowerCase();
+  if(!['f','g','l','v'].includes(key)) return;
+  e.preventDefault();
+  const sel = state.noteSelection;
+  if(key === 'f'){ // criar cartão (Flashcard)
+    if(!sel || !sel.text){ showToast('Selecione um trecho da nota primeiro.', 'error'); return; }
+    requestCardFromNoteSelection();
+  } else if(key === 'g'){ // corriGir
+    if(!sel || !sel.text || (sel.source !== 'textarea' && sel.source !== 'richtext')){ showToast('Selecione um trecho na área de edição (não na prévia) pra corrigir.', 'error'); return; }
+    requestNoteCorrection();
+  } else if(key === 'v'){ // opinião
+    if(!sel || !sel.text){ showToast('Selecione um trecho da nota primeiro.', 'error'); return; }
+    requestNoteOpinion();
+  } else if(key === 'l'){ // Link pra outra nota (wikilink) — não depende de seleção
+    if(currentNoteIsPlain()) openInsertWikiLinkModalRich();
+    else insertWikiLink('note-editor-textarea');
+  }
 });
 
 if(hasClaudeStorage()){
