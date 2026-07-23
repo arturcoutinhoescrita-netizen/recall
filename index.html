@@ -4025,9 +4025,52 @@ async function duplicateNoteItem(id){
   showToast('Nota duplicada.');
 }
 let notesSaveTimer = null;
-function onNoteContentInput(id, value){
+const noteEditHistory = Object.create(null);
+const NOTE_HISTORY_LIMIT = 100;
+function recordNoteHistory(id, before, after){
+  if(before === after) return;
+  let history = noteEditHistory[id];
+  if(!history || history.entries[history.index] !== before){
+    history = noteEditHistory[id] = { entries:[before], index:0 };
+  }
+  history.entries = history.entries.slice(0, history.index + 1);
+  history.entries.push(after);
+  if(history.entries.length > NOTE_HISTORY_LIMIT) history.entries.shift();
+  history.index = history.entries.length - 1;
+}
+function syncNoteEditorFromHistory(id, value){
+  const note = state.notesItems.find(n=>n.id===id);
+  if(!note) return;
+  if(note.format === 'plain'){
+    const editor = document.getElementById('note-editor-plain');
+    if(editor) editor.innerHTML = value;
+  }else{
+    const editor = document.getElementById('note-editor-textarea');
+    if(editor) editor.value = value;
+  }
+  onNoteContentInput(id, value, true);
+}
+function undoNoteEdit(){
+  const id = state.currentNoteId;
+  const history = id && noteEditHistory[id];
+  if(!history || history.index <= 0){ showToast('Não há mais alterações para desfazer.'); return; }
+  history.index -= 1;
+  syncNoteEditorFromHistory(id, history.entries[history.index]);
+  showToast('Alteração desfeita.');
+}
+function redoNoteEdit(){
+  const id = state.currentNoteId;
+  const history = id && noteEditHistory[id];
+  if(!history || history.index >= history.entries.length - 1){ showToast('Não há alterações para refazer.'); return; }
+  history.index += 1;
+  syncNoteEditorFromHistory(id, history.entries[history.index]);
+  showToast('Alteração refeita.');
+}
+function onNoteContentInput(id, value, skipHistory){
   const item = state.notesItems.find(n=>n.id===id);
   if(!item) return;
+  const previous = noteContentCache[id] == null ? '' : noteContentCache[id];
+  if(!skipHistory) recordNoteHistory(id, previous, value);
   noteContentCache[id] = value;
   item.updatedAt = Date.now();
   // NÃO chama render() aqui — recriar a textarea inteira a cada tecla perdia
@@ -4546,6 +4589,7 @@ function confirmCreateNoteComment(){
   if(!proposed){ showToast('Escreva o texto novo.', 'error'); return; }
   const note = state.notesItems.find(n=>n.id===m.noteId);
   if(!note) return;
+  const before = getNoteContent(note.id);
   const id = uid();
   const originalEsc = escapeHtml(m.original);
   const proposedEsc = escapeHtml(proposed);
@@ -4562,6 +4606,7 @@ function confirmCreateNoteComment(){
     const current = getNoteContent(note.id);
     noteContentCache[note.id] = current.slice(0, m.start) + tag + current.slice(m.end);
   }
+  recordNoteHistory(note.id, before, noteContentCache[note.id]);
   note.updatedAt = Date.now();
   state.modal = null;
   saveData(); render();
@@ -4571,6 +4616,7 @@ function confirmCreateNoteComment(){
 // aplica a troca de tag no conteúdo (string) da nota e salva — usado tanto pra
 // alternar entre versões quanto pra resolver (finalizar/descartar) um comentário.
 function saveNoteContentUpdate(note, updated){
+  recordNoteHistory(note.id, getNoteContent(note.id), updated);
   noteContentCache[note.id] = updated;
   note.updatedAt = Date.now();
   saveData();
@@ -4802,6 +4848,7 @@ function confirmNoteCorrection(){
   if(!m || m.type !== 'note-correction') return;
   const note = state.notesItems.find(n=>n.id===m.noteId);
   if(!note){ state.modal = null; render(); return; }
+  const before = getNoteContent(note.id);
   if(m.source === 'richtext'){
     const el = document.getElementById('note-editor-plain');
     // reconstrói o Range agora, do DOM atual — um Range guardado desde o
@@ -4811,6 +4858,7 @@ function confirmNoteCorrection(){
       note.updatedAt = Date.now();
       state.modal = null;
       const updated = el.innerHTML;
+      recordNoteHistory(note.id, before, updated);
       noteContentCache[note.id] = updated;
       saveData(); render();
       saveNoteContentToR2(note.id, updated);
@@ -4820,6 +4868,7 @@ function confirmNoteCorrection(){
   }
   const current = getNoteContent(note.id);
   const updated = current.slice(0, m.start) + m.corrected + current.slice(m.end);
+  recordNoteHistory(note.id, before, updated);
   noteContentCache[note.id] = updated;
   note.updatedAt = Date.now();
   state.modal = null;
@@ -4934,6 +4983,7 @@ function applyNoteOpinionEdit(msgIndex){
   if(!msg || !msg.proposedEdit) return;
   const note = m.noteId ? state.notesItems.find(n=>n.id===m.noteId) : null;
   if(!note || (m.source !== 'textarea' && m.source !== 'richtext') || m.start == null || m.end == null) return;
+  const before = getNoteContent(note.id);
   if(m.source === 'richtext'){
     const el = document.getElementById('note-editor-plain');
     // reconstrói o Range agora, do DOM atual — guardado desde a seleção original
@@ -4942,6 +4992,7 @@ function applyNoteOpinionEdit(msgIndex){
       note.updatedAt = Date.now();
       state.modal = null;
       const updated = el.innerHTML;
+      recordNoteHistory(note.id, before, updated);
       noteContentCache[note.id] = updated;
       saveData(); render();
       saveNoteContentToR2(note.id, updated);
@@ -4952,6 +5003,7 @@ function applyNoteOpinionEdit(msgIndex){
   }
   const current = getNoteContent(note.id);
   const updated = current.slice(0, m.start) + msg.proposedEdit + current.slice(m.end);
+  recordNoteHistory(note.id, before, updated);
   noteContentCache[note.id] = updated;
   note.updatedAt = Date.now();
   state.modal = null;
@@ -5162,6 +5214,7 @@ function replaceCurrentNoteMatch(){
     const content = getNoteContent(noteId);
     const match = fr.matches[fr.currentIndex];
     const newContent = content.slice(0, match.start) + replacement + content.slice(match.end);
+    recordNoteHistory(noteId, content, newContent);
     noteContentCache[noteId] = newContent;
     if(note) note.updatedAt = Date.now();
     saveData();
@@ -5208,6 +5261,7 @@ function replaceAllNoteMatches(){
   let lastEnd = 0;
   matches.forEach(m => { newContent += content.slice(lastEnd, m.start) + replacement; lastEnd = m.end; });
   newContent += content.slice(lastEnd);
+  recordNoteHistory(noteId, content, newContent);
   noteContentCache[noteId] = newContent;
   if(note) note.updatedAt = Date.now();
   saveData();
@@ -5786,6 +5840,9 @@ function renderNotesToolbar(format){
   const wikiLink = isMarkdown ? `insertWikiLink('${id}')` : `openInsertWikiLinkModalRich()`;
   return `
   <div class="notes-toolbar">
+    <button class="icon-btn" onmousedown="event.preventDefault()" title="Desfazer (${noteShortcutLabel('z')})" onclick="undoNoteEdit()">↶</button>
+    <button class="icon-btn" onmousedown="event.preventDefault()" title="Refazer (${isMacPlatform() ? '⌘⇧Z' : 'Ctrl+Shift+Z'})" onclick="redoNoteEdit()">↷</button>
+    <span style="width:1px; background:var(--border); margin:2px 2px;"></span>
     <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Negrito" onclick="${bold}"><strong>B</strong></button>
     <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Itálico" onclick="${italic}"><em>I</em></button>
     <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Título 1" onclick="${h1}">H1</button>
@@ -7900,6 +7957,23 @@ document.addEventListener('keydown', function(e){
   } else if(key === 'l'){ // Link pra outra nota (wikilink) — não depende de seleção
     if(currentNoteIsPlain()) openInsertWikiLinkModalRich();
     else insertWikiLink('note-editor-textarea');
+  }
+});
+
+// Histórico próprio das notas: cobre digitação, botões de formatação e também
+// alterações inseridas pela IA/comentários, que o histórico nativo não conhece.
+document.addEventListener('keydown', function(e){
+  if(!(e.ctrlKey || e.metaKey) || state.view !== 'notes' || !state.currentNoteId) return;
+  const active = document.activeElement;
+  const isNoteEditor = active && (active.id === 'note-editor-textarea' || active.id === 'note-editor-plain');
+  if(!isNoteEditor) return;
+  const key = e.key.toLowerCase();
+  if(key === 'z'){
+    e.preventDefault();
+    if(e.shiftKey) redoNoteEdit(); else undoNoteEdit();
+  }else if(key === 'y' && !e.shiftKey){
+    e.preventDefault();
+    redoNoteEdit();
   }
 });
 
