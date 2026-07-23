@@ -1421,13 +1421,14 @@ async function generateSentenceForTerm(term){
 }
 
 async function translateWordInContext(word, sentence){
-  const prompt = `Frase em inglês: "${sentence}"\nPalavra específica dentro dessa frase: "${word}"\n\nTraduza essa palavra pro português considerando o sentido dela NESSA frase (a mesma palavra pode significar coisas diferentes dependendo do contexto). Se houver mais de uma tradução igualmente válida pra ESSE sentido específico (sinônimos próximos — não liste sentidos diferentes da palavra, só desse uso), liste até 3, da mais natural pra menos natural. Escreva também uma explicação breve (1-2 frases, em português) sobre o significado/uso do termo nesse contexto — algo que ajude a fixar e entender nuances, não só decorar.\n\nResponda SOMENTE com um JSON válido, sem nenhum texto antes ou depois, exatamente neste formato:\n{"translations":["tradução principal","outra opção"],"note":"explicação breve"}`;
-  const text = (await callGemini(prompt, { maxTokens: 300 })).trim();
+  const prompt = `Frase em inglês: "${sentence}"\nPalavra específica dentro dessa frase: "${word}"\n\nPreciso de duas traduções pra essa palavra:\n1. DIRETA: a tradução mais comum/de dicionário dela, independente dessa frase (o sentido que a maioria das pessoas associaria à palavra isolada).\n2. NESSE CONTEXTO: a tradução considerando o sentido específico dela NESSA frase (pode ser igual à direta, ou diferente — a mesma palavra muda de sentido dependendo do contexto). Se houver mais de uma tradução igualmente válida pra esse sentido específico (sinônimos próximos, não sentidos diferentes), liste até 3, da mais natural pra menos natural.\n\nIdentifique também a categoria gramatical da palavra NESSA frase, em português (ex: substantivo, verbo, adjetivo, advérbio, pronome, preposição, conjunção, interjeição).\n\nEscreva também uma explicação breve (1-2 frases, em português) sobre o significado/uso do termo nesse contexto — algo que ajude a fixar e entender nuances, não só decorar.\n\nResponda SOMENTE com um JSON válido, sem nenhum texto antes ou depois, exatamente neste formato:\n{"direct":"tradução direta","contextual":["tradução no contexto","outra opção"],"category":"substantivo","note":"explicação breve"}`;
+  const text = (await callGemini(prompt, { maxTokens: 350 })).trim();
   const clean = text.replace(/```json|```/g,"").trim();
   const obj = JSON.parse(clean);
-  const translations = (Array.isArray(obj.translations) ? obj.translations : []).map(t=>String(t||'').trim()).filter(Boolean);
-  if(translations.length === 0) throw new Error('empty_response');
-  return { translations, note: String(obj.note||'').trim() };
+  const direct = String(obj.direct||'').trim();
+  const contextual = (Array.isArray(obj.contextual) ? obj.contextual : []).map(t=>String(t||'').trim()).filter(Boolean);
+  if(!direct && contextual.length === 0) throw new Error('empty_response');
+  return { direct, contextual, category: String(obj.category||'').trim(), note: String(obj.note||'').trim() };
 }
 
 async function verifyTranslation(term, sentence, userTranslation){
@@ -2468,12 +2469,14 @@ function lookupWord(word, deckId, sentenceOverride){
   const sentence = sentenceOverride != null ? sentenceOverride : ((state.session && state.session.content && state.session.content.sentence) || '');
   const cleanWord = (word||'').trim();
   if(!cleanWord) return;
-  state.modal = { type:'word-lookup', word: cleanWord, sentence, deckId: targetDeckId, status:'loading', translations:[], note:'' };
+  state.modal = { type:'word-lookup', word: cleanWord, sentence, deckId: targetDeckId, status:'loading', direct:'', contextual:[], category:'', note:'' };
   render();
   translateWordInContext(cleanWord, sentence).then(result => {
     if(state.modal && state.modal.type === 'word-lookup' && state.modal.word === cleanWord){
       state.modal.status = 'done';
-      state.modal.translations = result.translations;
+      state.modal.direct = result.direct;
+      state.modal.contextual = result.contextual;
+      state.modal.category = result.category;
       state.modal.note = result.note;
       render();
     }
@@ -2486,12 +2489,22 @@ function lookupWord(word, deckId, sentenceOverride){
     }
   });
 }
-// front = a palavra, back = todas as opções de tradução separadas por "/" (o
-// mesmo formato que getCardTranslations já espera pra virar respostas
-// alternativas), note = explicação breve gerada pela IA.
+// front = a palavra, back = tradução direta (a que mais importa) + as opções
+// contextuais, todas separadas por "/" (o mesmo formato que getCardTranslations
+// já espera pra virar respostas alternativas) — sem repetir se a direta já
+// coincidir com uma das contextuais. note = explicação breve da IA, category =
+// classe gramatical (substantivo/verbo/etc.) mostrada durante o estudo.
 function buildLookupCard(m){
-  const card = makeCard(m.word, m.translations.join(' / '));
+  const seen = new Set();
+  const allTranslations = [];
+  if(m.direct){ allTranslations.push(m.direct); seen.add(normalizeAnswer(m.direct)); }
+  (m.contextual||[]).forEach(t => {
+    const norm = normalizeAnswer(t);
+    if(!seen.has(norm)){ allTranslations.push(t); seen.add(norm); }
+  });
+  const card = makeCard(m.word, allTranslations.join(' / '));
   card.note = m.note || '';
+  card.category = m.category || '';
   return card;
 }
 function addLookupWordToDeck(){
@@ -4364,7 +4377,7 @@ function renderStudyView(){
       </div>
       ${(card.note && s.showNote) ? `<div style="background:var(--accent-soft); border:1px solid var(--accent-dim); border-radius:10px; padding:10px 14px; margin:10px 0 0 0; font-size:13px; color:var(--text); text-align:left; white-space:pre-wrap;">💡 ${escapeHtml(card.note)}</div>` : ''}
       ${isReverse ? `<p style="color:var(--text-muted); font-size:12px; margin:0 0 4px 0;">Digite o termo em inglês para:</p>` : ''}
-      ${hideTopQuestion ? '' : `<div class="question">${escapeHtml(questionText)}</div>`}
+      ${hideTopQuestion ? '' : `<div class="question">${escapeHtml(questionText)}${(s.mode==='lang-mixed' && card.category) ? ` <span style="font-size:13px; font-weight:600; color:var(--text-faint); vertical-align:middle;">(${escapeHtml(card.category)})</span>` : ''}</div>`}
     </div>
     ${body}
   </div>`;
@@ -5092,6 +5105,30 @@ function renderQuoteCaptureModal(m){
   </div>`;
 }
 function renderWordLookupModal(m){
+  let doneSection = '';
+  if(m.status === 'done'){
+    // não repete a mesma tradução nas duas seções se a direta já bater com uma das contextuais
+    const directNorm = m.direct ? normalizeAnswer(m.direct) : null;
+    const contextualFiltered = (m.contextual||[]).filter(t => !directNorm || normalizeAnswer(t) !== directNorm);
+    doneSection = `
+      ${m.direct ? `
+      <div style="margin:6px 0 0 0;">
+        <div style="font-size:10.5px; color:var(--text-faint); text-transform:uppercase; letter-spacing:.04em; margin-bottom:3px;">Tradução direta</div>
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <span style="font-size:19px; font-weight:700; color:var(--accent);">${escapeHtml(m.direct)}</span>
+          ${m.category ? `<span style="font-size:10.5px; font-weight:600; color:var(--text-muted); background:var(--bg-2); border:1px solid var(--border); border-radius:6px; padding:2px 8px;">${escapeHtml(m.category)}</span>` : ''}
+        </div>
+      </div>
+      ` : ''}
+      ${contextualFiltered.length ? `
+      <div style="margin-top:${m.direct?'12px':'6px'};">
+        <div style="font-size:10.5px; color:var(--text-faint); text-transform:uppercase; letter-spacing:.04em; margin-bottom:3px;">Nesse contexto</div>
+        <div style="font-size:15px; font-weight:600; color:var(--text);">${contextualFiltered.map(t=>escapeHtml(t)).join(' / ')}</div>
+      </div>
+      ` : ''}
+      ${m.note ? `<p style="font-size:12.5px; color:var(--text-muted); line-height:1.5; margin:10px 0 0 0;">${escapeHtml(m.note)}</p>` : ''}
+    `;
+  }
   return `
   <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
     <div class="modal" style="width:380px;">
@@ -5099,12 +5136,7 @@ function renderWordLookupModal(m){
       <p style="font-size:11.5px; color:var(--text-faint); margin:0 0 10px 0;">"${escapeHtml(m.sentence)}"</p>
       ${m.status === 'loading' ? `<div class="loading-line"><div class="spinner"></div> Traduzindo...</div>` : ''}
       ${m.status === 'error' ? `<p style="font-size:13px; color:var(--error);">${escapeHtml(m.error)}</p>` : ''}
-      ${m.status === 'done' ? `
-      <div style="display:flex; flex-wrap:wrap; gap:6px; margin:4px 0 0 0;">
-        ${m.translations.map((t,i) => `<span style="font-size:${i===0?'18px':'14px'}; font-weight:700; color:var(--accent);">${escapeHtml(t)}${i<m.translations.length-1?' <span style=\"color:var(--text-faint); font-weight:400;\">/</span>':''}</span>`).join(' ')}
-      </div>
-      ${m.note ? `<p style="font-size:12.5px; color:var(--text-muted); line-height:1.5; margin:8px 0 0 0;">${escapeHtml(m.note)}</p>` : ''}
-      ` : ''}
+      ${doneSection}
       ${(m.status==='done' && !m.deckId) ? `<p style="font-size:11.5px; color:var(--text-faint); margin:8px 0 0 0;">Vincule um baralho a este livro (⚙️ nas propriedades) pra poder criar cartões por aqui.</p>` : ''}
       <div class="modal-actions" style="flex-wrap:wrap;">
         <button class="ghost-btn" onclick="closeModal()">Fechar</button>
