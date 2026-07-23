@@ -4301,6 +4301,22 @@ function textOffsetToRange(container, start, end){
   range.setEnd(endNode, endOffset);
   return range;
 }
+// Substitui um intervalo do editor rico sem depender de document.execCommand.
+// Em alguns navegadores, especialmente no celular, o comando "insertText"
+// apagava a seleção mas não inseria o texto devolvido pela IA.
+function replaceRichTextRange(container, start, end, replacement){
+  const range = textOffsetToRange(container, start, end);
+  if(!range) return false;
+  const fragment = document.createDocumentFragment();
+  const lines = String(replacement == null ? '' : replacement).split(/\r?\n/);
+  lines.forEach((line, index) => {
+    fragment.appendChild(document.createTextNode(line));
+    if(index < lines.length - 1) fragment.appendChild(document.createElement('br'));
+  });
+  range.deleteContents();
+  range.insertNode(fragment);
+  return true;
+}
 // o inverso de textOffsetToRange: acha o índice de caractere (relativo ao
 // .textContent do container) que corresponde a um nó+offset do DOM. Usado
 // pra guardar a seleção como números (que sobrevivem a um render()) em vez
@@ -4770,13 +4786,7 @@ function confirmNoteCorrection(){
     // reconstrói o Range agora, do DOM atual — um Range guardado desde o
     // pedido de correção ficaria inválido, porque o render() ao abrir o
     // modal já recriou o contenteditable (e os nós que ele apontava).
-    const range = el ? textOffsetToRange(el, m.start, m.end) : null;
-    if(el && range){
-      el.focus();
-      const sel = window.getSelection();
-      sel.removeAllRanges();
-      sel.addRange(range);
-      document.execCommand('insertText', false, m.corrected);
+    if(el && replaceRichTextRange(el, m.start, m.end, m.corrected)){
       note.updatedAt = Date.now();
       state.modal = null;
       const updated = el.innerHTML;
@@ -4907,13 +4917,7 @@ function applyNoteOpinionEdit(msgIndex){
     const el = document.getElementById('note-editor-plain');
     // reconstrói o Range agora, do DOM atual — guardado desde a seleção original
     // ele ficaria inválido, porque render() já recriou o contenteditable várias vezes.
-    const range = el ? textOffsetToRange(el, m.start, m.end) : null;
-    if(el && range){
-      el.focus();
-      const sel = window.getSelection();
-      sel.removeAllRanges();
-      sel.addRange(range);
-      document.execCommand('insertText', false, msg.proposedEdit);
+    if(el && replaceRichTextRange(el, m.start, m.end, msg.proposedEdit)){
       note.updatedAt = Date.now();
       state.modal = null;
       const updated = el.innerHTML;
