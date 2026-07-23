@@ -313,6 +313,55 @@
   @keyframes toast-in{ from{ opacity:0; transform:translateX(-50%) translateY(8px);} to{ opacity:1; transform:translateX(-50%) translateY(0);} }
   .mobile-back-btn{ display:none; align-items:center; gap:6px; margin-bottom:14px; }
 
+  /* ---------- Caderno de notas ---------- */
+  .notes-layout{ display:flex; gap:20px; height:calc(100vh - 100px); height:calc(100dvh - 100px); }
+  .notes-explorer{
+    width:250px; flex-shrink:0; display:flex; flex-direction:column; gap:10px;
+    background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:14px;
+    overflow-y:auto;
+  }
+  .notes-explorer-header{ display:flex; justify-content:space-between; align-items:center; }
+  .notes-tree{ display:flex; flex-direction:column; gap:2px; overflow-y:auto; }
+  .notes-tree-row{
+    display:flex; align-items:center; justify-content:space-between; gap:6px;
+    border-radius:8px; padding:6px 6px; transition:background .15s ease;
+  }
+  .notes-tree-row:hover{ background:var(--surface-2); }
+  .notes-tree-row.active{ background:var(--accent-soft); }
+  .notes-tree-row.active .notes-tree-label{ color:var(--accent); font-weight:600; }
+  .notes-tree-label{ flex:1; font-size:13px; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:flex; align-items:center; gap:6px; }
+  .notes-tree-actions{ display:flex; gap:3px; flex-shrink:0; }
+  .notes-editor{ flex:1; min-width:0; display:flex; flex-direction:column; gap:10px; overflow:hidden; }
+  .notes-editor-header{ display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; }
+  .notes-mode-toggle{ display:flex; gap:6px; }
+  .notes-mode-toggle .ghost-btn{ padding:6px 12px; font-size:12px; }
+  .notes-mode-toggle .ghost-btn.active-mode{ color:var(--accent); border-color:var(--accent-dim); background:var(--accent-soft); }
+  .notes-toolbar{ display:flex; gap:6px; flex-wrap:wrap; background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:6px; }
+  .notes-editor-panes{ flex:1; display:flex; gap:14px; overflow:hidden; }
+  .notes-editor-panes.source, .notes-editor-panes.preview{ display:block; overflow-y:auto; }
+  .notes-textarea{
+    flex:1; min-width:0; height:100%; resize:none;
+    font-family:ui-monospace,'SF Mono','Cascadia Code','Roboto Mono',Consolas,'Courier New',monospace;
+    font-size:13.5px; line-height:1.6;
+  }
+  .notes-editor-panes.source .notes-textarea{ width:100%; height:100%; }
+  .notes-preview{
+    flex:1; min-width:0; overflow-y:auto; background:var(--bg-2); border:1px solid var(--border);
+    border-radius:10px; padding:18px 22px; line-height:1.7; font-size:14.5px;
+  }
+  .notes-editor-panes.preview .notes-preview{ width:100%; }
+  .notes-preview h1, .notes-preview h2, .notes-preview h3{ margin:0.8em 0 0.4em 0; line-height:1.3; }
+  .notes-preview h1:first-child, .notes-preview h2:first-child, .notes-preview h3:first-child{ margin-top:0; }
+  .notes-preview p{ margin:0 0 0.8em 0; }
+  .notes-preview img{ max-width:100%; border-radius:8px; }
+  .notes-preview ul, .notes-preview ol{ padding-left:1.4em; margin:0 0 0.8em 0; }
+  .notes-preview code{ background:var(--surface-2); padding:1px 5px; border-radius:5px; font-size:0.9em; }
+  .notes-preview pre{ background:var(--surface-2); padding:12px 14px; border-radius:8px; overflow-x:auto; }
+  .notes-preview blockquote{ border-left:3px solid var(--accent-dim); margin:0 0 0.8em 0; padding:2px 0 2px 14px; color:var(--text-muted); }
+  .wiki-link{ color:var(--accent); text-decoration:none; border-bottom:1px dotted var(--accent-dim); }
+  .wiki-link:hover{ border-bottom-style:solid; }
+  .wiki-link-new{ color:var(--text-faint); border-bottom-color:var(--text-faint); }
+
 
   @media (max-width:820px){
     #app{ flex-direction:column; }
@@ -341,6 +390,11 @@
     #app.step-detail .sidebar{ display:none; }
     #app.step-home .main{ display:none; }
     .mobile-back-btn{ display:inline-flex; }
+
+    .notes-layout{ flex-direction:column; height:auto; }
+    .notes-explorer{ width:100%; max-height:260px; }
+    .notes-editor{ min-height:60vh; }
+    .notes-editor-panes.split{ flex-direction:column; }
   }
 </style>
 <script>
@@ -531,6 +585,7 @@ async function loadData(){
           state.cards = d.cards || {};
           state.stats = d.stats || { totalPoints: 0 };
           state.books = (d.books || []).map(normalizeBook);
+          state.notesItems = (d.notesItems || []).map(normalizeNoteItem);
           if(d.geminiApiKey) setApiKey(d.geminiApiKey);
           if(d.geminiApiKey2) setApiKey2(d.geminiApiKey2);
           if(d.booksApiKey) setBooksApiKey(d.booksApiKey);
@@ -543,6 +598,7 @@ async function loadData(){
           state.cards = d.cards || {};
           state.stats = d.stats || { totalPoints: 0 };
           state.books = (d.books || []).map(normalizeBook);
+          state.notesItems = (d.notesItems || []).map(normalizeNoteItem);
           // sincroniza a chave do Gemini entre aparelhos logados na mesma conta —
           // assim não precisa configurar de novo em cada navegador/celular.
           if(d.geminiApiKey) setApiKey(d.geminiApiKey);
@@ -559,7 +615,7 @@ async function loadData(){
   render();
 }
 async function saveData(){
-  const payload = JSON.parse(JSON.stringify({decks: state.decks, cards: state.cards, stats: state.stats, books: state.books, geminiApiKey: getApiKey(), geminiApiKey2: getApiKey2(), booksApiKey: getBooksApiKey()}));
+  const payload = JSON.parse(JSON.stringify({decks: state.decks, cards: state.cards, stats: state.stats, books: state.books, notesItems: state.notesItems, geminiApiKey: getApiKey(), geminiApiKey2: getApiKey2(), booksApiKey: getBooksApiKey()}));
   for(let attempt=0; attempt<2; attempt++){
     try{
       if(hasClaudeStorage()){
@@ -694,6 +750,19 @@ async function deleteEpubForBook(bookId){
       headers: { 'Authorization': `Bearer ${token}` }
     });
   }catch(e){ console.error('Falha ao excluir epub no R2', e); } // se falhar, ignora — não trava a exclusão do livro
+}
+async function uploadNoteImage(file){
+  const token = await getFirebaseIdToken();
+  const userId = auth.currentUser.uid;
+  const ext = (file.name.split('.').pop() || 'png').toLowerCase();
+  const imagePath = `${userId}/${uid()}.${ext}`;
+  const resp = await withTimeout(fetch(`${EPUB_WORKER_URL}/notes-image/${imagePath}`, {
+    method: 'PUT',
+    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': file.type || 'application/octet-stream' },
+    body: file
+  }), 25000, 'upload_timeout');
+  if(!resp.ok) throw new Error('note_image_upload_error');
+  return `${EPUB_WORKER_URL}/notes-image/${imagePath}`;
 }
 function renderAuthGate(){
   if(!state.authReady){
@@ -3646,6 +3715,266 @@ function renderEpubReaderView(){
   `;
 }
 
+/* ============ CADERNO DE NOTAS ============ */
+function makeNoteItem(type, name, parentId){
+  return {
+    id: uid(), type, name: (name||'').trim() || (type==='folder' ? 'Nova pasta' : 'Nova nota'),
+    parentId: parentId || null,
+    content: type === 'note' ? '' : undefined,
+    createdAt: Date.now(), updatedAt: Date.now()
+  };
+}
+function normalizeNoteItem(n){
+  const type = n.type === 'folder' ? 'folder' : 'note';
+  return {
+    id: n.id || uid(),
+    type,
+    name: n.name || (type==='folder' ? 'Pasta' : 'Nota'),
+    parentId: n.parentId || null,
+    content: type === 'folder' ? undefined : (n.content || ''),
+    createdAt: n.createdAt || Date.now(),
+    updatedAt: n.updatedAt || Date.now()
+  };
+}
+function openNotes(){
+  state.view = 'notes';
+  render();
+}
+function openNotesCreateModal(parentId, kind){
+  state.modal = { type:'new-note-item', kind: kind || 'note', name:'', parentId: parentId || null };
+  render();
+}
+function confirmCreateNoteItem(){
+  const m = state.modal;
+  const name = (m.name||'').trim();
+  if(!name){ showToast('Dê um nome pra continuar.', 'error'); return; }
+  const item = makeNoteItem(m.kind, name, m.parentId);
+  state.notesItems.push(item);
+  state.modal = null;
+  if(m.kind === 'note'){ state.currentNoteId = item.id; state.notesEditorMode = state.notesEditorMode || 'split'; }
+  else { state.notesCollapsedFolders = (state.notesCollapsedFolders||[]).filter(id=>id!==item.id); }
+  saveData(); render();
+}
+function toggleNotesFolder(id){
+  const list = state.notesCollapsedFolders || (state.notesCollapsedFolders=[]);
+  const idx = list.indexOf(id);
+  if(idx===-1) list.push(id); else list.splice(idx,1);
+  render();
+}
+function openNote(id){
+  state.currentNoteId = id;
+  render();
+}
+function openNotesRenameModal(id){
+  const item = state.notesItems.find(n=>n.id===id);
+  if(!item) return;
+  state.modal = { type:'rename-note-item', id, name: item.name };
+  render();
+}
+function confirmRenameNoteItem(){
+  const m = state.modal;
+  const item = state.notesItems.find(n=>n.id===m.id);
+  const name = (m.name||'').trim();
+  if(!item || !name) return;
+  item.name = name;
+  item.updatedAt = Date.now();
+  state.modal = null;
+  saveData(); render();
+}
+function getNoteDescendantIds(id){
+  const ids = [];
+  const stack = [id];
+  while(stack.length){
+    const current = stack.pop();
+    state.notesItems.filter(n=>n.parentId===current).forEach(c => { ids.push(c.id); stack.push(c.id); });
+  }
+  return ids;
+}
+function deleteNoteItem(id){
+  const item = state.notesItems.find(n=>n.id===id);
+  if(!item) return;
+  const isFolder = item.type === 'folder';
+  const descendantIds = isFolder ? getNoteDescendantIds(id) : [];
+  const msg = (isFolder && descendantIds.length)
+    ? `Excluir a pasta "${item.name}" e ${descendantIds.length} item(ns) dentro dela?`
+    : `Excluir "${item.name}"?`;
+  askConfirm(msg, () => {
+    const toRemove = new Set([id, ...descendantIds]);
+    state.notesItems = state.notesItems.filter(n => !toRemove.has(n.id));
+    if(toRemove.has(state.currentNoteId)) state.currentNoteId = null;
+    saveData(); render();
+    showToast('Excluído.');
+  }, 'Excluir');
+}
+let notesSaveTimer = null;
+function onNoteContentInput(id, value){
+  const item = state.notesItems.find(n=>n.id===id);
+  if(!item) return;
+  item.content = value;
+  item.updatedAt = Date.now();
+  render();
+  if(notesSaveTimer) clearTimeout(notesSaveTimer);
+  notesSaveTimer = setTimeout(saveData, 600);
+}
+function setNotesEditorMode(mode){
+  state.notesEditorMode = mode;
+  render();
+}
+function findNoteByName(name){
+  const norm = normalizeAnswer(name);
+  return state.notesItems.find(n => n.type==='note' && normalizeAnswer(n.name) === norm);
+}
+function preprocessWikiLinks(md){
+  return (md||'').replace(/\[\[([^\]|]+)(\|([^\]]+))?\]\]/g, (match, name, _, alias) => {
+    const cleanName = name.trim();
+    const display = (alias||cleanName).trim();
+    const exists = !!findNoteByName(cleanName);
+    const cls = exists ? 'wiki-link' : 'wiki-link wiki-link-new';
+    return `<a href="#" class="${cls}" data-note-name="${escapeHtml(cleanName)}" title="${exists ? 'Abrir nota' : 'Criar nota'}">${escapeHtml(display)}</a>`;
+  });
+}
+function renderNoteMarkdown(content){
+  const withLinks = preprocessWikiLinks(content);
+  try{
+    return marked.parse(withLinks, { breaks: true });
+  }catch(e){
+    return `<p style="color:var(--error);">Erro ao renderizar o markdown.</p>`;
+  }
+}
+document.addEventListener('click', (e) => {
+  const link = e.target.closest && e.target.closest('.wiki-link');
+  if(!link) return;
+  e.preventDefault();
+  openOrCreateNoteByName(link.dataset.noteName);
+});
+function openOrCreateNoteByName(name){
+  const existing = findNoteByName(name);
+  if(existing){ state.currentNoteId = existing.id; render(); return; }
+  const current = state.notesItems.find(n=>n.id===state.currentNoteId);
+  const parentId = current ? current.parentId : null;
+  const item = makeNoteItem('note', name, parentId);
+  state.notesItems.push(item);
+  state.currentNoteId = item.id;
+  saveData(); render();
+  showToast(`Nota "${name}" criada.`);
+}
+function applyMdWrap(textareaId, before, after){
+  const el = document.getElementById(textareaId);
+  if(!el) return;
+  after = after != null ? after : before;
+  const start = el.selectionStart, end = el.selectionEnd;
+  const val = el.value;
+  const selected = val.slice(start, end);
+  const newVal = val.slice(0,start) + before + selected + after + val.slice(end);
+  el.value = newVal;
+  el.focus();
+  el.setSelectionRange(start+before.length, start+before.length+selected.length);
+  onNoteContentInput(state.currentNoteId, newVal);
+}
+function applyMdLinePrefix(textareaId, prefix){
+  const el = document.getElementById(textareaId);
+  if(!el) return;
+  const start = el.selectionStart;
+  const val = el.value;
+  const lineStart = val.lastIndexOf('\n', start-1) + 1;
+  const newVal = val.slice(0,lineStart) + prefix + val.slice(lineStart);
+  el.value = newVal;
+  const newPos = start + prefix.length;
+  el.focus();
+  el.setSelectionRange(newPos, newPos);
+  onNoteContentInput(state.currentNoteId, newVal);
+}
+function applyMdAlign(textareaId, align){
+  const el = document.getElementById(textareaId);
+  if(!el) return;
+  const start = el.selectionStart, end = el.selectionEnd;
+  const val = el.value;
+  const selected = val.slice(start, end) || 'texto';
+  const wrapped = `<div style="text-align:${align}">\n\n${selected}\n\n</div>`;
+  const newVal = val.slice(0,start) + wrapped + val.slice(end);
+  el.value = newVal;
+  el.focus();
+  const pos = start + wrapped.length;
+  el.setSelectionRange(pos, pos);
+  onNoteContentInput(state.currentNoteId, newVal);
+}
+function applyMdLink(textareaId){
+  const el = document.getElementById(textareaId);
+  if(!el) return;
+  const start = el.selectionStart, end = el.selectionEnd;
+  const val = el.value;
+  const selected = val.slice(start,end) || 'texto do link';
+  const md = `[${selected}](url)`;
+  const newVal = val.slice(0,start) + md + val.slice(end);
+  el.value = newVal;
+  el.focus();
+  const urlStart = start + selected.length + 3, urlEnd = urlStart + 3;
+  el.setSelectionRange(urlStart, urlEnd);
+  onNoteContentInput(state.currentNoteId, newVal);
+}
+function insertWikiLink(textareaId){
+  const el = document.getElementById(textareaId);
+  if(!el) return;
+  const start = el.selectionStart, end = el.selectionEnd;
+  const val = el.value;
+  const selected = val.slice(start,end);
+  const label = selected || 'Nome da nota';
+  const md = `[[${label}]]`;
+  const newVal = val.slice(0,start) + md + val.slice(end);
+  el.value = newVal;
+  el.focus();
+  const innerStart = start+2, innerEnd = innerStart + label.length;
+  el.setSelectionRange(innerStart, innerEnd);
+  onNoteContentInput(state.currentNoteId, newVal);
+}
+function insertImageMarkdown(textareaId, url, alt){
+  const el = document.getElementById(textareaId);
+  if(!el) return;
+  const start = el.selectionStart;
+  const val = el.value;
+  const md = `![${alt||'imagem'}](${url})`;
+  const newVal = val.slice(0,start) + md + val.slice(start);
+  el.value = newVal;
+  const pos = start + md.length;
+  el.focus();
+  el.setSelectionRange(pos,pos);
+  onNoteContentInput(state.currentNoteId, newVal);
+}
+function openInsertImageModal(){
+  state.modal = { type:'insert-note-image', url:'', alt:'' };
+  render();
+}
+function confirmInsertNoteImage(){
+  const m = state.modal;
+  const url = (m.url||'').trim();
+  if(!url){ showToast('Cole o link da imagem.', 'error'); return; }
+  const alt = m.alt||'';
+  state.modal = null;
+  render();
+  insertImageMarkdown('note-editor-textarea', url, alt);
+}
+function openNoteImageUploadPicker(){
+  const noteId = state.currentNoteId;
+  if(!noteId) return;
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'image/*';
+  input.onchange = async (e) => {
+    const file = e.target.files[0];
+    if(!file) return;
+    showToast('Enviando imagem...');
+    try{
+      const url = await uploadNoteImage(file);
+      insertImageMarkdown('note-editor-textarea', url, file.name.replace(/\.[^/.]+$/, ''));
+      showToast('Imagem enviada!');
+    }catch(err){
+      console.error('Falha ao enviar imagem da nota', err);
+      showToast('Não consegui enviar a imagem. Tente de novo.', 'error');
+    }
+  };
+  input.click();
+}
+
 /* ============ RENDER ============ */
 function renderPointsBadge(s){
   if(!s.revealed || !s.lastFeedback || !s.lastEarned) return '';
@@ -3767,6 +4096,7 @@ function renderSidebar(){
       </div>
     </div>
     <button class="ghost-btn" style="font-size:13px; padding:10px 12px; margin-bottom:6px; ${(state.view==='library'||state.view==='book') ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="openLibrary()">📚 Leituras</button>
+    <button class="ghost-btn" style="font-size:13px; padding:10px 12px; margin-bottom:6px; ${state.view==='notes' ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="openNotes()">📓 Notas</button>
     <button class="new-deck-btn" onclick="openNewDeckModal()">＋ Novo baralho</button>
     <button class="ghost-btn" style="font-size:12.5px; padding:9px 12px;" onclick="openPhotoImportPicker(true)">📷 Tirar foto (cartões)</button>
     <button class="ghost-btn" style="font-size:12.5px; padding:9px 12px;" onclick="openPhotoImportPicker(false)">🖼️ Carregar imagem (cartões)</button>
@@ -3774,7 +4104,7 @@ function renderSidebar(){
       ${state.decks.length === 0 ? `<div style="color:var(--text-faint); font-size:12.5px; padding:8px 4px;">Nenhum baralho ainda.</div>` : ''}
       ${state.decks.map(d => {
         const due = getDueCards(d.id).length;
-        const active = state.currentDeckId === d.id && state.view !== 'home' && state.view !== 'library' && state.view !== 'book';
+        const active = state.currentDeckId === d.id && state.view !== 'home' && state.view !== 'library' && state.view !== 'book' && state.view !== 'notes';
         return `
         <div class="deck-item ${active?'active':''}" onclick="selectDeck('${d.id}')">
           <div class="deck-dot" style="background:${d.color}"></div>
@@ -3817,6 +4147,7 @@ function renderMain(){
   if(state.view === 'library') return renderLibraryView();
   if(state.view === 'book') return renderBookDetailView();
   if(state.view === 'epub-reader') return renderEpubReaderView();
+  if(state.view === 'notes') return renderNotesView();
   if(state.view === 'home' || !state.currentDeckId){
     return `
     <div class="empty-state">
@@ -3846,6 +4177,107 @@ function getReadingStats(){
     }
   });
   return { month, year };
+}
+function renderNotesView(){
+  const currentNote = state.notesItems.find(n=>n.id===state.currentNoteId && n.type==='note');
+  const hasRootItems = state.notesItems.some(n=>n.parentId===null);
+  return `
+  <button class="ghost-btn mobile-back-btn" onclick="backToHome()">← Início</button>
+  <div class="notes-layout">
+    <div class="notes-explorer">
+      <div class="notes-explorer-header">
+        <h3 style="margin:0; font-size:15px;">📓 Notas</h3>
+        <div style="display:flex; gap:4px;">
+          <button class="icon-btn" title="Nova nota" onclick="openNotesCreateModal(null,'note')">📄</button>
+          <button class="icon-btn" title="Nova pasta" onclick="openNotesCreateModal(null,'folder')">📁</button>
+        </div>
+      </div>
+      <div class="notes-tree">
+        ${!hasRootItems ? `<p style="color:var(--text-faint); font-size:12px; padding:8px 4px;">Nenhuma nota ainda. Crie a primeira com os botões acima.</p>` : ''}
+        ${renderNotesTreeLevel(null, 0)}
+      </div>
+    </div>
+    <div class="notes-editor">
+      ${currentNote ? renderNoteEditor(currentNote) : `
+      <div class="empty-state" style="height:60vh;">
+        <div style="font-size:40px;">📓</div>
+        <h2>Seu caderno de notas</h2>
+        <p>Crie uma nota na lista ao lado, ou clique numa já existente pra editar. Use [[Nome da nota]] pra linkar de uma nota pra outra.</p>
+      </div>
+      `}
+    </div>
+  </div>
+  `;
+}
+function renderNotesTreeLevel(parentId, depth){
+  const items = state.notesItems.filter(n=>n.parentId===parentId).sort((a,b) => {
+    if(a.type !== b.type) return a.type === 'folder' ? -1 : 1;
+    return a.name.localeCompare(b.name, 'pt-BR');
+  });
+  return items.map(item => {
+    if(item.type === 'folder'){
+      const collapsed = (state.notesCollapsedFolders||[]).includes(item.id);
+      return `
+      <div class="notes-tree-row" style="padding-left:${depth*16}px;">
+        <div class="notes-tree-label" onclick="toggleNotesFolder('${item.id}')">
+          <span>${collapsed?'📁':'📂'}</span> <span>${escapeHtml(item.name)}</span>
+        </div>
+        <div class="notes-tree-actions">
+          <button class="icon-btn" style="width:22px;height:22px;font-size:11px;" title="Novo item aqui dentro" onclick="event.stopPropagation(); openNotesCreateModal('${item.id}','note')">➕</button>
+          <button class="icon-btn" style="width:22px;height:22px;font-size:11px;" title="Renomear" onclick="event.stopPropagation(); openNotesRenameModal('${item.id}')">✏️</button>
+          <button class="icon-btn" style="width:22px;height:22px;font-size:11px;" title="Excluir" onclick="event.stopPropagation(); deleteNoteItem('${item.id}')">🗑</button>
+        </div>
+      </div>
+      ${!collapsed ? renderNotesTreeLevel(item.id, depth+1) : ''}
+      `;
+    }
+    return `
+    <div class="notes-tree-row ${state.currentNoteId===item.id?'active':''}" style="padding-left:${depth*16+16}px;">
+      <div class="notes-tree-label" onclick="openNote('${item.id}')">📄 ${escapeHtml(item.name)}</div>
+      <div class="notes-tree-actions">
+        <button class="icon-btn" style="width:22px;height:22px;font-size:11px;" title="Renomear" onclick="event.stopPropagation(); openNotesRenameModal('${item.id}')">✏️</button>
+        <button class="icon-btn" style="width:22px;height:22px;font-size:11px;" title="Excluir" onclick="event.stopPropagation(); deleteNoteItem('${item.id}')">🗑</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+function renderNoteEditor(note){
+  const mode = state.notesEditorMode || 'split';
+  return `
+  <div class="notes-editor-header">
+    <h3 style="margin:0;">${escapeHtml(note.name)}</h3>
+    <div class="notes-mode-toggle">
+      <button class="ghost-btn ${mode==='source'?'active-mode':''}" onclick="setNotesEditorMode('source')">Editar</button>
+      <button class="ghost-btn ${mode==='split'?'active-mode':''}" onclick="setNotesEditorMode('split')">Dividido</button>
+      <button class="ghost-btn ${mode==='preview'?'active-mode':''}" onclick="setNotesEditorMode('preview')">Prévia</button>
+    </div>
+  </div>
+  ${mode !== 'preview' ? renderNotesToolbar() : ''}
+  <div class="notes-editor-panes ${mode}">
+    ${mode !== 'preview' ? `<textarea id="note-editor-textarea" class="notes-textarea" placeholder="Escreva em markdown... use [[Nome da nota]] pra linkar outra nota." oninput="onNoteContentInput('${note.id}', this.value)">${escapeHtml(note.content||'')}</textarea>` : ''}
+    ${mode !== 'source' ? `<div class="notes-preview">${renderNoteMarkdown(note.content||'')}</div>` : ''}
+  </div>
+  `;
+}
+function renderNotesToolbar(){
+  const id = 'note-editor-textarea';
+  return `
+  <div class="notes-toolbar">
+    <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Negrito" onclick="applyMdWrap('${id}','**')"><strong>B</strong></button>
+    <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Itálico" onclick="applyMdWrap('${id}','*')"><em>I</em></button>
+    <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Título 1" onclick="applyMdLinePrefix('${id}','# ')">H1</button>
+    <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Título 2" onclick="applyMdLinePrefix('${id}','## ')">H2</button>
+    <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Título 3" onclick="applyMdLinePrefix('${id}','### ')">H3</button>
+    <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Lista" onclick="applyMdLinePrefix('${id}','- ')">•</button>
+    <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Lista numerada" onclick="applyMdLinePrefix('${id}','1. ')">1.</button>
+    <button class="icon-btn" title="Alinhar à esquerda" onclick="applyMdAlign('${id}','left')">⬅</button>
+    <button class="icon-btn" title="Centralizar" onclick="applyMdAlign('${id}','center')">↔</button>
+    <button class="icon-btn" title="Alinhar à direita" onclick="applyMdAlign('${id}','right')">➡</button>
+    <button class="icon-btn" title="Link" onclick="applyMdLink('${id}')">🔗</button>
+    <button class="icon-btn" title="Link pra outra nota" onclick="insertWikiLink('${id}')">🔀</button>
+    <button class="icon-btn" title="Imagem por link" onclick="openInsertImageModal()">🖼️</button>
+    <button class="icon-btn" title="Enviar imagem do aparelho" onclick="openNoteImageUploadPicker()">📤</button>
+  </div>`;
 }
 function renderLibraryView(){
   const q = (state.bookSearch||'').toLowerCase().trim();
@@ -4930,6 +5362,9 @@ function renderModal(){
   if(m.type === 'epub-toc') return renderEpubTocModal(m);
   if(m.type === 'epub-nav') return renderEpubNavModal(m);
   if(m.type === 'confirm') return renderConfirmModal(m);
+  if(m.type === 'new-note-item') return renderNewNoteItemModal(m);
+  if(m.type === 'rename-note-item') return renderRenameNoteItemModal(m);
+  if(m.type === 'insert-note-image') return renderInsertNoteImageModal(m);
   return `
   <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
     <div class="modal">
@@ -4967,6 +5402,65 @@ function renderConfirmModal(m){
       <div class="modal-actions">
         <button class="ghost-btn" onclick="cancelPendingAction()">Cancelar</button>
         <button class="primary-btn" style="background:var(--error); border-color:var(--error);" onclick="confirmPendingAction()">${escapeHtml(m.confirmLabel)}</button>
+      </div>
+    </div>
+  </div>`;
+}
+function renderNewNoteItemModal(m){
+  return `
+  <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
+    <div class="modal">
+      <h3>${m.kind==='folder' ? 'Nova pasta' : 'Nova nota'}</h3>
+      <div class="field">
+        <label>TIPO</label>
+        <div style="display:flex; gap:8px;">
+          <button type="button" class="ghost-btn" style="flex:1; ${m.kind==='note' ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="state.modal.kind='note'; render();">📄 Nota</button>
+          <button type="button" class="ghost-btn" style="flex:1; ${m.kind==='folder' ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="state.modal.kind='folder'; render();">📁 Pasta</button>
+        </div>
+      </div>
+      <div class="field">
+        <label>NOME</label>
+        <input type="text" autofocus placeholder="${m.kind==='folder' ? 'Ex: Anotações de espanhol' : 'Ex: Verbos irregulares'}" value="${escapeHtml(m.name)}" onkeyup="state.modal.name=this.value; if(event.key==='Enter') confirmCreateNoteItem();">
+      </div>
+      <div class="modal-actions">
+        <button class="ghost-btn" onclick="closeModal()">Cancelar</button>
+        <button class="primary-btn" onclick="confirmCreateNoteItem()">Criar</button>
+      </div>
+    </div>
+  </div>`;
+}
+function renderRenameNoteItemModal(m){
+  return `
+  <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
+    <div class="modal">
+      <h3>Renomear</h3>
+      <div class="field">
+        <label>NOME</label>
+        <input type="text" autofocus value="${escapeHtml(m.name)}" onkeyup="state.modal.name=this.value; if(event.key==='Enter') confirmRenameNoteItem();">
+      </div>
+      <div class="modal-actions">
+        <button class="ghost-btn" onclick="closeModal()">Cancelar</button>
+        <button class="primary-btn" onclick="confirmRenameNoteItem()">Salvar</button>
+      </div>
+    </div>
+  </div>`;
+}
+function renderInsertNoteImageModal(m){
+  return `
+  <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
+    <div class="modal">
+      <h3>Imagem por link</h3>
+      <div class="field">
+        <label>URL DA IMAGEM</label>
+        <input type="text" autofocus placeholder="https://..." value="${escapeHtml(m.url)}" onkeyup="state.modal.url=this.value">
+      </div>
+      <div class="field">
+        <label>TEXTO ALTERNATIVO (OPCIONAL)</label>
+        <input type="text" placeholder="Ex: diagrama do capítulo 3" value="${escapeHtml(m.alt)}" onkeyup="state.modal.alt=this.value">
+      </div>
+      <div class="modal-actions">
+        <button class="ghost-btn" onclick="closeModal()">Cancelar</button>
+        <button class="primary-btn" onclick="confirmInsertNoteImage()">Inserir</button>
       </div>
     </div>
   </div>`;
