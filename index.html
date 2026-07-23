@@ -3766,10 +3766,11 @@ let noteContentError = {};
 function getNoteContent(noteId){
   return noteContentCache[noteId] !== undefined ? noteContentCache[noteId] : '';
 }
-function makeNoteItem(type, name, parentId){
+function makeNoteItem(type, name, parentId, format){
   const item = {
     id: uid(), type, name: (name||'').trim() || (type==='folder' ? 'Nova pasta' : 'Nova nota'),
     parentId: parentId || null,
+    format: type === 'note' ? (format === 'plain' ? 'plain' : 'markdown') : undefined,
     linkedDeckId: type === 'note' ? null : undefined,
     createdAt: Date.now(), updatedAt: Date.now()
   };
@@ -3783,6 +3784,7 @@ function normalizeNoteItem(n){
     type,
     name: n.name || (type==='folder' ? 'Pasta' : 'Nota'),
     parentId: n.parentId || null,
+    format: type === 'folder' ? undefined : (n.format === 'plain' ? 'plain' : 'markdown'),
     linkedDeckId: type === 'folder' ? undefined : (n.linkedDeckId || null),
     createdAt: n.createdAt || Date.now(),
     updatedAt: n.updatedAt || Date.now()
@@ -3805,14 +3807,14 @@ function openNotes(){
   render();
 }
 function openNotesCreateModal(parentId, kind){
-  state.modal = { type:'new-note-item', kind: kind || 'note', name:'', parentId: parentId || null };
+  state.modal = { type:'new-note-item', kind: kind || 'note', name:'', format:'markdown', parentId: parentId || null };
   render();
 }
 function confirmCreateNoteItem(){
   const m = state.modal;
   const name = (m.name||'').trim();
   if(!name){ showToast('Dê um nome pra continuar.', 'error'); return; }
-  const item = makeNoteItem(m.kind, name, m.parentId);
+  const item = makeNoteItem(m.kind, name, m.parentId, m.format);
   state.notesItems.push(item);
   state.modal = null;
   if(m.kind === 'note'){ state.currentNoteId = item.id; state.notesEditorMode = state.notesEditorMode || 'split'; }
@@ -3961,7 +3963,7 @@ function onNoteContentInput(id, value){
   // elemento for substituído antes de terminar). Atualiza só a prévia, que é
   // um elemento à parte e não afeta o foco/digitação da textarea.
   const previewEl = document.querySelector('.notes-preview');
-  if(previewEl) previewEl.innerHTML = renderNoteMarkdown(value);
+  if(previewEl) previewEl.innerHTML = item.format === 'plain' ? renderPlainNoteContent(value) : renderNoteMarkdown(value);
   if(notesSaveTimer) clearTimeout(notesSaveTimer);
   notesSaveTimer = setTimeout(() => {
     saveData(); // metadados (nome, pasta, updatedAt) no Firestore
@@ -3993,6 +3995,23 @@ function renderNoteMarkdown(content){
     return `<p style="color:var(--error);">Erro ao renderizar o markdown.</p>`;
   }
 }
+// nota "texto normal": nenhuma sintaxe de formatação é interpretada (negrito,
+// título etc. aparecem exatamente como digitados) — só link entre notas e
+// imagem embutida continuam funcionando, por serem navegação e não formatação.
+function renderPlainNoteContent(content){
+  let html = escapeHtml(content||'');
+  html = html.replace(/\[\[([^\]|]+)(\|([^\]]+))?\]\]/g, (match, name, _, alias) => {
+    const cleanName = name.trim();
+    const display = (alias||cleanName).trim();
+    const exists = !!findNoteByName(cleanName);
+    const cls = exists ? 'wiki-link' : 'wiki-link wiki-link-new';
+    return `<a href="#" class="${cls}" data-note-name="${cleanName}" title="${exists ? 'Abrir nota' : 'Criar nota'}">${display}</a>`;
+  });
+  html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, url) => {
+    return `<img src="${url}" alt="${alt}">`;
+  });
+  return html;
+}
 document.addEventListener('click', (e) => {
   const link = e.target.closest && e.target.closest('.wiki-link');
   if(!link) return;
@@ -4004,7 +4023,7 @@ function openOrCreateNoteByName(name){
   if(existing){ state.currentNoteId = existing.id; render(); return; }
   const current = state.notesItems.find(n=>n.id===state.currentNoteId);
   const parentId = current ? current.parentId : null;
-  const item = makeNoteItem('note', name, parentId);
+  const item = makeNoteItem('note', name, parentId, current ? current.format : 'markdown');
   state.notesItems.push(item);
   state.currentNoteId = item.id;
   saveData(); render();
@@ -4759,6 +4778,7 @@ function renderNoteEditor(note){
   }
   const content = getNoteContent(note.id);
   const mode = state.notesEditorMode || 'split';
+  const isPlain = note.format === 'plain';
   return `
   <div class="notes-editor-header">
     <h3 style="margin:0;">${escapeHtml(note.name)}</h3>
@@ -4771,10 +4791,10 @@ function renderNoteEditor(note){
       </div>
     </div>
   </div>
-  ${mode !== 'preview' ? renderNotesToolbar() : ''}
+  ${mode !== 'preview' ? renderNotesToolbar(note.format) : ''}
   <div class="notes-editor-panes ${mode}">
-    ${mode !== 'preview' ? `<textarea id="note-editor-textarea" class="notes-textarea" placeholder="Escreva em markdown... use [[Nome da nota]] pra linkar outra nota." oninput="onNoteContentInput('${note.id}', this.value)" onkeydown="if(event.key==='Tab'){ event.preventDefault(); insertTabIndent('note-editor-textarea'); }">${escapeHtml(content)}</textarea>` : ''}
-    ${mode !== 'source' ? `<div class="notes-preview">${renderNoteMarkdown(content)}</div>` : ''}
+    ${mode !== 'preview' ? `<textarea id="note-editor-textarea" class="notes-textarea" placeholder="${isPlain ? 'Escreva à vontade, sem se preocupar com formatação...' : 'Escreva em markdown... use [[Nome da nota]] pra linkar outra nota.'}" oninput="onNoteContentInput('${note.id}', this.value)" onkeydown="if(event.key==='Tab'){ event.preventDefault(); insertTabIndent('note-editor-textarea'); }">${escapeHtml(content)}</textarea>` : ''}
+    ${mode !== 'source' ? `<div class="notes-preview" style="${isPlain ? 'white-space:pre-wrap;' : ''}">${isPlain ? renderPlainNoteContent(content) : renderNoteMarkdown(content)}</div>` : ''}
   </div>
   <div id="note-selection-bar" style="display:none; position:fixed; left:0; right:0; bottom:0; background:var(--surface); border-top:1px solid var(--border); padding:12px 20px; align-items:center; justify-content:center; gap:10px; box-shadow:0 -4px 16px rgba(0,0,0,0.2); z-index:50; flex-wrap:wrap;">
     <button class="ghost-btn" id="note-correct-btn" onclick="requestNoteCorrection()">✏️ Corrigir</button>
@@ -4783,10 +4803,12 @@ function renderNoteEditor(note){
   </div>
   `;
 }
-function renderNotesToolbar(){
+function renderNotesToolbar(format){
   const id = 'note-editor-textarea';
+  const isMarkdown = format !== 'plain';
   return `
   <div class="notes-toolbar">
+    ${isMarkdown ? `
     <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Negrito" onclick="applyMdWrap('${id}','**')"><strong>B</strong></button>
     <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Itálico" onclick="applyMdWrap('${id}','*')"><em>I</em></button>
     <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Título 1" onclick="applyMdLinePrefix('${id}','# ')">H1</button>
@@ -4794,11 +4816,14 @@ function renderNotesToolbar(){
     <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Título 3" onclick="applyMdLinePrefix('${id}','### ')">H3</button>
     <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Lista" onclick="applyMdLinePrefix('${id}','- ')">•</button>
     <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Lista numerada" onclick="applyMdLinePrefix('${id}','1. ')">1.</button>
+    ` : ''}
     <button class="icon-btn" title="Recuo de parágrafo (igual à tecla Tab)" onclick="insertTabIndent('${id}')">↹</button>
+    ${isMarkdown ? `
     <button class="icon-btn" title="Alinhar à esquerda" onclick="applyMdAlign('${id}','left')">⬅</button>
     <button class="icon-btn" title="Centralizar" onclick="applyMdAlign('${id}','center')">↔</button>
     <button class="icon-btn" title="Alinhar à direita" onclick="applyMdAlign('${id}','right')">➡</button>
     <button class="icon-btn" title="Link" onclick="applyMdLink('${id}')">🔗</button>
+    ` : ''}
     <button class="icon-btn" title="Link pra outra nota" onclick="insertWikiLink('${id}')">🔀</button>
     <button class="icon-btn" title="Imagem por link" onclick="openInsertImageModal()">🖼️</button>
     <button class="icon-btn" title="Enviar imagem do aparelho" onclick="openNoteImageUploadPicker()">📤</button>
@@ -5954,6 +5979,15 @@ function renderNewNoteItemModal(m){
           <button type="button" class="ghost-btn" style="flex:1; ${m.kind==='folder' ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="state.modal.kind='folder'; render();">📁 Pasta</button>
         </div>
       </div>
+      ${m.kind==='note' ? `
+      <div class="field">
+        <label>FORMATO</label>
+        <div style="display:flex; gap:8px;">
+          <button type="button" class="ghost-btn" style="flex:1; ${m.format!=='plain' ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="state.modal.format='markdown'; render();">Markdown<br><span style="font-weight:400; font-size:11px; opacity:0.8;">títulos, negrito, links...</span></button>
+          <button type="button" class="ghost-btn" style="flex:1; ${m.format==='plain' ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="state.modal.format='plain'; render();">Texto normal<br><span style="font-weight:400; font-size:11px; opacity:0.8;">sem formatação</span></button>
+        </div>
+      </div>
+      ` : ''}
       <div class="field">
         <label>NOME</label>
         <input type="text" autofocus placeholder="${m.kind==='folder' ? 'Ex: Anotações de espanhol' : 'Ex: Verbos irregulares'}" value="${escapeHtml(m.name)}" onkeyup="state.modal.name=this.value; if(event.key==='Enter') confirmCreateNoteItem();">
