@@ -16,6 +16,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
 <style>
   :root{
     /* tema escuro (padrão) */
@@ -469,7 +470,11 @@ let state = {
   books: [],           // estante de livros ("Leituras")
   currentBookId: null,
   bookSearch: '',
-  quoteSearch: ''
+  quoteSearch: '',
+  notesItems: [],      // caderno de notas: lista achatada de pastas/notas, ligadas por parentId
+  currentNoteId: null,
+  notesCollapsedFolders: [], // ids de pastas fechadas no explorer (só estado de UI)
+  notesEditorMode: 'split' // 'source' | 'split' | 'preview'
 };
 
 function uid(){ return Math.random().toString(36).slice(2,10); }
