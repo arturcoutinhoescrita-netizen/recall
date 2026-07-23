@@ -676,9 +676,6 @@ const firebaseConfig = {
   appId: "1:272502529779:web:402568fc9f335a3ae6a186"
 };
 let auth = null, db = null;
-function isMobileDevice(){
-  return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-}
 function isStandaloneApp(){
   // true quando o app foi instalado (ícone na tela inicial) e está rodando sem a barra do navegador —
   // nesse modo, o login do Google trava tanto com popup quanto com redirect no Android.
@@ -711,18 +708,23 @@ function initFirebase(){
 }
 function signInWithGoogle(){
   const provider = new firebase.auth.GoogleAuthProvider();
-  if(isMobileDevice()){
-    auth.signInWithRedirect(provider).catch(e => {
-      console.error('Falha ao iniciar login com Google', e);
-      showToast('Não foi possível iniciar o login. Tente novamente.', 'error');
-    });
-  } else {
-    auth.signInWithPopup(provider).catch(e => {
-      if(e && e.code === 'auth/popup-closed-by-user') return; // usuário fechou a janela, sem problema
-      console.error('Falha ao fazer login com Google', e);
-      showToast('Não foi possível fazer login. Tente novamente.', 'error');
-    });
-  }
+  // signInWithRedirect depende de storage no domínio auxiliar do Firebase (authDomain),
+  // que o Safari/iOS (e cada vez mais outros navegadores) bloqueia por padrão fora do site
+  // principal — na prática o usuário volta pro app sem erro nenhum e sem estar logado,
+  // como se a página só tivesse recarregado. O popup evita essa troca de domínio, então
+  // usamos ele sempre, mesmo no celular, e só caímos pro redirect se o popup nem abrir.
+  auth.signInWithPopup(provider).catch(e => {
+    if(e && e.code === 'auth/popup-closed-by-user') return; // usuário fechou a janela, sem problema
+    if(e && (e.code === 'auth/popup-blocked' || e.code === 'auth/operation-not-supported-in-this-environment' || e.code === 'auth/cancelled-popup-request')){
+      auth.signInWithRedirect(provider).catch(e2 => {
+        console.error('Falha ao iniciar login com Google', e2);
+        showToast('Não foi possível iniciar o login. Tente novamente.', 'error');
+      });
+      return;
+    }
+    console.error('Falha ao fazer login com Google', e);
+    showToast('Não foi possível fazer login. Tente novamente.', 'error');
+  });
 }
 function signOutUser(){
   auth.signOut();
@@ -4548,7 +4550,7 @@ function requestNoteOpinion(){
   const sel = state.noteSelection;
   if(!sel || !sel.text) return;
   hideNoteSelectionBar();
-  state.modal = { type:'note-opinion', status:'loading', passage:sel.text, opinion:'' };
+  state.modal = { type:'note-opinion', status:'loading', passage:sel.text, opinion:'', noteId: state.currentNoteId, source: sel.source, start: sel.start, end: sel.end, messages:[], input:'', sending:false };
   render();
   generateTextOpinion(sel.text).then(opinion => {
     if(state.modal && state.modal.type === 'note-opinion'){
@@ -4574,7 +4576,9 @@ function confirmNotePasteOpinion(){
   const m = state.modal;
   const text = (m.text||'').trim();
   if(!text){ showToast('Cole o texto primeiro.', 'error'); return; }
-  state.modal = { type:'note-opinion', status:'loading', passage:text, opinion:'' };
+  // texto colado não tem posição nenhuma dentro da nota (pode nem ter vindo de uma
+  // nota) — então aqui o "aplicar" automático não é possível, só copiar manualmente.
+  state.modal = { type:'note-opinion', status:'loading', passage:text, opinion:'', noteId:null, source:null, start:null, end:null, messages:[], input:'', sending:false };
   render();
   generateTextOpinion(text).then(opinion => {
     if(state.modal && state.modal.type === 'note-opinion'){
@@ -4591,9 +4595,103 @@ function confirmNotePasteOpinion(){
     }
   });
 }
+// depois da opinião inicial, o usuário pode continuar conversando — e se pedir uma
+// reescrita concreta, a IA marca a versão revisada com essas tags num bloco à parte,
+// que a gente detecta e separa da resposta "de chat" antes de mostrar na tela.
+const NOTE_OPINION_EDIT_START = '===TEXTO_ATUALIZADO===';
+const NOTE_OPINION_EDIT_END = '===FIM===';
+function extractProposedEdit(raw){
+  const startIdx = raw.indexOf(NOTE_OPINION_EDIT_START);
+  const endIdx = raw.indexOf(NOTE_OPINION_EDIT_END, startIdx);
+  if(startIdx === -1 || endIdx === -1) return { text: raw, proposedEdit: null };
+  const proposedEdit = raw.slice(startIdx + NOTE_OPINION_EDIT_START.length, endIdx).trim();
+  const text = raw.slice(0, startIdx).trim() || 'Veja a versão revisada abaixo:';
+  return { text, proposedEdit: proposedEdit || null };
+}
+async function sendNoteOpinionChatMessage(){
+  const m = state.modal;
+  if(!m || m.type !== 'note-opinion' || m.status !== 'ready') return;
+  const question = (m.input||'').trim();
+  if(!question || m.sending) return;
+  m.messages.push({ role:'user', text: question });
+  m.input = '';
+  m.sending = true;
+  render();
+  scrollChatMessagesToBottom('.note-opinion-messages');
+
+  const canEdit = m.source === 'textarea' || m.source === 'richtext';
+  const canOfferCopy = !canEdit; // texto colado ou selecionado só na prévia: sem posição pra aplicar direto
+  const history = m.messages.slice(0,-1).map(msg => `${msg.role==='user'?'Usuário':'Assistente'}: ${msg.text}`).join('\n');
+  const editInstruction = (canEdit || canOfferCopy)
+    ? `Se o usuário pedir pra você reescrever, corrigir ou melhorar o trecho de algum jeito concreto, responda naturalmente E inclua, ao final da resposta, o texto completo revisado do trecho (substituindo ele inteiro, não só a parte que mudou) entre as marcas exatas abaixo, sem nada mais na mesma linha delas:\n${NOTE_OPINION_EDIT_START}\n(texto revisado aqui)\n${NOTE_OPINION_EDIT_END}\nSó inclua esse bloco quando fizer sentido propor uma reescrita concreta do trecho — não inclua se for só conversa, pergunta geral ou elogio.`
+    : '';
+  const prompt = `Você é um assistente ajudando alguém a escrever. Vocês estão conversando sobre o trecho abaixo, sobre o qual você já deu uma opinião inicial.\n\n--- TRECHO ---\n${m.passage}\n--- FIM DO TRECHO ---\n\nSua opinião inicial sobre ele: ${m.opinion}\n\n${history ? `Conversa até agora:\n${history}\n\n` : ''}Usuário: ${question}\n\n${editInstruction}\n\nResponda de forma direta e natural, como numa conversa de chat. Não repita a pergunta antes de responder.`;
+
+  try{
+    const raw = (await callGemini(prompt, { maxTokens: 700 })).trim();
+    const { text, proposedEdit } = extractProposedEdit(raw);
+    m.messages.push({ role:'assistant', text, proposedEdit });
+  }catch(err){
+    console.error('Falha no chat sobre a opinião da IA', err);
+    m.messages.push({ role:'assistant', text: friendlyAiErrorMsg(err), error:true });
+  }
+  m.sending = false;
+  render();
+  scrollChatMessagesToBottom('.note-opinion-messages');
+}
+function applyNoteOpinionEdit(msgIndex){
+  const m = state.modal;
+  if(!m || m.type !== 'note-opinion') return;
+  const msg = m.messages[msgIndex];
+  if(!msg || !msg.proposedEdit) return;
+  const note = m.noteId ? state.notesItems.find(n=>n.id===m.noteId) : null;
+  if(!note || (m.source !== 'textarea' && m.source !== 'richtext') || m.start == null || m.end == null) return;
+  if(m.source === 'richtext'){
+    const el = document.getElementById('note-editor-plain');
+    // reconstrói o Range agora, do DOM atual — guardado desde a seleção original
+    // ele ficaria inválido, porque render() já recriou o contenteditable várias vezes.
+    const range = el ? textOffsetToRange(el, m.start, m.end) : null;
+    if(el && range){
+      el.focus();
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      document.execCommand('insertText', false, msg.proposedEdit);
+      note.updatedAt = Date.now();
+      state.modal = null;
+      const updated = el.innerHTML;
+      noteContentCache[note.id] = updated;
+      saveData(); render();
+      saveNoteContentToR2(note.id, updated);
+      showToast('Texto atualizado na nota.');
+      return;
+    }
+    return;
+  }
+  const current = getNoteContent(note.id);
+  const updated = current.slice(0, m.start) + msg.proposedEdit + current.slice(m.end);
+  noteContentCache[note.id] = updated;
+  note.updatedAt = Date.now();
+  state.modal = null;
+  saveData(); render();
+  saveNoteContentToR2(note.id, updated);
+  showToast('Texto atualizado na nota.');
+}
+async function copyNoteOpinionEdit(msgIndex){
+  const m = state.modal;
+  if(!m || m.type !== 'note-opinion') return;
+  const msg = m.messages[msgIndex];
+  if(!msg || !msg.proposedEdit) return;
+  try{
+    await navigator.clipboard.writeText(msg.proposedEdit);
+    showToast('Texto revisado copiado! Cole na nota onde precisar.');
+  }catch(e){
+    showToast('Não consegui copiar automaticamente. Selecione o texto manualmente.', 'error');
+  }
+}
 // diff simples por palavra (LCS) — só pra destacar visualmente o que mudou
 // entre o texto original e o corrigido, sem precisar de biblioteca externa.
-function diffWords(oldText, newText){
+function diffTextParts(oldText, newText){
   const oldWords = oldText.split(/(\s+)/);
   const newWords = newText.split(/(\s+)/);
   const m = oldWords.length, n = newWords.length;
@@ -4622,6 +4720,12 @@ function openNoteChat(){
   state.modal = { type:'note-chat', noteId, messages:[], input:'', sending:false };
   render();
 }
+// render() recria a tela inteira do zero, então sem isso a lista de mensagens
+// sempre reaparecia rolada pro topo depois de cada resposta da IA.
+function scrollChatMessagesToBottom(selector){
+  const el = document.querySelector(selector);
+  if(el) el.scrollTop = el.scrollHeight;
+}
 async function sendNoteChatMessage(){
   const m = state.modal;
   if(!m || m.type !== 'note-chat') return;
@@ -4632,6 +4736,7 @@ async function sendNoteChatMessage(){
   m.input = '';
   m.sending = true;
   render();
+  scrollChatMessagesToBottom('.note-chat-messages');
 
   const history = m.messages.slice(0,-1).map(msg => `${msg.role==='user'?'Usuário':'Assistente'}: ${msg.text}`).join('\n');
   const noteContent = note ? getNoteContent(note.id) : '';
@@ -4646,6 +4751,7 @@ async function sendNoteChatMessage(){
   }
   m.sending = false;
   render();
+  scrollChatMessagesToBottom('.note-chat-messages');
 }
 // acha todas as ocorrências de um termo num texto (sem diferenciar
 // maiúsculas/minúsculas) — usado tanto pra buscar dentro de uma nota quanto
@@ -6677,7 +6783,7 @@ function renderNoteCorrectionModal(m){
     </div>`;
   }
   const noChange = m.original.trim() === m.corrected.trim();
-  const diff = diffWords(m.original, m.corrected);
+  const diff = diffTextParts(m.original, m.corrected);
   return `
   <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
     <div class="modal" style="width:520px; max-height:86vh; overflow-y:auto;">
@@ -6704,7 +6810,7 @@ function renderNoteChatModal(m){
   <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
     <div class="modal" style="width:520px; max-height:80vh; display:flex; flex-direction:column;">
       <h3>💬 Conversar sobre "${escapeHtml(note ? note.name : '')}"</h3>
-      <div style="flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:10px; padding:6px 2px; min-height:200px; max-height:50vh;">
+      <div class="note-chat-messages" style="flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:10px; padding:6px 2px; min-height:200px; max-height:50vh;">
         ${m.messages.length === 0 ? `<p style="color:var(--text-faint); font-size:12.5px; text-align:center; margin-top:20px;">Pergunte qualquer coisa — a IA já sabe o que está escrito nessa nota.</p>` : ''}
         ${m.messages.map(msg => `
         <div style="align-self:${msg.role==='user'?'flex-end':'flex-start'}; max-width:85%; background:${msg.role==='user'?'var(--accent-soft)':'var(--surface-2)'}; color:${msg.error?'var(--error)':'var(--text)'}; border-radius:12px; padding:9px 13px; font-size:13.5px; line-height:1.5; white-space:pre-wrap;">${escapeHtml(msg.text)}</div>
@@ -6761,7 +6867,7 @@ function renderNotePasteCorrectionModal(m){
   }
   if(m.status === 'review'){
     const noChange = m.original.trim() === m.corrected.trim();
-    const diff = diffWords(m.original, m.corrected);
+    const diff = diffTextParts(m.original, m.corrected);
     return `
     <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
       <div class="modal" style="width:520px; max-height:86vh; overflow-y:auto;">
@@ -6820,12 +6926,32 @@ function renderNoteOpinionModal(m){
       </div>
     </div>`;
   }
+  const canEdit = m.source === 'textarea' || m.source === 'richtext';
+  const editActionBtn = idx => canEdit
+    ? `<button class="ghost-btn" style="padding:6px 10px; font-size:11.5px;" onclick="applyNoteOpinionEdit(${idx})">✅ Aplicar na nota</button>`
+    : `<button class="ghost-btn" style="padding:6px 10px; font-size:11.5px;" onclick="copyNoteOpinionEdit(${idx})">📋 Copiar texto revisado</button>`;
   return `
   <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
-    <div class="modal" style="width:480px;">
+    <div class="modal" style="width:520px; max-height:80vh; display:flex; flex-direction:column;">
       <h3>💭 O que a IA achou</h3>
       <p style="font-size:11.5px; color:var(--text-faint); margin:0 0 10px 0;">Trecho: "${escapeHtml(m.passage.length>200 ? m.passage.slice(0,200)+'…' : m.passage)}"</p>
-      <p style="font-size:14px; line-height:1.6; white-space:pre-wrap; margin:0;">${escapeHtml(m.opinion)}</p>
+      <div class="note-opinion-messages" style="flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:10px; padding:2px; min-height:120px; max-height:46vh;">
+        <div style="align-self:flex-start; max-width:92%; background:var(--surface-2); border-radius:12px; padding:9px 13px; font-size:13.5px; line-height:1.5; white-space:pre-wrap;">${escapeHtml(m.opinion)}</div>
+        ${m.messages.map((msg, idx) => `
+        <div style="align-self:${msg.role==='user'?'flex-end':'flex-start'}; max-width:92%; display:flex; flex-direction:column; gap:6px;">
+          <div style="background:${msg.role==='user'?'var(--accent-soft)':'var(--surface-2)'}; color:${msg.error?'var(--error)':'var(--text)'}; border-radius:12px; padding:9px 13px; font-size:13.5px; line-height:1.5; white-space:pre-wrap;">${escapeHtml(msg.text)}</div>
+          ${msg.proposedEdit ? `
+          <div style="background:var(--bg-2); border:1px solid var(--border); border-radius:8px; padding:10px 12px; font-size:13px; line-height:1.5; white-space:pre-wrap;">${escapeHtml(msg.proposedEdit)}</div>
+          <div>${editActionBtn(idx)}</div>
+          ` : ''}
+        </div>
+        `).join('')}
+        ${m.sending ? `<div class="loading-line" style="align-self:flex-start;"><div class="spinner"></div> Pensando...</div>` : ''}
+      </div>
+      <div style="display:flex; gap:8px; margin-top:8px;">
+        <textarea id="note-opinion-chat-input" rows="1" placeholder="Converse sobre isso, ou peça pra reescrever..." style="flex:1; resize:none;" onkeydown="if(event.key==='Enter' && !event.shiftKey){ event.preventDefault(); sendNoteOpinionChatMessage(); }" onkeyup="state.modal.input=this.value">${escapeHtml(m.input)}</textarea>
+        <button class="primary-btn" onclick="sendNoteOpinionChatMessage()" ${m.sending?'disabled':''}>Enviar</button>
+      </div>
       <div class="modal-actions">
         <button class="ghost-btn" onclick="closeModal()">Fechar</button>
       </div>
