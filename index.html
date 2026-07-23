@@ -6383,7 +6383,9 @@ function renderStudyView(){
   const remaining = s.queue.length - s.index;
   const currentExType = (s.mode === 'lang-mixed' || s.mode === 'std-mixed') ? getCurrentExType() : null;
   const isReverse = currentExType === 'reverseTranslate';
-  const hideTopQuestion = currentExType === 'mc'; // a pergunta real já aparece dentro do quadro de alternativas
+  // No modo de idioma, a pergunta da múltipla escolha já vem em s.content.prompt.
+  // No modo padrão, o enunciado é o próprio card.front e precisa continuar visível.
+  const hideTopQuestion = s.mode === 'lang-mixed' && currentExType === 'mc';
   const questionText = isReverse
     ? (s.content && s.content.chosenTranslation ? s.content.chosenTranslation : '...')
     : card.front;
