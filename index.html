@@ -75,7 +75,11 @@
   .mono{ font-family:ui-monospace,'SF Mono','Cascadia Code','Roboto Mono',Consolas,'Courier New',monospace; }
   button{ font-family:inherit; cursor:pointer; }
   ::selection{ background:var(--accent-soft); }
-  #app{ display:flex; height:100vh; }
+  /* 100dvh acompanha a barra de endereço do navegador mobile aparecendo/sumindo
+     ao rolar — com só 100vh (o tamanho "cheio", como se a barra estivesse
+     sempre escondida) o topo fixo do app podia ficar parcialmente atrás dela.
+     Mantém 100vh como fallback pra navegadores sem suporte a dvh. */
+  #app{ display:flex; height:100vh; height:100dvh; }
 
   /* ---------- Sidebar ---------- */
   .sidebar{
@@ -2904,16 +2908,19 @@ async function parseEpubFile(blob){
 
   return { zip, title, author, chapterPaths, coverUrl, toc, chapterTitles };
 }
-// resolve um href relativo (do nav/ncx) contra o diretório de onde ele veio,
-// removendo âncora (#...) — usa a API de URL só pra lidar com "../" direito.
-function resolveEpubHref(baseDir, href){
-  if(!href) return '';
-  const clean = href.split('#')[0];
-  if(!clean) return '';
+// resolve um href relativo (do nav/ncx) contra o diretório de onde ele veio —
+// usa a API de URL só pra lidar com "../" direito. Mantém a âncora (#p45) à
+// parte: em muitos epubs (principalmente convertidos pelo Calibre) vários
+// capítulos de verdade ficam num único arquivo grande, diferenciados só pela
+// âncora — sem isso o sumário não consegue apontar pro lugar certo.
+function resolveEpubHrefParts(baseDir, href){
+  if(!href) return { path:'', fragment:'' };
+  const [pathPart, fragment] = href.split('#');
+  if(!pathPart) return { path:'', fragment: fragment||'' };
   try{
-    const resolved = new URL(clean, 'file:///' + baseDir).pathname.replace(/^\//, '');
-    return decodeURIComponent(resolved);
-  }catch(e){ return baseDir + clean; }
+    const resolved = new URL(pathPart, 'file:///' + baseDir).pathname.replace(/^\//, '');
+    return { path: decodeURIComponent(resolved), fragment: fragment||'' };
+  }catch(e){ return { path: baseDir + pathPart, fragment: fragment||'' }; }
 }
 // lê o sumário do epub: tenta o nav document do EPUB3 (properties="nav") e,
 // se não achar, cai pro NCX do EPUB2 (navMap/navPoint). Cada entrada é casada
@@ -2936,7 +2943,7 @@ async function parseEpubToc(zip, opfDoc, opfDir, manifestItemEls, manifestItems,
           Array.from(tocNav.querySelectorAll('a[href]')).forEach(a => {
             const title = a.textContent.replace(/\s+/g,' ').trim();
             const href = a.getAttribute('href');
-            if(title && href) entries.push({ title, path: resolveEpubHref(navDir, href) });
+            if(title && href) entries.push({ title, ...resolveEpubHrefParts(navDir, href) });
           });
         }
       }
@@ -2959,7 +2966,7 @@ async function parseEpubToc(zip, opfDoc, opfDir, manifestItemEls, manifestItems,
             const contentEl = np.querySelector('content');
             const title = labelEl ? labelEl.textContent.replace(/\s+/g,' ').trim() : '';
             const src = contentEl ? contentEl.getAttribute('src') : '';
-            if(title && src) entries.push({ title, path: resolveEpubHref(ncxDir, src) });
+            if(title && src) entries.push({ title, ...resolveEpubHrefParts(ncxDir, src) });
           });
         }
       }catch(e){ console.warn('Falha ao ler ncx (sumário) do epub', e); }
@@ -2970,7 +2977,7 @@ async function parseEpubToc(zip, opfDoc, opfDir, manifestItemEls, manifestItems,
   entries.forEach(entry => {
     const idx = chapterPaths.findIndex(p => p === entry.path);
     if(idx === -1) return;
-    toc.push({ title: entry.title, chapterIndex: idx });
+    toc.push({ title: entry.title, chapterIndex: idx, fragment: entry.fragment || null });
     if(!chapterTitles[idx]) chapterTitles[idx] = entry.title;
   });
   return { toc, chapterTitles };
@@ -3003,10 +3010,31 @@ async function loadEpubChapterParagraphs(bookId, index){
   const xhtml = await file.async('text');
   let doc = new DOMParser().parseFromString(xhtml, 'application/xhtml+xml');
   if(doc.querySelector('parsererror')) doc = new DOMParser().parseFromString(xhtml, 'text/html'); // fallback pra epubs com xhtml malformado
-  const paragraphs = Array.from(doc.querySelectorAll('p, h1, h2, h3, h4, li, blockquote'))
-    .map(el => el.textContent.replace(/\s+/g,' ').trim())
-    .filter(Boolean);
+  const kept = [];
+  Array.from(doc.querySelectorAll('p, h1, h2, h3, h4, li, blockquote')).forEach(el => {
+    const text = el.textContent.replace(/\s+/g,' ').trim();
+    if(text) kept.push({ el, text });
+  });
+  const paragraphs = kept.map(k => k.text);
+  // mapa âncora->parágrafo: em muitos epubs vários capítulos de verdade ficam
+  // no mesmo arquivo, diferenciados só por id="pN" — sem isso o sumário e os
+  // marcadores não têm como apontar pro parágrafo certo dentro do arquivo.
+  const anchorMap = {};
+  Array.from(doc.querySelectorAll('[id]')).forEach(idEl => {
+    const id = idEl.getAttribute('id');
+    if(!id || anchorMap[id] !== undefined) return;
+    let found = kept.length ? kept.length - 1 : 0;
+    for(let i=0;i<kept.length;i++){
+      const node = kept[i].el;
+      if(node === idEl){ found = i; break; }
+      const rel = idEl.compareDocumentPosition(node);
+      if(rel & (Node.DOCUMENT_POSITION_FOLLOWING | Node.DOCUMENT_POSITION_CONTAINED_BY)){ found = i; break; }
+    }
+    anchorMap[id] = found;
+  });
   runtime.paragraphsCache[index] = paragraphs;
+  runtime.anchorMaps = runtime.anchorMaps || {};
+  runtime.anchorMaps[index] = anchorMap;
   return paragraphs;
 }
 // divide os parágrafos de um capítulo em "páginas" de tamanho parecido (por
@@ -3015,13 +3043,19 @@ async function loadEpubChapterParagraphs(bookId, index){
 // Nunca quebra um parágrafo ao meio, então uma página pode ficar um pouco
 // maior que o alvo se um único parágrafo já for longo.
 const EPUB_WORDS_PER_PAGE = 220;
-function chunkParagraphsIntoPages(paragraphs){
+// "hardBreaks" força o início de página exatamente onde um capítulo de
+// verdade começa (âncora do sumário) — sem isso, um pulo pelo sumário podia
+// cair numa página que começava com o FINAL do capítulo anterior, e só lá
+// embaixo é que aparecia o capítulo que a pessoa realmente escolheu.
+function chunkParagraphsIntoPages(paragraphs, hardBreaks){
+  hardBreaks = hardBreaks || new Set();
   if(paragraphs.length === 0) return [{ start:0, end:0 }];
   const pages = [];
   let start = 0, count = 0;
   for(let i=0;i<paragraphs.length;i++){
     const words = (paragraphs[i].match(/\S+/g)||[]).length;
-    if(count > 0 && count + words > EPUB_WORDS_PER_PAGE){
+    const forceBreak = i > start && hardBreaks.has(i);
+    if(forceBreak || (count > 0 && count + words > EPUB_WORDS_PER_PAGE)){
       pages.push({ start, end:i });
       start = i; count = 0;
     }
@@ -3037,8 +3071,44 @@ function getEpubPages(bookId, chapterIndex){
   const paragraphs = runtime && runtime.paragraphsCache[chapterIndex];
   if(!paragraphs) return null;
   runtime.pagesCache = runtime.pagesCache || {};
-  if(!runtime.pagesCache[chapterIndex]) runtime.pagesCache[chapterIndex] = chunkParagraphsIntoPages(paragraphs);
+  if(!runtime.pagesCache[chapterIndex]){
+    const book = state.books.find(b=>b.id===bookId);
+    const hardBreaks = new Set();
+    if(book && book.epub && book.epub.toc){
+      book.epub.toc.forEach(entry => {
+        if(entry.chapterIndex === chapterIndex && entry.fragment){
+          const pIdx = resolveEpubAnchorParagraphIndex(bookId, chapterIndex, entry.fragment);
+          if(pIdx > 0) hardBreaks.add(pIdx);
+        }
+      });
+    }
+    runtime.pagesCache[chapterIndex] = chunkParagraphsIntoPages(paragraphs, hardBreaks);
+  }
   return runtime.pagesCache[chapterIndex];
+}
+// pra qual parágrafo (já no espaço de índices filtrado, igual paragraphsCache)
+// uma âncora "#pN" do sumário aponta — 0 se a âncora não existir ou o
+// capítulo ainda não tiver sido carregado (fica pro início dele).
+function resolveEpubAnchorParagraphIndex(bookId, chapterIndex, fragment){
+  const runtime = epubRuntime[bookId];
+  const map = runtime && runtime.anchorMaps && runtime.anchorMaps[chapterIndex];
+  if(!fragment || !map || map[fragment] === undefined) return 0;
+  return map[fragment];
+}
+// acha, entre as entradas do sumário que caem dentro do capítulo atual, qual
+// delas é a mais próxima (por trás ou igual) do início da página que está
+// sendo mostrada — é o que permite um único arquivo grande (comum em epubs
+// convertidos pelo Calibre, com vários capítulos de verdade separados só por
+// âncora) mudar o título exibido conforme o leitor avança pelas páginas.
+function getActiveEpubTocEntry(bookId, book, chapterIndex, pageStartParagraphIdx){
+  const entries = (book.epub.toc||[]).filter(e => e.chapterIndex === chapterIndex);
+  if(entries.length === 0) return null;
+  let best = null, bestPos = -1;
+  entries.forEach(e => {
+    const pIdx = e.fragment ? resolveEpubAnchorParagraphIndex(bookId, chapterIndex, e.fragment) : 0;
+    if(pIdx <= pageStartParagraphIdx && pIdx >= bestPos){ bestPos = pIdx; best = e; }
+  });
+  return best;
 }
 function getEpubReadPercent(book){
   if(!book || !book.epub || !book.epub.chapterCount) return 0;
@@ -3156,9 +3226,34 @@ function goToEpubChapter(bookId, index){
   saveData(); render();
   scrollEpubMainToTop();
 }
-function jumpToEpubTocEntry(bookId, chapterIndex){
+function jumpToEpubTocEntry(bookId, chapterIndex, fragment){
   closeModal();
-  goToEpubChapter(bookId, chapterIndex);
+  const book = state.books.find(b=>b.id===bookId);
+  if(!book || !book.epub) return;
+  const clamped = Math.max(0, Math.min(book.epub.chapterCount-1, chapterIndex));
+  book.epub.currentChapterIndex = clamped;
+  if(fragment){
+    // a âncora só pode ser resolvida depois que os parágrafos desse capítulo
+    // estiverem carregados — renderEpubReaderView termina o trabalho quando chegar lá.
+    state._epubPendingPageJump = { fragment };
+    render();
+  } else {
+    book.epub.currentPageIndex = 0;
+    saveData(); render();
+    scrollEpubMainToTop();
+  }
+}
+// igual jumpToEpubTocEntry, mas mirando um parágrafo específico já conhecido
+// (usado pelos destaques, que guardam o índice do parágrafo direto — não
+// precisa resolver âncora nenhuma).
+function jumpToEpubParagraph(bookId, chapterIndex, paragraphIndex){
+  closeModal();
+  const book = state.books.find(b=>b.id===bookId);
+  if(!book || !book.epub) return;
+  const clamped = Math.max(0, Math.min(book.epub.chapterCount-1, chapterIndex));
+  book.epub.currentChapterIndex = clamped;
+  state._epubPendingPageJump = { paragraphIndex };
+  render();
 }
 function scrollEpubMainToTop(){
   requestAnimationFrame(() => { const m = document.querySelector('.main'); if(m) m.scrollTop = 0; });
@@ -3337,7 +3432,13 @@ function handleReaderSelection(){
   const text = sel ? sel.toString().trim() : '';
   if(text){
     state.readerSelection = text;
+    const preview = document.getElementById('reader-selection-preview');
+    if(preview) preview.textContent = '"' + (text.length > 90 ? text.slice(0,90)+'…' : text) + '"';
     bar.style.display = 'flex';
+    // já guardamos o texto — não precisamos mais da seleção "viva" do navegador,
+    // então limpamos ela na hora. Isso fecha o menu nativo do celular (copiar/
+    // compartilhar) que brigava com a nossa barra de ações aparecendo junto.
+    try{ sel.removeAllRanges(); }catch(e){}
   } else {
     state.readerSelection = null;
     bar.style.display = 'none';
@@ -3452,22 +3553,42 @@ function renderEpubReaderView(){
   }
   const paragraphs = runtime.paragraphsCache[idx];
   const pages = getEpubPages(book.id, idx);
-  // "Anterior" cruzando pra um capítulo ainda não carregado: assim que os
-  // parágrafos chegam (guarda acima), resolve aqui indo pra última página dele.
-  if(state._epubPendingPageJump === 'last'){
+  // "Anterior" cruzando pra um capítulo ainda não carregado, ou um pulo vindo
+  // do sumário/marcador com âncora: só dá pra resolver depois que os
+  // parágrafos (e o mapa de âncoras) desse capítulo chegarem — é aqui.
+  if(state._epubPendingPageJump){
+    const pending = state._epubPendingPageJump;
     state._epubPendingPageJump = null;
-    book.epub.currentPageIndex = pages.length - 1;
+    if(pending === 'last'){
+      book.epub.currentPageIndex = pages.length - 1;
+    } else if(pending.fragment){
+      const anchorParagraphIdx = resolveEpubAnchorParagraphIndex(book.id, idx, pending.fragment);
+      const targetPage = pages.findIndex(p => anchorParagraphIdx >= p.start && anchorParagraphIdx < p.end);
+      book.epub.currentPageIndex = targetPage === -1 ? 0 : targetPage;
+    } else if(pending.paragraphIndex !== undefined){
+      const targetPage = pages.findIndex(p => pending.paragraphIndex >= p.start && pending.paragraphIndex < p.end);
+      book.epub.currentPageIndex = targetPage === -1 ? 0 : targetPage;
+    }
     book.epub.pagesInCurrentChapter = pages.length;
     saveData();
+    scrollEpubMainToTop();
   }
   book.epub.pagesInCurrentChapter = pages.length;
   const pageIdx = Math.min(book.epub.currentPageIndex || 0, pages.length - 1);
   const page = pages[pageIdx];
   const pageParagraphs = paragraphs.slice(page.start, page.end);
-  const isFirstPageOfChapter = pageIdx === 0;
   const atFirstPage = idx === 0 && pageIdx === 0;
   const atLastPage = idx >= book.epub.chapterCount-1 && pageIdx >= pages.length-1;
-  const chapterTitle = (book.epub.chapterTitles && book.epub.chapterTitles[idx]) || `Capítulo ${idx+1}`;
+  // o título mostrado em fonte grande reflete o capítulo de VERDADE mais recente
+  // até esse ponto — muitos epubs (principalmente convertidos pelo Calibre)
+  // empacotam vários capítulos reais dentro do mesmo arquivo, diferenciados só
+  // por âncora, então um único título fixo por arquivo mostraria errado.
+  const activeToc = getActiveEpubTocEntry(book.id, book, idx, page.start);
+  const chapterTitle = (activeToc && activeToc.title) || (book.epub.chapterTitles && book.epub.chapterTitles[idx]) || `Capítulo ${idx+1}`;
+  const prevPage = pageIdx > 0 ? pages[pageIdx-1] : null;
+  const prevActiveToc = prevPage ? getActiveEpubTocEntry(book.id, book, idx, prevPage.start) : null;
+  const prevChapterTitle = prevPage ? ((prevActiveToc && prevActiveToc.title) || (book.epub.chapterTitles && book.epub.chapterTitles[idx]) || `Capítulo ${idx+1}`) : null;
+  const showChapterHeading = pageIdx === 0 || chapterTitle !== prevChapterTitle;
   const totalPages = book.totalPages || 0;
   const currentPage = totalPages ? Math.max(1, Math.round((getEpubReadPercent(book)/100) * totalPages)) : 0;
   const highlights = (book.epub.highlights || []).filter(h => h.chapterIndex === idx);
@@ -3492,16 +3613,19 @@ function renderEpubReaderView(){
     ${book.epub.author ? `<p style="color:var(--text-muted); font-size:12.5px; margin:2px 0 0 0;">${escapeHtml(book.epub.author)}</p>` : ''}
   </div>
   <p style="font-size:11px; color:var(--text-faint); text-align:center; margin:0 0 14px 0;">${book.isEnglish ? '💡 Toque numa palavra pra ver a tradução · selecione um trecho pra destacar' : '💡 Selecione um trecho pra guardar como citação, pedir um cartão ou destacar'}</p>
-  <div class="epub-page" style="max-width:640px; margin:0 auto; line-height:1.9; font-size:15.5px;">
-    ${isFirstPageOfChapter ? `<h2 style="text-align:center; font-size:23px; margin:6px 0 26px 0;">${escapeHtml(chapterTitle)}</h2>` : ''}
+  <div class="epub-page" style="max-width:640px; margin:0 auto; line-height:1.9; font-size:15.5px; -webkit-touch-callout:none;">
+    ${showChapterHeading ? `<h2 style="text-align:center; font-size:23px; margin:6px 0 26px 0;">${escapeHtml(chapterTitle)}</h2>` : ''}
     ${pageParagraphs.length===0 ? `<p style="color:var(--text-faint);">(Capítulo sem texto legível)</p>` : pageParagraphs.map((p,i) => `<p>${renderEpubParagraphHtml(p, page.start+i, book, book.linkedDeckId||'', highlights)}</p>`).join('')}
   </div>
-  <div id="reader-selection-bar" style="display:none; position:fixed; left:0; right:0; bottom:0; background:var(--surface); border-top:1px solid var(--border); padding:12px 20px; align-items:center; justify-content:center; gap:10px; flex-wrap:wrap; box-shadow:0 -4px 16px rgba(0,0,0,0.2); z-index:50;">
+  <div id="reader-selection-bar" style="display:none; position:fixed; left:0; right:0; bottom:0; background:var(--surface); border-top:1px solid var(--border); padding:12px 20px; flex-direction:column; align-items:center; justify-content:center; gap:8px; box-shadow:0 -4px 16px rgba(0,0,0,0.2); z-index:50;">
+    <div id="reader-selection-preview" style="font-size:12px; color:var(--text-muted); text-align:center; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"></div>
+    <div style="display:flex; align-items:center; justify-content:center; gap:10px; flex-wrap:wrap;">
     ${!book.isEnglish ? `
     <button class="ghost-btn" onclick="saveReaderSelectionAsQuote()">📌 Guardar como citação</button>
     <button class="primary-btn" onclick="requestCardFromReaderSelection()">🤖 Pedir cartão à IA</button>
     ` : ''}
     <button class="ghost-btn" onclick="saveReaderSelectionAsHighlight()">🖍 Destacar</button>
+    </div>
   </div>
   `;
 }
@@ -5181,6 +5305,11 @@ function renderCreateDeckForBookModal(m){
 function renderEpubTocModal(m){
   const book = state.books.find(b=>b.id===m.bookId);
   const toc = (book && book.epub && book.epub.toc) || [];
+  const idx = book ? book.epub.currentChapterIndex : -1;
+  const pages = book ? getEpubPages(book.id, idx) : null;
+  const pageIdx = book ? Math.min(book.epub.currentPageIndex||0, pages ? pages.length-1 : 0) : -1;
+  const pageStart = pages && pages[pageIdx] ? pages[pageIdx].start : 0;
+  const activeEntry = book ? getActiveEpubTocEntry(book.id, book, idx, pageStart) : null;
   return `
   <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
     <div class="modal" style="max-width:440px; max-height:80vh; overflow-y:auto;">
@@ -5188,7 +5317,7 @@ function renderEpubTocModal(m){
       ${toc.length ? `
         <div style="display:flex; flex-direction:column; gap:4px; margin-top:10px;">
           ${toc.map(entry => `
-            <button type="button" class="ghost-btn" style="text-align:left; justify-content:flex-start; width:100%; ${book.epub.currentChapterIndex===entry.chapterIndex ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="jumpToEpubTocEntry('${book.id}', ${entry.chapterIndex})">${escapeHtml(entry.title)}</button>
+            <button type="button" class="ghost-btn" style="text-align:left; justify-content:flex-start; width:100%; ${entry===activeEntry ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="jumpToEpubTocEntry('${book.id}', ${entry.chapterIndex}, ${entry.fragment ? `'${entry.fragment.replace(/'/g,"\\'")}'` : 'null'})">${escapeHtml(entry.title)}</button>
           `).join('')}
         </div>
       ` : `<p style="color:var(--text-faint); font-size:13px; margin-top:10px;">Não consegui identificar os capítulos deste arquivo — use os botões Anterior/Próximo pra navegar.</p>`}
@@ -5227,7 +5356,7 @@ function renderEpubNavModal(m){
         <div style="display:flex; flex-direction:column; gap:6px;">
           ${highlights.map(h => `
             <div style="display:flex; align-items:center; gap:8px; background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:10px 12px;">
-              <div style="flex:1; cursor:pointer; min-width:0; font-size:13px;" onclick="jumpToEpubTocEntry('${book.id}', ${h.chapterIndex})">${escapeHtml(h.text.slice(0,140))}${h.text.length>140?'…':''}</div>
+              <div style="flex:1; cursor:pointer; min-width:0; font-size:13px;" onclick="jumpToEpubParagraph('${book.id}', ${h.chapterIndex}, ${h.paragraphIndex})">${escapeHtml(h.text.slice(0,140))}${h.text.length>140?'…':''}</div>
               <button class="icon-btn" title="Remover destaque" onclick="removeEpubHighlight('${book.id}','${h.id}')">✕</button>
             </div>
           `).join('')}
