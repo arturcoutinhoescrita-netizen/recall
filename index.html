@@ -119,7 +119,7 @@
   .clickable-word{ cursor:pointer; border-bottom:1px dotted var(--text-faint); }
   .clickable-word:hover{ color:var(--accent); border-bottom-color:var(--accent); }
   @keyframes epubPageIn{ from{ opacity:0; transform:translateY(8px); } to{ opacity:1; transform:translateY(0); } }
-  .epub-page{ animation:epubPageIn .32s ease; }
+  .epub-page-turn{ animation:epubPageIn .32s ease; }
   .book-cover-hover{ transition:transform 0.18s ease, box-shadow 0.18s ease; }
   .book-cover-hover:hover{ transform:scale(1.05); box-shadow:0 8px 20px rgba(0,0,0,0.35); }
   .deck-item.active{ background:var(--surface-2); color:var(--text); border-color:var(--border); }
@@ -369,6 +369,38 @@ const STANDARD_STUDY_TYPES = ['mc', 'open', 'image'];
 const STD_TYPE_LABELS = { mc:'Múltipla escolha', open:'Aberta', 'image-answer':'Com imagem' };
 function getCardTranslations(card){
   return String((card&&card.back)||'').split('/').map(t=>t.trim()).filter(Boolean);
+}
+// card.contextNotes é um array paralelo a getCardTranslations(card) — uma nota
+// de contexto por opção de tradução (a frase de onde a IA tirou, ou uma breve
+// explicação). O índice 0 é sempre a tradução DIRETA e fica em branco de
+// propósito: ela não depende de contexto nenhum.
+function getContextNoteForIndex(card, idx){
+  if(idx == null || idx <= 0) return '';
+  const notes = (card && card.contextNotes) || [];
+  return notes[idx] || '';
+}
+// acha em qual posição de getCardTranslations(card) uma resposta digitada cai —
+// usado depois que o usuário responde, pra saber qual nota de contexto mostrar
+// (ou nenhuma, se a resposta bateu com a tradução direta).
+function findTranslationIndexForAnswer(card, answer){
+  const list = getCardTranslations(card);
+  const norm = normalizeAnswer(answer);
+  return list.findIndex(a => normalizeAnswer(a) === norm);
+}
+function renderContextNoteBox(note){
+  if(!note) return '';
+  return `<div style="background:var(--bg-2); border:1px solid var(--border); border-radius:10px; padding:10px 14px; margin-top:10px; font-size:12.5px; color:var(--text-muted); text-align:left; white-space:pre-wrap;">📎 <strong>Nota de contexto:</strong> ${escapeHtml(note)}</div>`;
+}
+// usado pela múltipla escolha, que às vezes tem mais de uma resposta certa
+// (traduções diferentes do mesmo cartão) — junta as notas sem repetir.
+function collectContextNotes(card, indexes){
+  const notes = [];
+  const seen = new Set();
+  (indexes||[]).forEach(i => {
+    const n = getContextNoteForIndex(card, i);
+    if(n && !seen.has(n)){ notes.push(n); seen.add(n); }
+  });
+  return notes;
 }
 
 function stripParens(str){
@@ -1421,13 +1453,14 @@ async function generateSentenceForTerm(term){
 }
 
 async function translateWordInContext(word, sentence){
-  const prompt = `Frase em inglês: "${sentence}"\nPalavra específica dentro dessa frase: "${word}"\n\nTraduza essa palavra pro português considerando o sentido dela NESSA frase (a mesma palavra pode significar coisas diferentes dependendo do contexto). Se houver mais de uma tradução igualmente válida pra ESSE sentido específico (sinônimos próximos — não liste sentidos diferentes da palavra, só desse uso), liste até 3, da mais natural pra menos natural. Escreva também uma explicação breve (1-2 frases, em português) sobre o significado/uso do termo nesse contexto — algo que ajude a fixar e entender nuances, não só decorar.\n\nResponda SOMENTE com um JSON válido, sem nenhum texto antes ou depois, exatamente neste formato:\n{"translations":["tradução principal","outra opção"],"note":"explicação breve"}`;
-  const text = (await callGemini(prompt, { maxTokens: 300 })).trim();
+  const prompt = `Frase em inglês: "${sentence}"\nPalavra específica dentro dessa frase: "${word}"\n\nPreciso de duas traduções pra essa palavra:\n1. DIRETA: a tradução mais comum/de dicionário dela, independente dessa frase (o sentido que a maioria das pessoas associaria à palavra isolada).\n2. NESSE CONTEXTO: a tradução considerando o sentido específico dela NESSA frase (pode ser igual à direta, ou diferente — a mesma palavra muda de sentido dependendo do contexto). Se houver mais de uma tradução igualmente válida pra esse sentido específico (sinônimos próximos, não sentidos diferentes), liste até 3, da mais natural pra menos natural.\n\nIdentifique também a categoria gramatical da palavra NESSA frase, em português (ex: substantivo, verbo, adjetivo, advérbio, pronome, preposição, conjunção, interjeição).\n\nEscreva também uma explicação breve (1-2 frases, em português) sobre o significado/uso do termo nesse contexto — algo que ajude a fixar e entender nuances, não só decorar.\n\nResponda SOMENTE com um JSON válido, sem nenhum texto antes ou depois, exatamente neste formato:\n{"direct":"tradução direta","contextual":["tradução no contexto","outra opção"],"category":"substantivo","note":"explicação breve"}`;
+  const text = (await callGemini(prompt, { maxTokens: 350 })).trim();
   const clean = text.replace(/```json|```/g,"").trim();
   const obj = JSON.parse(clean);
-  const translations = (Array.isArray(obj.translations) ? obj.translations : []).map(t=>String(t||'').trim()).filter(Boolean);
-  if(translations.length === 0) throw new Error('empty_response');
-  return { translations, note: String(obj.note||'').trim() };
+  const direct = String(obj.direct||'').trim();
+  const contextual = (Array.isArray(obj.contextual) ? obj.contextual : []).map(t=>String(t||'').trim()).filter(Boolean);
+  if(!direct && contextual.length === 0) throw new Error('empty_response');
+  return { direct, contextual, category: String(obj.category||'').trim(), note: String(obj.note||'').trim() };
 }
 
 async function verifyTranslation(term, sentence, userTranslation){
@@ -1467,22 +1500,36 @@ function generateLocalMC(card, deckCards){
     const opts = String(backStr||'').split('/').map(s=>s.trim()).filter(Boolean);
     return opts[Math.floor(Math.random()*opts.length)] || backStr;
   };
+  // igual pickOne, mas também devolve o índice escolhido (só faz sentido pra
+  // tradução do PRÓPRIO cartão — pra puxar a nota de contexto certa depois).
+  const pickOneWithIndex = (backStr) => {
+    const opts = String(backStr||'').split('/').map(s=>s.trim()).filter(Boolean);
+    const idx = Math.floor(Math.random()*opts.length);
+    return { text: opts[idx] || backStr, index: idx };
+  };
   const distractorCards = shuffle(eligibleOthers.slice()).slice(0, 3);
   const direction = Math.random() < 0.5 ? 'term' : 'translation';
   const cardTranslations = getCardTranslations(card);
   let promptText, correctTexts, distractorTexts;
+  let correctTranslationIndexes = [], promptTranslationIndex = null;
   if(direction === 'term'){
     promptText = `Qual é a tradução de "${card.front}"?`;
     if(cardTranslations.length >= 2){
       // termo com 2+ traduções aceitas: inclui 2 delas como certas, pra reforçar que mais de uma resposta vale
-      correctTexts = shuffle(cardTranslations.slice()).slice(0, 2);
+      const shuffledIdx = shuffle(cardTranslations.map((_,i)=>i)).slice(0, 2);
+      correctTexts = shuffledIdx.map(i => cardTranslations[i]);
+      correctTranslationIndexes = shuffledIdx;
       distractorTexts = distractorCards.map(c => pickOne(c.back)).slice(0, 2);
     } else {
-      correctTexts = [pickOne(card.back)];
+      const picked = pickOneWithIndex(card.back);
+      correctTexts = [picked.text];
+      correctTranslationIndexes = [picked.index];
       distractorTexts = distractorCards.map(c => pickOne(c.back));
     }
   } else {
-    promptText = `Qual termo em inglês significa "${pickOne(card.back)}"?`;
+    const picked = pickOneWithIndex(card.back);
+    promptTranslationIndex = picked.index;
+    promptText = `Qual termo em inglês significa "${picked.text}"?`;
     correctTexts = [stripParens(card.front)];
     distractorTexts = distractorCards.map(c => stripParens(c.front));
   }
@@ -1493,7 +1540,9 @@ function generateLocalMC(card, deckCards){
   return {
     prompt: promptText,
     options: entries.map(e => e.text),
-    correctIndexes: entries.map((e,i) => e.correct ? i : -1).filter(i => i !== -1)
+    correctIndexes: entries.map((e,i) => e.correct ? i : -1).filter(i => i !== -1),
+    correctTranslationIndexes,
+    promptTranslationIndex
   };
 }
 function generateLocalMCStandard(card, deckCards){
@@ -2313,8 +2362,9 @@ async function loadContentForCurrent(){
   if(exType === 'translate'){ s.loadingContent = false; s.content = {}; render(); return; } // local, sem IA
   if(exType === 'reverseTranslate'){
     const options = String(card.back||'').split('/').map(o=>o.trim()).filter(Boolean);
-    const chosen = options[Math.floor(Math.random()*options.length)] || card.back;
-    s.loadingContent = false; s.content = { chosenTranslation: chosen }; render(); return; // local, sem IA
+    const idx = Math.floor(Math.random()*options.length);
+    const chosen = options[idx] || card.back;
+    s.loadingContent = false; s.content = { chosenTranslation: chosen, chosenIndex: idx }; render(); return; // local, sem IA
   }
   if(exType === 'mc'){
     const mc = generateLocalMC(card, state.cards[s.deckId]);
@@ -2336,7 +2386,7 @@ async function loadContentForCurrent(){
     const options = getCardTranslations(card);
     const idx = Math.min((item && item.translationIndex) || 0, options.length-1);
     s.loadingContent = false;
-    s.content = { targetTranslation: options[idx] };
+    s.content = { targetTranslation: options[idx], translationIndex: idx };
     render();
     return; // local, sem IA
   }
@@ -2468,12 +2518,14 @@ function lookupWord(word, deckId, sentenceOverride){
   const sentence = sentenceOverride != null ? sentenceOverride : ((state.session && state.session.content && state.session.content.sentence) || '');
   const cleanWord = (word||'').trim();
   if(!cleanWord) return;
-  state.modal = { type:'word-lookup', word: cleanWord, sentence, deckId: targetDeckId, status:'loading', translations:[], note:'' };
+  state.modal = { type:'word-lookup', word: cleanWord, sentence, deckId: targetDeckId, status:'loading', direct:'', contextual:[], category:'', note:'' };
   render();
   translateWordInContext(cleanWord, sentence).then(result => {
     if(state.modal && state.modal.type === 'word-lookup' && state.modal.word === cleanWord){
       state.modal.status = 'done';
-      state.modal.translations = result.translations;
+      state.modal.direct = result.direct;
+      state.modal.contextual = result.contextual;
+      state.modal.category = result.category;
       state.modal.note = result.note;
       render();
     }
@@ -2486,12 +2538,37 @@ function lookupWord(word, deckId, sentenceOverride){
     }
   });
 }
-// front = a palavra, back = todas as opções de tradução separadas por "/" (o
-// mesmo formato que getCardTranslations já espera pra virar respostas
-// alternativas), note = explicação breve gerada pela IA.
+// front = a palavra, back = tradução direta (a que mais importa) + as opções
+// contextuais, todas separadas por "/" (o mesmo formato que getCardTranslations
+// já espera pra virar respostas alternativas) — sem repetir se a direta já
+// coincidir com uma das contextuais. note = explicação breve da IA, category =
+// classe gramatical (substantivo/verbo/etc.) mostrada durante o estudo.
+// contextNotes = uma nota por opção (mesma ordem de allTranslations): em branco
+// pra tradução direta (índice 0, não depende de contexto nenhum) e a frase
+// original + explicação da IA pras opções contextuais — sem isso, meses depois
+// o usuário vê "margem" como resposta aceita de "bank" sem lembrar por quê.
 function buildLookupCard(m){
-  const card = makeCard(m.word, m.translations.join(' / '));
+  const seen = new Set();
+  const allTranslations = [];
+  const contextNotes = [];
+  const sharedContext = [m.note, m.sentence ? `Frase original: "${m.sentence}"` : ''].filter(Boolean).join('\n\n');
+  if(m.direct){
+    allTranslations.push(m.direct);
+    contextNotes.push(''); // direta não depende de contexto
+    seen.add(normalizeAnswer(m.direct));
+  }
+  (m.contextual||[]).forEach(t => {
+    const norm = normalizeAnswer(t);
+    if(!seen.has(norm)){
+      allTranslations.push(t);
+      contextNotes.push(sharedContext);
+      seen.add(norm);
+    }
+  });
+  const card = makeCard(m.word, allTranslations.join(' / '));
   card.note = m.note || '';
+  card.category = m.category || '';
+  card.contextNotes = contextNotes;
   return card;
 }
 function addLookupWordToDeck(){
@@ -2565,6 +2642,7 @@ function endMemorizeMode(){
     state.session = null;
     state.previousSession = null;
     state.currentDeckId = null; // senão o baralho do cartão memorizado fica marcado como "ativo" na barra lateral por engano
+    state._epubPendingPageJump = null; // defensivo: não deixa um pulo pendente de antes disparar num capítulo errado
     state.currentBookId = returnBookId;
     state.view = 'epub-reader';
     render();
@@ -2847,6 +2925,7 @@ function endSessionEarly(){
 // serializáveis e não fazem sentido sincronizar; só os metadados leves (book.epub)
 // e as citações/cartões criados a partir da leitura sincronizam normalmente.
 let epubRuntime = {}; // bookId -> { zip, chapterPaths, paragraphsCache: {index: [parágrafos]} }
+let __lastEpubPageKey = null; // guarda qual página foi renderizada por último, pra só animar em virada de página de verdade
 
 async function parseEpubFile(blob){
   const zip = await JSZip.loadAsync(blob);
@@ -3504,6 +3583,13 @@ function renderEpubReaderView(){
   const showChapterHeading = pageIdx === 0 || chapterTitle !== prevChapterTitle;
   const totalPages = book.totalPages || 0;
   const currentPage = totalPages ? Math.max(1, Math.round((getEpubReadPercent(book)/100) * totalPages)) : 0;
+  // a animação de "virar página" só deve tocar quando o capítulo/página muda de
+  // verdade — sem isso, QUALQUER render() enquanto lendo (abrir a tradução de
+  // uma palavra, o toast sumir sozinho etc.) recriava o bloco de texto do zero
+  // e replicava o fade-in, dando a impressão de que a página tinha recarregado.
+  const pageKey = `${book.id}:${idx}:${pageIdx}`;
+  const isPageTurn = pageKey !== __lastEpubPageKey;
+  __lastEpubPageKey = pageKey;
   return `
   <div style="position:sticky; top:0; z-index:20; background:var(--bg); padding:calc(10px + env(safe-area-inset-top, 0px)) 0 8px 0; border-bottom:1px solid var(--border);">
     <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:8px;">
@@ -3525,7 +3611,7 @@ function renderEpubReaderView(){
     ${book.epub.author ? `<p style="color:var(--text-muted); font-size:12.5px; margin:2px 0 0 0;">${escapeHtml(book.epub.author)}</p>` : ''}
   </div>
   <p style="font-size:11px; color:var(--text-faint); text-align:center; margin:0 0 14px 0;">${book.isEnglish ? '💡 Toque numa palavra pra ver a tradução' : '💡 Selecione um trecho pra guardar como citação ou pedir um cartão'}</p>
-  <div class="epub-page" style="max-width:640px; margin:0 auto; line-height:1.9; font-size:15.5px;">
+  <div class="epub-page ${isPageTurn ? 'epub-page-turn' : ''}" style="max-width:640px; margin:0 auto; line-height:1.9; font-size:15.5px;">
     ${showChapterHeading ? `<h2 style="text-align:center; font-size:23px; margin:6px 0 26px 0;">${escapeHtml(chapterTitle)}</h2>` : ''}
     ${pageParagraphs.length===0 ? `<p style="color:var(--text-faint);">(Capítulo sem texto legível)</p>` : pageParagraphs.map(p => `<p>${book.isEnglish ? renderEpubParagraphClickable(p, book.linkedDeckId||'') : escapeHtml(p)}</p>`).join('')}
   </div>
@@ -4355,7 +4441,7 @@ function renderStudyView(){
       </div>
       ${(card.note && s.showNote) ? `<div style="background:var(--accent-soft); border:1px solid var(--accent-dim); border-radius:10px; padding:10px 14px; margin:10px 0 0 0; font-size:13px; color:var(--text); text-align:left; white-space:pre-wrap;">💡 ${escapeHtml(card.note)}</div>` : ''}
       ${isReverse ? `<p style="color:var(--text-muted); font-size:12px; margin:0 0 4px 0;">Digite o termo em inglês para:</p>` : ''}
-      ${hideTopQuestion ? '' : `<div class="question">${escapeHtml(questionText)}</div>`}
+      ${hideTopQuestion ? '' : `<div class="question">${escapeHtml(questionText)}${(s.mode==='lang-mixed' && card.category) ? ` <span style="font-size:13px; font-weight:600; color:var(--text-faint); vertical-align:middle;">(${escapeHtml(card.category)})</span>` : ''}</div>`}
     </div>
     ${body}
   </div>`;
@@ -4656,6 +4742,7 @@ function renderLangMCExercise(s, card){
     ${!s.revealed ? renderDontKnowLangLink() : ''}
     ${s.revealed ? `
       <div class="feedback-banner ${s.lastFeedback?'ok':'no'}">${s.lastFeedback? '✓ Isso aí!' : '✕ Não foi dessa vez.'}</div>
+      ${collectContextNotes(card, s.content.promptTranslationIndex != null ? [s.content.promptTranslationIndex] : s.content.correctTranslationIndexes).map(renderContextNoteBox).join('')}
       ${renderPointsBadge(s)}
       <div class="action-row"><button class="primary-btn" onclick="nextCard()">Próximo →</button></div>
     ` : ''}
@@ -4675,10 +4762,15 @@ function renderTranslateOtherExercise(s, card){
     </div>`;
   }
   const r = s.verifyResult;
+  const matchedIdx = findTranslationIndexForAnswer(card, s.userInput||'');
+  const contextNote = matchedIdx >= 0
+    ? getContextNoteForIndex(card, matchedIdx)
+    : ((card.contextNotes||[]).find(Boolean) || '');
   return `
   <div class="answer-zone">
     <div class="reveal-zone">
       <div class="feedback-banner ${r.correct?'ok':'no'}">${r.correct? '✓ Correto' : `✕ ${escapeHtml(r.explanation)}`}</div>
+      ${renderContextNoteBox(contextNote)}
       ${renderPointsBadge(s)}
       <div class="action-row"><button class="primary-btn" onclick="nextCard()">Próximo →</button></div>
     </div>
@@ -4691,6 +4783,7 @@ function renderCopyTranslationExercise(s, card){
     <div class="answer-zone">
       <p style="color:var(--text-muted); font-size:12.5px; text-align:center;">Copie a tradução abaixo, digitando ela certinho, pra fixar:</p>
       <div class="answer-box">${escapeHtml(s.content.targetTranslation)}</div>
+      ${renderContextNoteBox(getContextNoteForIndex(card, s.content.translationIndex))}
       <input type="text" id="lang-input" placeholder="Digite a tradução..." value="${escapeHtml(s.userInput||'')}" autofocus autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" onkeyup="if(event.key==='Enter') submitFromInput('lang-input'); else state.session.userInput=this.value">
       <div class="action-row">
         <button class="primary-btn" onclick="submitFromInput('lang-input')">Verificar</button>
@@ -4720,10 +4813,18 @@ function renderTranslateExercise(s, card){
     </div>`;
   }
   const r = s.verifyResult;
+  // se a resposta digitada bateu com uma tradução específica, mostra a nota de
+  // contexto dela; senão (errou, ou digitou algo que não bate exatamente com
+  // nenhuma opção) mostra a nota de alguma tradução contextual do cartão, se houver.
+  const matchedIdx = findTranslationIndexForAnswer(card, s.userInput||'');
+  const contextNote = matchedIdx >= 0
+    ? getContextNoteForIndex(card, matchedIdx)
+    : ((card.contextNotes||[]).find(Boolean) || '');
   return `
   <div class="answer-zone">
     <div class="reveal-zone">
       <div class="feedback-banner ${r.correct?'ok':'no'}">${r.correct? `✓ Correto${r.explanation ? ` — ${escapeHtml(r.explanation)}` : ''}` : `✕ ${escapeHtml(r.explanation)}`}</div>
+      ${renderContextNoteBox(contextNote)}
       ${renderPointsBadge(s)}
       <div class="action-row"><button class="primary-btn" onclick="nextCard()">Próximo →</button></div>
     </div>
@@ -4746,6 +4847,7 @@ function renderReverseTranslateExercise(s, card){
   <div class="answer-zone">
     <div class="reveal-zone">
       <div class="feedback-banner ${r.correct?'ok':'no'}">${r.correct? '✓ Correto' : `✕ ${escapeHtml(r.explanation)}`}</div>
+      ${renderContextNoteBox(getContextNoteForIndex(card, s.content && s.content.chosenIndex))}
       ${renderPointsBadge(s)}
       <div class="action-row"><button class="primary-btn" onclick="nextCard()">Próximo →</button></div>
     </div>
@@ -5083,6 +5185,30 @@ function renderQuoteCaptureModal(m){
   </div>`;
 }
 function renderWordLookupModal(m){
+  let doneSection = '';
+  if(m.status === 'done'){
+    // não repete a mesma tradução nas duas seções se a direta já bater com uma das contextuais
+    const directNorm = m.direct ? normalizeAnswer(m.direct) : null;
+    const contextualFiltered = (m.contextual||[]).filter(t => !directNorm || normalizeAnswer(t) !== directNorm);
+    doneSection = `
+      ${m.direct ? `
+      <div style="margin:6px 0 0 0;">
+        <div style="font-size:10.5px; color:var(--text-faint); text-transform:uppercase; letter-spacing:.04em; margin-bottom:3px;">Tradução direta</div>
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <span style="font-size:19px; font-weight:700; color:var(--accent);">${escapeHtml(m.direct)}</span>
+          ${m.category ? `<span style="font-size:10.5px; font-weight:600; color:var(--text-muted); background:var(--bg-2); border:1px solid var(--border); border-radius:6px; padding:2px 8px;">${escapeHtml(m.category)}</span>` : ''}
+        </div>
+      </div>
+      ` : ''}
+      ${contextualFiltered.length ? `
+      <div style="margin-top:${m.direct?'12px':'6px'};">
+        <div style="font-size:10.5px; color:var(--text-faint); text-transform:uppercase; letter-spacing:.04em; margin-bottom:3px;">Nesse contexto</div>
+        <div style="font-size:15px; font-weight:600; color:var(--text);">${contextualFiltered.map(t=>escapeHtml(t)).join(' / ')}</div>
+      </div>
+      ` : ''}
+      ${m.note ? `<p style="font-size:12.5px; color:var(--text-muted); line-height:1.5; margin:10px 0 0 0;">${escapeHtml(m.note)}</p>` : ''}
+    `;
+  }
   return `
   <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
     <div class="modal" style="width:380px;">
@@ -5090,18 +5216,13 @@ function renderWordLookupModal(m){
       <p style="font-size:11.5px; color:var(--text-faint); margin:0 0 10px 0;">"${escapeHtml(m.sentence)}"</p>
       ${m.status === 'loading' ? `<div class="loading-line"><div class="spinner"></div> Traduzindo...</div>` : ''}
       ${m.status === 'error' ? `<p style="font-size:13px; color:var(--error);">${escapeHtml(m.error)}</p>` : ''}
-      ${m.status === 'done' ? `
-      <div style="display:flex; flex-wrap:wrap; gap:6px; margin:4px 0 0 0;">
-        ${m.translations.map((t,i) => `<span style="font-size:${i===0?'18px':'14px'}; font-weight:700; color:var(--accent);">${escapeHtml(t)}${i<m.translations.length-1?' <span style=\"color:var(--text-faint); font-weight:400;\">/</span>':''}</span>`).join(' ')}
-      </div>
-      ${m.note ? `<p style="font-size:12.5px; color:var(--text-muted); line-height:1.5; margin:8px 0 0 0;">${escapeHtml(m.note)}</p>` : ''}
-      ` : ''}
+      ${doneSection}
       ${(m.status==='done' && !m.deckId) ? `<p style="font-size:11.5px; color:var(--text-faint); margin:8px 0 0 0;">Vincule um baralho a este livro (⚙️ nas propriedades) pra poder criar cartões por aqui.</p>` : ''}
       <div class="modal-actions" style="flex-wrap:wrap;">
         <button class="ghost-btn" onclick="closeModal()">Fechar</button>
         ${(m.status==='done' && m.deckId) ? `
         <button class="ghost-btn" onclick="addLookupWordToDeck()">+ Adicionar ao baralho</button>
-        <button class="primary-btn" onclick="memorizeLookupWord()">🧠 Memorizar</button>
+        <button class="primary-btn" onclick="memorizeLookupWord()">🧠 Adicionar e memorizar</button>
         ` : ''}
       </div>
     </div>
