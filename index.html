@@ -2486,21 +2486,30 @@ function memorizeLookupWord(){
   saveData();
   startReaderMemorize(m.deckId, card, bookId);
 }
+// mesmo critério do "memorizar" do modo idioma (startMemorizeMode): uma pergunta
+// de copiar por CADA tradução (sem limitar a 2, já que aqui o termo geralmente
+// só tem uma sessão de memorização na vida — vale treinar todas as opções),
+// terminando em UMA pergunta de tradução livre (sem ver a resposta antes).
 function startReaderMemorize(deckId, card, bookId){
+  const translations = getCardTranslations(card);
+  if(translations.length === 0){ showToast('Esse termo não tem tradução cadastrada.', 'error'); return; }
+  const queue = translations.map((t,i) => ({ cardId: card.id, exType: 'copy-translation', translationIndex: i }));
+  queue.push({ cardId: card.id, exType: 'translate' });
   state.previousSession = null;
   state.currentDeckId = deckId; // renderMain() cai na tela vazia sem isso, mesmo com view='study'
   state.session = {
-    deckId, mode: 'copy-memorize', memorizeMode: true, memorizeCardId: card.id,
-    queue: [card.id], index: 0,
-    correct: 0, total: 1,
+    deckId, mode: 'lang-mixed', memorizeMode: true, memorizeCardId: card.id,
+    queue, index: 0,
+    correct: 0, total: queue.length,
     startTime: Date.now(), cardStart: Date.now(),
     revealed: false, userInput: '', verifying: false, verifyResult: null, lastFeedback: null,
-    copyMismatch: false, points: 0, streak: 0,
+    loadingContent: false, content: null, chosenIndex: null,
     returnToReaderBookId: bookId
   };
   state.view = 'study';
-  showToast('Cartão criado — memorize antes de voltar pra leitura.');
+  showToast(`Memorizando "${card.front}": ${queue.length} exercícios antes de voltar pra leitura.`);
   render();
+  prefetchSessionContent(state.session).then(() => loadContentForCurrent());
 }
 function startCopyMemorize(){
   const s = state.session; if(!s) return;
@@ -2630,6 +2639,7 @@ async function submitLanguageAnswer(){
     s.verifyResult = { correct, explanation: correct ? '' : `Devia ser: ${s.content.targetTranslation}` };
     s.lastFeedback = correct;
     s.revealed = true;
+    if(correct) playCorrect(); else playWrong();
     render();
     return;
   }
@@ -4294,7 +4304,7 @@ function renderStudyView(){
     ` : ''}
     ${s.memorizeMode && s.mode === 'lang-mixed' ? `
     <div style="background:rgba(125,169,250,0.12); border:1px solid rgba(125,169,250,0.4); border-radius:10px; padding:8px 14px; margin-bottom:14px; font-size:12px; color:#7DA9FA; text-align:center;">
-      🎯 Modo memorizar — a sessão normal retoma de onde parou ao terminar estes ${s.queue.length} exercícios
+      🎯 Modo memorizar — ${s.returnToReaderBookId ? `volta pra leitura ao terminar estes ${s.queue.length} exercícios` : `a sessão normal retoma de onde parou ao terminar estes ${s.queue.length} exercícios`}
     </div>
     ` : ''}
     ${s.mode === 'copy-memorize' ? `
