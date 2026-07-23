@@ -329,6 +329,13 @@
   .notes-tree-row:hover{ background:var(--surface-2); }
   .notes-tree-row{ cursor:grab; }
   .notes-tree-row.drag-over{ background:var(--accent-soft); outline:2px dashed var(--accent-dim); outline-offset:-2px; }
+  .notes-search-bar{ display:flex; align-items:center; gap:6px; }
+  .notes-search-bar input[type=text]{ flex:1; min-width:0; padding:7px 10px; font-size:12.5px; }
+  .notes-search-result{ cursor:pointer; padding:6px 8px; border-radius:8px; }
+  .notes-search-result:hover{ background:var(--surface-2); }
+  .notes-find-bar{ display:flex; align-items:center; gap:6px; background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:6px 10px; margin-bottom:8px; flex-wrap:wrap; }
+  .notes-find-bar input[type=text]{ flex:1; min-width:120px; padding:6px 10px; font-size:13px; }
+  .notes-find-count{ font-size:11.5px; color:var(--text-faint); white-space:nowrap; min-width:36px; text-align:center; }
   .notes-tree-row.active{ background:var(--accent-soft); }
   .notes-tree-row.active .notes-tree-label{ color:var(--accent); font-weight:600; }
   .notes-tree-label{ flex:1; font-size:13px; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:flex; align-items:center; gap:6px; }
@@ -352,6 +359,9 @@
     border-radius:10px; padding:18px 22px; line-height:1.7; font-size:14.5px;
   }
   .notes-editor-panes.preview .notes-preview{ width:100%; height:100%; }
+  .notes-editor-panes.plain{ display:block; overflow-y:auto; }
+  .notes-plain-editor{ width:100%; height:100%; outline:none; cursor:text; }
+  .notes-plain-editor:empty:before{ content:attr(data-placeholder); color:var(--text-faint); pointer-events:none; }
   .notes-preview h1, .notes-preview h2, .notes-preview h3{ margin:0.8em 0 0.4em 0; line-height:1.3; }
   .notes-preview h1:first-child, .notes-preview h2:first-child, .notes-preview h3:first-child{ margin-top:0; }
   .notes-preview p{ margin:0 0 0.8em 0; }
@@ -395,6 +405,12 @@
 
     .notes-layout{ flex-direction:column; height:calc(100dvh - 160px); }
     .notes-explorer{ width:100%; max-height:220px; flex-shrink:0; }
+    /* no celular, a nota aberta ocupa a tela inteira (a área de digitação era
+       pequena demais dividindo espaço com o explorador) — um botão "← Notas"
+       dentro do editor volta pro explorador, mantendo qual nota estava aberta. */
+    .notes-layout.note-open{ height:calc(100dvh - 100px); }
+    .notes-layout.note-open .notes-explorer{ display:none; }
+    .notes-layout:not(.note-open) .notes-editor{ display:none; }
     .notes-editor-panes.split{ flex-direction:column; }
   }
 </style>
@@ -3827,8 +3843,14 @@ function toggleNotesFolder(id){
   if(idx===-1) list.push(id); else list.splice(idx,1);
   render();
 }
+function closeCurrentNote(){
+  state.currentNoteId = null;
+  state.noteFindReplace = null;
+  render();
+}
 function openNote(id){
   state.currentNoteId = id;
+  state.noteFindReplace = null; // trocar de nota fecha qualquer busca/substituição aberta na anterior
   if(noteContentCache[id] === undefined && !noteContentLoading[id]){
     noteContentLoading[id] = true;
     delete noteContentError[id];
@@ -3962,8 +3984,13 @@ function onNoteContentInput(id, value){
   // digitação (o teclado monta "´"+"a"="á" num processo que se quebra se o
   // elemento for substituído antes de terminar). Atualiza só a prévia, que é
   // um elemento à parte e não afeta o foco/digitação da textarea.
-  const previewEl = document.querySelector('.notes-preview');
-  if(previewEl) previewEl.innerHTML = item.format === 'plain' ? renderPlainNoteContent(value) : renderNoteMarkdown(value);
+  // nota "texto normal": o contenteditable É o próprio editor (WYSIWYG), não
+  // tem uma prévia separada pra atualizar — reescrever o innerHTML dele aqui
+  // apagaria o que o usuário acabou de digitar e quebraria o cursor.
+  if(item.format !== 'plain'){
+    const previewEl = document.querySelector('.notes-preview');
+    if(previewEl) previewEl.innerHTML = renderNoteMarkdown(value);
+  }
   if(notesSaveTimer) clearTimeout(notesSaveTimer);
   notesSaveTimer = setTimeout(() => {
     saveData(); // metadados (nome, pasta, updatedAt) no Firestore
@@ -3994,23 +4021,6 @@ function renderNoteMarkdown(content){
   }catch(e){
     return `<p style="color:var(--error);">Erro ao renderizar o markdown.</p>`;
   }
-}
-// nota "texto normal": nenhuma sintaxe de formatação é interpretada (negrito,
-// título etc. aparecem exatamente como digitados) — só link entre notas e
-// imagem embutida continuam funcionando, por serem navegação e não formatação.
-function renderPlainNoteContent(content){
-  let html = escapeHtml(content||'');
-  html = html.replace(/\[\[([^\]|]+)(\|([^\]]+))?\]\]/g, (match, name, _, alias) => {
-    const cleanName = name.trim();
-    const display = (alias||cleanName).trim();
-    const exists = !!findNoteByName(cleanName);
-    const cls = exists ? 'wiki-link' : 'wiki-link wiki-link-new';
-    return `<a href="#" class="${cls}" data-note-name="${cleanName}" title="${exists ? 'Abrir nota' : 'Criar nota'}">${display}</a>`;
-  });
-  html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, url) => {
-    return `<img src="${url}" alt="${alt}">`;
-  });
-  return html;
 }
 document.addEventListener('click', (e) => {
   const link = e.target.closest && e.target.closest('.wiki-link');
@@ -4127,6 +4137,113 @@ function insertImageMarkdown(textareaId, url, alt){
   el.setSelectionRange(pos,pos);
   onNoteContentInput(state.currentNoteId, newVal);
 }
+/* --- edição rica (WYSIWYG) da nota tipo "texto normal": mesmas ferramentas
+   da nota markdown (negrito, título, lista, alinhar, link...), só que aplicadas
+   direto via execCommand num contenteditable — o usuário vê o resultado final
+   na hora, sem símbolo de sintaxe nenhum, e por isso não precisa das abas
+   Editar/Dividido/Prévia (não existe "fonte" separada da "prévia"). --- */
+function focusRichEditor(){
+  const el = document.getElementById('note-editor-plain');
+  if(el) el.focus();
+}
+function applyRichCommand(cmd, value){
+  focusRichEditor();
+  document.execCommand(cmd, false, value != null ? value : null);
+  const el = document.getElementById('note-editor-plain');
+  if(el) onNoteContentInput(state.currentNoteId, el.innerHTML);
+}
+function insertRichIndent(){
+  focusRichEditor();
+  document.execCommand('insertHTML', false, '    ');
+  const el = document.getElementById('note-editor-plain');
+  if(el) onNoteContentInput(state.currentNoteId, el.innerHTML);
+}
+function openInsertRichLinkModal(){
+  const sel = window.getSelection();
+  const text = sel ? sel.toString() : '';
+  state.modal = { type:'insert-rich-link', url:'', text };
+  render();
+}
+function confirmInsertRichLink(){
+  const m = state.modal;
+  const url = (m.url||'').trim();
+  if(!url){ showToast('Cole o link.', 'error'); return; }
+  const text = (m.text||'').trim() || url;
+  state.modal = null;
+  render();
+  focusRichEditor();
+  document.execCommand('insertHTML', false, `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(text)}</a>`);
+  const el = document.getElementById('note-editor-plain');
+  if(el) onNoteContentInput(state.currentNoteId, el.innerHTML);
+}
+function openInsertWikiLinkModalRich(){
+  const sel = window.getSelection();
+  const name = sel ? sel.toString() : '';
+  state.modal = { type:'insert-wiki-link-rich', name };
+  render();
+}
+function confirmInsertWikiLinkRich(){
+  const m = state.modal;
+  const name = (m.name||'').trim();
+  if(!name){ showToast('Digite o nome da nota.', 'error'); return; }
+  state.modal = null;
+  render();
+  focusRichEditor();
+  const exists = !!findNoteByName(name);
+  const cls = exists ? 'wiki-link' : 'wiki-link wiki-link-new';
+  document.execCommand('insertHTML', false, `<a href="#" class="${cls}" data-note-name="${escapeHtml(name)}" title="${exists?'Abrir nota':'Criar nota'}">${escapeHtml(name)}</a>`);
+  const el = document.getElementById('note-editor-plain');
+  if(el) onNoteContentInput(state.currentNoteId, el.innerHTML);
+}
+// notas "texto normal" criadas antes dessa mudança guardavam texto puro (sem
+// tag nenhuma); se o conteúdo não parece ter HTML, escapa e vira <br> nas
+// quebras de linha antes de jogar dentro do contenteditable, senão símbolos
+// como "<" quebrariam a renderização e as quebras de linha sumiriam.
+function normalizePlainNoteContentForEditing(content){
+  if(!content) return '';
+  if(/<[a-z][\s\S]*>/i.test(content)) return content;
+  return escapeHtml(content).replace(/\n/g, '<br>');
+}
+function htmlToText(html){
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html || '';
+  return tmp.textContent || '';
+}
+// mapeia um intervalo de caracteres do texto visível (ex: os índices que
+// findTextMatches devolve) de volta pra um Range real do DOM — necessário
+// pra buscar/substituir dentro do contenteditable, onde o texto pode estar
+// espalhado por vários nós por causa das tags de formatação.
+function textOffsetToRange(container, start, end){
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  let node, charCount = 0;
+  let startNode, startOffset, endNode, endOffset;
+  while(node = walker.nextNode()){
+    const nextCount = charCount + node.length;
+    if(startNode === undefined && start <= nextCount){ startNode = node; startOffset = start - charCount; }
+    if(endNode === undefined && end <= nextCount){ endNode = node; endOffset = end - charCount; break; }
+    charCount = nextCount;
+  }
+  if(startNode === undefined || endNode === undefined) return null;
+  const range = document.createRange();
+  range.setStart(startNode, startOffset);
+  range.setEnd(endNode, endOffset);
+  return range;
+}
+// o inverso de textOffsetToRange: acha o índice de caractere (relativo ao
+// .textContent do container) que corresponde a um nó+offset do DOM. Usado
+// pra guardar a seleção como números (que sobrevivem a um render()) em vez
+// de um objeto Range (que fica inválido assim que o nó original é recriado).
+function domPositionToTextOffset(container, node, offset){
+  // um boundary de Range pode apontar pra um nó de TEXTO (offset = índice do
+  // caractere) ou pra um ELEMENTO (offset = índice do filho) — o próprio
+  // Range.setEnd já sabe resolver os dois casos corretamente, então em vez
+  // de reimplementar isso na mão, só mede o texto do começo do container até
+  // esse ponto.
+  const range = document.createRange();
+  range.selectNodeContents(container);
+  range.setEnd(node, offset);
+  return range.toString().length;
+}
 function openInsertImageModal(){
   state.modal = { type:'insert-note-image', url:'', alt:'' };
   render();
@@ -4138,7 +4255,15 @@ function confirmInsertNoteImage(){
   const alt = m.alt||'';
   state.modal = null;
   render();
-  insertImageMarkdown('note-editor-textarea', url, alt);
+  const note = state.notesItems.find(n=>n.id===state.currentNoteId);
+  if(note && note.format === 'plain'){
+    focusRichEditor();
+    document.execCommand('insertHTML', false, `<img src="${escapeHtml(url)}" alt="${escapeHtml(alt)}">`);
+    const el = document.getElementById('note-editor-plain');
+    if(el) onNoteContentInput(state.currentNoteId, el.innerHTML);
+  } else {
+    insertImageMarkdown('note-editor-textarea', url, alt);
+  }
 }
 function openNoteImageUploadPicker(){
   const noteId = state.currentNoteId;
@@ -4152,7 +4277,16 @@ function openNoteImageUploadPicker(){
     showToast('Enviando imagem...');
     try{
       const url = await uploadNoteImage(file);
-      insertImageMarkdown('note-editor-textarea', url, file.name.replace(/\.[^/.]+$/, ''));
+      const alt = file.name.replace(/\.[^/.]+$/, '');
+      const note = state.notesItems.find(n=>n.id===noteId);
+      if(note && note.format === 'plain'){
+        focusRichEditor();
+        document.execCommand('insertHTML', false, `<img src="${escapeHtml(url)}" alt="${escapeHtml(alt)}">`);
+        const el = document.getElementById('note-editor-plain');
+        if(el) onNoteContentInput(noteId, el.innerHTML);
+      } else {
+        insertImageMarkdown('note-editor-textarea', url, alt);
+      }
       showToast('Imagem enviada!');
     }catch(err){
       console.error('Falha ao enviar imagem da nota', err);
@@ -4193,9 +4327,22 @@ function handleNoteSelection(e){
       }
     }
   } else {
-    const preview = document.querySelector('.notes-preview');
+    const richEl = document.getElementById('note-editor-plain');
     const sel = window.getSelection();
     const text = sel ? sel.toString().trim() : '';
+    // texto normal (contenteditable): a correção também funciona aqui — guarda
+    // os ÍNDICES de caractere (não um Range de verdade, que ficaria inválido
+    // assim que render() recriar o contenteditable enquanto a IA está pensando).
+    if(text && richEl && sel.rangeCount && !sel.isCollapsed && richEl.contains(sel.anchorNode)){
+      const r = sel.getRangeAt(0);
+      const start = domPositionToTextOffset(richEl, r.startContainer, r.startOffset);
+      const end = domPositionToTextOffset(richEl, r.endContainer, r.endOffset);
+      state.noteSelection = { text, source:'richtext', start, end };
+      bar.style.display = 'flex';
+      if(correctBtn) correctBtn.style.display = '';
+      return;
+    }
+    const preview = document.querySelector('.notes-preview');
     if(text && preview && sel.anchorNode && preview.contains(sel.anchorNode)){
       state.noteSelection = { text, source:'preview' };
       bar.style.display = 'flex';
@@ -4284,9 +4431,10 @@ async function generateTextCorrection(text){
 function requestNoteCorrection(){
   const sel = state.noteSelection;
   const note = state.notesItems.find(n=>n.id===state.currentNoteId);
-  if(!sel || !sel.text || sel.source !== 'textarea' || !note) return;
+  if(!sel || !sel.text || (sel.source !== 'textarea' && sel.source !== 'richtext') || !note) return;
   hideNoteSelectionBar();
-  state.modal = { type:'note-correction', status:'loading', original:sel.text, corrected:'', start:sel.start, end:sel.end, noteId: note.id };
+  const modalBase = { type:'note-correction', status:'loading', original:sel.text, corrected:'', noteId: note.id, source: sel.source, start: sel.start, end: sel.end };
+  state.modal = modalBase;
   render();
   generateTextCorrection(sel.text).then(corrected => {
     if(state.modal && state.modal.type === 'note-correction'){
@@ -4308,6 +4456,28 @@ function confirmNoteCorrection(){
   if(!m || m.type !== 'note-correction') return;
   const note = state.notesItems.find(n=>n.id===m.noteId);
   if(!note){ state.modal = null; render(); return; }
+  if(m.source === 'richtext'){
+    const el = document.getElementById('note-editor-plain');
+    // reconstrói o Range agora, do DOM atual — um Range guardado desde o
+    // pedido de correção ficaria inválido, porque o render() ao abrir o
+    // modal já recriou o contenteditable (e os nós que ele apontava).
+    const range = el ? textOffsetToRange(el, m.start, m.end) : null;
+    if(el && range){
+      el.focus();
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      document.execCommand('insertText', false, m.corrected);
+      note.updatedAt = Date.now();
+      state.modal = null;
+      const updated = el.innerHTML;
+      noteContentCache[note.id] = updated;
+      saveData(); render();
+      saveNoteContentToR2(note.id, updated);
+      showToast('Texto corrigido.');
+      return;
+    }
+  }
   const current = getNoteContent(note.id);
   const updated = current.slice(0, m.start) + m.corrected + current.slice(m.end);
   noteContentCache[note.id] = updated;
@@ -4426,6 +4596,260 @@ async function sendNoteChatMessage(){
   }
   m.sending = false;
   render();
+}
+// acha todas as ocorrências de um termo num texto (sem diferenciar
+// maiúsculas/minúsculas) — usado tanto pra buscar dentro de uma nota quanto
+// pra contar ocorrências na busca por conteúdo entre notas.
+function findTextMatches(content, query){
+  const q = query || '';
+  if(!q) return [];
+  const lowerContent = (content||'').toLowerCase();
+  const lowerQuery = q.toLowerCase();
+  const matches = [];
+  let idx = 0;
+  while(true){
+    const found = lowerContent.indexOf(lowerQuery, idx);
+    if(found === -1) break;
+    matches.push({ start: found, end: found + q.length });
+    idx = found + q.length;
+  }
+  return matches;
+}
+/* --- buscar e substituir dentro da nota aberta: feito 100% por comparação de
+   texto simples (sem IA) — mais preciso e sem risco de trocar a ocorrência
+   errada ou reescrever demais. --- */
+function currentNoteIsPlain(){
+  const note = state.notesItems.find(n=>n.id===state.currentNoteId);
+  return !!(note && note.format === 'plain');
+}
+// texto visível da nota aberta agora mesmo, pra buscar/substituir — pra "texto
+// normal" usa o .textContent do próprio contenteditable (reflete o que está
+// na tela, incluindo edições ainda não salvas), pra markdown usa a string crua.
+function currentNoteSearchableText(){
+  if(currentNoteIsPlain()){
+    const el = document.getElementById('note-editor-plain');
+    return el ? el.textContent : htmlToText(getNoteContent(state.currentNoteId));
+  }
+  return getNoteContent(state.currentNoteId);
+}
+function openNoteFind(){
+  state.noteFindReplace = { active:true, query:'', replaceQuery:'', showReplace:false, matches:[], currentIndex:-1 };
+  render();
+}
+function closeNoteFind(){
+  state.noteFindReplace = null;
+  render();
+}
+function toggleNoteFindReplace(){
+  if(!state.noteFindReplace) return;
+  state.noteFindReplace.showReplace = !state.noteFindReplace.showReplace;
+  render();
+}
+function updateNoteFindQuery(value){
+  const fr = state.noteFindReplace;
+  if(!fr) return;
+  fr.query = value;
+  const isPlain = currentNoteIsPlain();
+  const text = currentNoteSearchableText();
+  fr.matches = findTextMatches(text, fr.query);
+  fr.currentIndex = fr.matches.length ? 0 : -1;
+  // atualiza só o contador, sem recriar o campo de busca nem o editor —
+  // um render() cheio aqui perderia o foco/acento composto no meio da
+  // digitação, o mesmo problema já corrigido no editor da nota.
+  const counterEl = document.querySelector('.notes-find-count');
+  if(counterEl) counterEl.textContent = fr.matches.length ? `${fr.currentIndex+1}/${fr.matches.length}` : (fr.query ? '0/0' : '');
+  // só destaca "ao vivo" pra textarea (não rouba o foco); pra contenteditable
+  // isso só acontece de fato ao clicar em anterior/próximo.
+  if(fr.currentIndex >= 0 && !isPlain){
+    const match = fr.matches[0];
+    const ta = document.getElementById('note-editor-textarea');
+    if(ta) ta.setSelectionRange(match.start, match.end);
+  }
+}
+function jumpToNoteFindMatch(index){
+  const fr = state.noteFindReplace;
+  if(!fr || !fr.matches.length) return;
+  const i = ((index % fr.matches.length) + fr.matches.length) % fr.matches.length;
+  fr.currentIndex = i;
+  render();
+  const match = fr.matches[i];
+  if(currentNoteIsPlain()){
+    const el = document.getElementById('note-editor-plain');
+    if(el){
+      const range = textOffsetToRange(el, match.start, match.end);
+      if(range){
+        el.focus();
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        const container = range.startContainer.nodeType === 3 ? range.startContainer.parentElement : range.startContainer;
+        if(container && container.scrollIntoView) container.scrollIntoView({ block:'nearest' });
+      }
+    }
+  } else {
+    const ta = document.getElementById('note-editor-textarea');
+    if(ta){ ta.focus(); ta.setSelectionRange(match.start, match.end); }
+  }
+}
+function nextNoteFindMatch(){
+  const fr = state.noteFindReplace;
+  if(!fr) return;
+  jumpToNoteFindMatch((fr.currentIndex < 0 ? -1 : fr.currentIndex) + 1);
+}
+function prevNoteFindMatch(){
+  const fr = state.noteFindReplace;
+  if(!fr) return;
+  jumpToNoteFindMatch((fr.currentIndex < 0 ? 0 : fr.currentIndex) - 1);
+}
+function replaceCurrentNoteMatch(){
+  const fr = state.noteFindReplace;
+  if(!fr || fr.currentIndex < 0 || !fr.matches.length) return;
+  const noteId = state.currentNoteId;
+  const note = state.notesItems.find(n=>n.id===noteId);
+  const replacement = fr.replaceQuery || '';
+  if(currentNoteIsPlain()){
+    const el = document.getElementById('note-editor-plain');
+    if(!el) return;
+    const match = fr.matches[fr.currentIndex];
+    const range = textOffsetToRange(el, match.start, match.end);
+    if(range){
+      el.focus();
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      document.execCommand('insertText', false, replacement);
+      onNoteContentInput(noteId, el.innerHTML);
+    }
+  } else {
+    const content = getNoteContent(noteId);
+    const match = fr.matches[fr.currentIndex];
+    const newContent = content.slice(0, match.start) + replacement + content.slice(match.end);
+    noteContentCache[noteId] = newContent;
+    if(note) note.updatedAt = Date.now();
+    saveData();
+    saveNoteContentToR2(noteId, newContent);
+  }
+  const newText = currentNoteSearchableText();
+  fr.matches = findTextMatches(newText, fr.query);
+  fr.currentIndex = fr.matches.length ? Math.min(fr.currentIndex, fr.matches.length-1) : -1;
+  render();
+  if(fr.currentIndex >= 0) jumpToNoteFindMatch(fr.currentIndex);
+}
+function replaceAllNoteMatches(){
+  const fr = state.noteFindReplace;
+  if(!fr || !fr.query) return;
+  const noteId = state.currentNoteId;
+  const note = state.notesItems.find(n=>n.id===noteId);
+  const replacement = fr.replaceQuery || '';
+  if(currentNoteIsPlain()){
+    const el = document.getElementById('note-editor-plain');
+    if(!el) return;
+    const matches = findTextMatches(el.textContent, fr.query);
+    if(!matches.length){ showToast('Nada pra substituir.', 'info'); return; }
+    // de trás pra frente, pra não bagunçar os offsets dos que ainda faltam
+    for(let idx = matches.length-1; idx>=0; idx--){
+      const range = textOffsetToRange(el, matches[idx].start, matches[idx].end);
+      if(range){
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        document.execCommand('insertText', false, replacement);
+      }
+    }
+    onNoteContentInput(noteId, el.innerHTML);
+    fr.matches = [];
+    fr.currentIndex = -1;
+    render();
+    showToast(`${matches.length} substituição(ões) feita(s).`);
+    return;
+  }
+  const content = getNoteContent(noteId);
+  const matches = findTextMatches(content, fr.query);
+  if(!matches.length){ showToast('Nada pra substituir.', 'info'); return; }
+  let newContent = '';
+  let lastEnd = 0;
+  matches.forEach(m => { newContent += content.slice(lastEnd, m.start) + replacement; lastEnd = m.end; });
+  newContent += content.slice(lastEnd);
+  noteContentCache[noteId] = newContent;
+  if(note) note.updatedAt = Date.now();
+  saveData();
+  saveNoteContentToR2(noteId, newContent);
+  fr.matches = [];
+  fr.currentIndex = -1;
+  render();
+  showToast(`${matches.length} substituição(ões) feita(s).`);
+}
+/* --- buscar notas no explorador: pelo nome (instantâneo, sem rede) e,
+   opcionalmente, pelo conteúdo de todas as notas — como o texto de cada nota
+   mora no R2 e só é buscado sob demanda, a busca por conteúdo precisa buscar
+   antes o texto de qualquer nota ainda não aberta nessa sessão. --- */
+function noteItemMatchesSearch(item, query){
+  return item.name.toLowerCase().includes(query.toLowerCase());
+}
+function noteSubtreeMatchesSearch(itemId, query){
+  const item = state.notesItems.find(n=>n.id===itemId);
+  if(!item) return false;
+  if(noteItemMatchesSearch(item, query)) return true;
+  return state.notesItems.some(child => child.parentId === itemId && noteSubtreeMatchesSearch(child.id, query));
+}
+function updateNotesSearchQuery(value){
+  state.notesSearch = state.notesSearch || { query:'', contentResults:null, searching:false };
+  state.notesSearch.query = value;
+  state.notesSearch.contentResults = null; // busca de conteúdo antiga não vale mais pro termo novo
+  // atualiza só a árvore + a área abaixo da busca, sem recriar o campo de
+  // busca em si (mesmo cuidado de sempre: não perder foco/acento composto).
+  const treeEl = document.querySelector('.notes-tree');
+  if(treeEl){
+    const hasRootItems = state.notesItems.some(n=>n.parentId===null);
+    treeEl.innerHTML = (!hasRootItems ? `<p style="color:var(--text-faint); font-size:12px; padding:8px 4px;">Nenhuma nota ainda. Crie a primeira com os botões acima.</p>` : '') + renderNotesTreeLevel(null, 0);
+  }
+  const extrasEl = document.querySelector('.notes-search-extras');
+  if(extrasEl) extrasEl.innerHTML = renderNotesSearchExtras();
+}
+function clearNotesSearch(){
+  state.notesSearch = { query:'', contentResults:null, searching:false };
+  render();
+}
+async function searchAllNotesContent(){
+  state.notesSearch = state.notesSearch || { query:'', contentResults:null, searching:false };
+  const query = (state.notesSearch.query||'').trim();
+  if(!query) return;
+  state.notesSearch.searching = true;
+  render();
+  const notesToFetch = state.notesItems.filter(n => n.type==='note' && noteContentCache[n.id] === undefined);
+  await Promise.all(notesToFetch.map(n =>
+    loadNoteContentFromR2(n.id).then(c => { noteContentCache[n.id] = c; }).catch(e => console.error('Falha ao buscar conteúdo pra pesquisa', n.id, e))
+  ));
+
+  const results = [];
+  state.notesItems.filter(n=>n.type==='note').forEach(n => {
+    const raw = getNoteContent(n.id);
+    const content = n.format === 'plain' ? htmlToText(raw) : raw;
+    const matches = findTextMatches(content, query);
+    if(matches.length){
+      const idx = matches[0].start;
+      const snippetStart = Math.max(0, idx-40);
+      const snippetEnd = Math.min(content.length, idx+query.length+40);
+      const snippet = (snippetStart>0?'…':'') + content.slice(snippetStart, snippetEnd) + (snippetEnd<content.length?'…':'');
+      results.push({ noteId: n.id, noteName: n.name, snippet, matchCount: matches.length });
+    }
+  });
+  state.notesSearch.contentResults = results;
+  state.notesSearch.searching = false;
+  render();
+}
+function openNoteSearchResult(noteId){
+  const query = (state.notesSearch && state.notesSearch.query) || '';
+  openNote(noteId);
+  const note = state.notesItems.find(n=>n.id===noteId);
+  const isPlain = note && note.format === 'plain';
+  if(!isPlain && state.notesEditorMode === 'preview') state.notesEditorMode = 'split';
+  const raw = getNoteContent(noteId);
+  const content = isPlain ? htmlToText(raw) : raw;
+  const matches = findTextMatches(content, query);
+  state.noteFindReplace = { active:true, query, replaceQuery:'', showReplace:false, matches, currentIndex: matches.length ? 0 : -1 };
+  render();
+  if(state.noteFindReplace.currentIndex >= 0) jumpToNoteFindMatch(0);
 }
 /* --- caminho alternativo pro celular: a seleção nativa de texto do sistema
    toma conta da tela e não dá pra encaixar nossa barra flutuante ali no meio
@@ -4705,9 +5129,10 @@ function getReadingStats(){
 function renderNotesView(){
   const currentNote = state.notesItems.find(n=>n.id===state.currentNoteId && n.type==='note');
   const hasRootItems = state.notesItems.some(n=>n.parentId===null);
+  const searchQuery = (state.notesSearch && state.notesSearch.query) || '';
   return `
   <button class="ghost-btn mobile-back-btn" onclick="backToHome()">← Início</button>
-  <div class="notes-layout">
+  <div class="notes-layout ${currentNote ? 'note-open' : ''}">
     <div class="notes-explorer">
       <div class="notes-explorer-header">
         <h3 style="margin:0; font-size:15px;">📓 Notas</h3>
@@ -4716,10 +5141,15 @@ function renderNotesView(){
           <button class="icon-btn" title="Nova pasta" onclick="openNotesCreateModal(null,'folder')">📁</button>
         </div>
       </div>
+      <div class="notes-search-bar">
+        <input type="text" id="notes-search-input" placeholder="🔎 Buscar nota ou trecho..." value="${escapeHtml(searchQuery)}" oninput="updateNotesSearchQuery(this.value)" onkeydown="if(event.key==='Enter'){ event.preventDefault(); searchAllNotesContent(); }">
+        ${searchQuery ? `<button class="icon-btn" style="width:22px;height:22px;font-size:11px;" title="Limpar busca" onclick="clearNotesSearch()">✕</button>` : ''}
+      </div>
       <div class="notes-tree" ondragover="event.preventDefault();" ondrop="onNoteDropOnRoot(event)">
         ${!hasRootItems ? `<p style="color:var(--text-faint); font-size:12px; padding:8px 4px;">Nenhuma nota ainda. Crie a primeira com os botões acima.</p>` : ''}
         ${renderNotesTreeLevel(null, 0)}
       </div>
+      <div class="notes-search-extras">${renderNotesSearchExtras()}</div>
     </div>
     <div class="notes-editor">
       ${currentNote ? renderNoteEditor(currentNote) : `
@@ -4733,14 +5163,36 @@ function renderNotesView(){
   </div>
   `;
 }
+function renderNotesSearchExtras(){
+  const s = state.notesSearch;
+  if(!s || !s.query) return '';
+  let html = `<button class="ghost-btn" style="width:100%; font-size:12px; padding:6px; margin-top:6px;" onclick="searchAllNotesContent()" ${s.searching?'disabled':''}>${s.searching ? '🔎 Buscando no conteúdo...' : '🔎 Buscar também no conteúdo de todas as notas'}</button>`;
+  if(s.contentResults) html += renderNotesContentSearchResults();
+  return html;
+}
+function renderNotesContentSearchResults(){
+  const results = state.notesSearch.contentResults;
+  if(!results.length) return `<p style="color:var(--text-faint); font-size:12px; padding:8px 4px;">Nada encontrado no conteúdo das notas.</p>`;
+  return `
+  <div style="display:flex; flex-direction:column; gap:4px; margin-top:8px;">
+    ${results.map(r => `
+    <div class="notes-search-result" onclick="openNoteSearchResult('${r.noteId}')">
+      <div style="font-size:12.5px; font-weight:600;">📄 ${escapeHtml(r.noteName)} <span style="font-weight:400; color:var(--text-faint);">(${r.matchCount})</span></div>
+      <div style="font-size:11.5px; color:var(--text-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(r.snippet)}</div>
+    </div>
+    `).join('')}
+  </div>`;
+}
 function renderNotesTreeLevel(parentId, depth){
-  const items = state.notesItems.filter(n=>n.parentId===parentId).sort((a,b) => {
+  const searchQuery = ((state.notesSearch && state.notesSearch.query) || '').trim();
+  let items = state.notesItems.filter(n=>n.parentId===parentId).sort((a,b) => {
     if(a.type !== b.type) return a.type === 'folder' ? -1 : 1;
     return a.name.localeCompare(b.name, 'pt-BR');
   });
+  if(searchQuery) items = items.filter(item => noteSubtreeMatchesSearch(item.id, searchQuery));
   return items.map(item => {
     if(item.type === 'folder'){
-      const collapsed = (state.notesCollapsedFolders||[]).includes(item.id);
+      const collapsed = !searchQuery && (state.notesCollapsedFolders||[]).includes(item.id);
       return `
       <div class="notes-tree-row" style="padding-left:${depth*16}px;" draggable="true" ondragstart="onNoteDragStart(event,'${item.id}')" ondragover="onNoteDragOverFolder(event,'${item.id}')" ondragleave="onNoteDragLeaveFolder(event)" ondrop="onNoteDropOnFolder(event,'${item.id}')">
         <div class="notes-tree-label" onclick="toggleNotesFolder('${item.id}')">
@@ -4765,37 +5217,69 @@ function renderNotesTreeLevel(parentId, depth){
     </div>`;
   }).join('');
 }
+function renderNoteFindBar(fr){
+  return `
+  <div class="notes-find-bar">
+    <input type="text" id="note-find-input" placeholder="Buscar na nota..." autofocus value="${escapeHtml(fr.query)}" oninput="updateNoteFindQuery(this.value)" onkeydown="if(event.key==='Enter'){ event.preventDefault(); if(event.shiftKey) prevNoteFindMatch(); else nextNoteFindMatch(); } if(event.key==='Escape'){ closeNoteFind(); }">
+    <span class="notes-find-count">${fr.matches.length ? `${fr.currentIndex+1}/${fr.matches.length}` : (fr.query ? '0/0' : '')}</span>
+    <button class="icon-btn" style="width:26px;height:26px;font-size:12px;" title="Anterior" onclick="prevNoteFindMatch()">↑</button>
+    <button class="icon-btn" style="width:26px;height:26px;font-size:12px;" title="Próximo" onclick="nextNoteFindMatch()">↓</button>
+    <button class="icon-btn" style="width:26px;height:26px;font-size:12px;" title="${fr.showReplace?'Esconder substituir':'Substituir'}" onclick="toggleNoteFindReplace()">⇄</button>
+    <button class="icon-btn" style="width:26px;height:26px;font-size:12px;" title="Fechar" onclick="closeNoteFind()">✕</button>
+  </div>
+  ${fr.showReplace ? `
+  <div class="notes-find-bar">
+    <input type="text" id="note-replace-input" placeholder="Substituir por..." value="${escapeHtml(fr.replaceQuery)}" oninput="state.noteFindReplace.replaceQuery=this.value">
+    <button class="ghost-btn" style="font-size:12px; padding:6px 10px;" onclick="replaceCurrentNoteMatch()">Substituir</button>
+    <button class="ghost-btn" style="font-size:12px; padding:6px 10px;" onclick="replaceAllNoteMatches()">Substituir tudo</button>
+  </div>
+  ` : ''}
+  `;
+}
 function renderNoteEditor(note){
+  const backBtn = `<button class="ghost-btn mobile-back-btn" onclick="closeCurrentNote()">← Notas</button>`;
   if(noteContentError[note.id]){
     return `
+    ${backBtn}
     <div class="loading-line" style="flex-direction:column; gap:14px; justify-content:center; padding:60px;">
       <p style="color:var(--error); margin:0;">Não consegui carregar essa nota.</p>
       <button class="ghost-btn" onclick="retryLoadNoteContent('${note.id}')">Tentar de novo</button>
     </div>`;
   }
   if(noteContentLoading[note.id] || noteContentCache[note.id] === undefined){
-    return `<div class="loading-line" style="justify-content:center; padding:60px;"><div class="spinner"></div> Carregando nota...</div>`;
+    return `${backBtn}<div class="loading-line" style="justify-content:center; padding:60px;"><div class="spinner"></div> Carregando nota...</div>`;
   }
   const content = getNoteContent(note.id);
-  const mode = state.notesEditorMode || 'split';
   const isPlain = note.format === 'plain';
+  const mode = isPlain ? null : (state.notesEditorMode || 'split');
   return `
+  ${backBtn}
   <div class="notes-editor-header">
     <h3 style="margin:0;">${escapeHtml(note.name)}</h3>
     <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+      <button class="icon-btn" title="Buscar e substituir nesta nota" onclick="openNoteFind()">🔍</button>
       <button class="icon-btn" title="Conversar com a IA sobre esta nota" onclick="openNoteChat()">💬</button>
+      ${!isPlain ? `
       <div class="notes-mode-toggle">
         <button class="ghost-btn ${mode==='source'?'active-mode':''}" onclick="setNotesEditorMode('source')">Editar</button>
         <button class="ghost-btn ${mode==='split'?'active-mode':''}" onclick="setNotesEditorMode('split')">Dividido</button>
         <button class="ghost-btn ${mode==='preview'?'active-mode':''}" onclick="setNotesEditorMode('preview')">Prévia</button>
       </div>
+      ` : ''}
     </div>
   </div>
-  ${mode !== 'preview' ? renderNotesToolbar(note.format) : ''}
-  <div class="notes-editor-panes ${mode}">
-    ${mode !== 'preview' ? `<textarea id="note-editor-textarea" class="notes-textarea" placeholder="${isPlain ? 'Escreva à vontade, sem se preocupar com formatação...' : 'Escreva em markdown... use [[Nome da nota]] pra linkar outra nota.'}" oninput="onNoteContentInput('${note.id}', this.value)" onkeydown="if(event.key==='Tab'){ event.preventDefault(); insertTabIndent('note-editor-textarea'); }">${escapeHtml(content)}</textarea>` : ''}
-    ${mode !== 'source' ? `<div class="notes-preview" style="${isPlain ? 'white-space:pre-wrap;' : ''}">${isPlain ? renderPlainNoteContent(content) : renderNoteMarkdown(content)}</div>` : ''}
+  ${state.noteFindReplace && state.noteFindReplace.active ? renderNoteFindBar(state.noteFindReplace) : ''}
+  ${(isPlain || mode !== 'preview') ? renderNotesToolbar(note.format) : ''}
+  ${isPlain ? `
+  <div class="notes-editor-panes plain">
+    <div id="note-editor-plain" class="notes-plain-editor notes-preview" contenteditable="true" data-placeholder="Escreva à vontade, sem se preocupar com formatação..." oninput="onNoteContentInput('${note.id}', this.innerHTML)" onkeydown="if(event.key==='Tab'){ event.preventDefault(); insertRichIndent(); }">${normalizePlainNoteContentForEditing(content)}</div>
   </div>
+  ` : `
+  <div class="notes-editor-panes ${mode}">
+    ${mode !== 'preview' ? `<textarea id="note-editor-textarea" class="notes-textarea" placeholder="Escreva em markdown... use [[Nome da nota]] pra linkar outra nota." oninput="onNoteContentInput('${note.id}', this.value)" onkeydown="if(event.key==='Tab'){ event.preventDefault(); insertTabIndent('note-editor-textarea'); }">${escapeHtml(content)}</textarea>` : ''}
+    ${mode !== 'source' ? `<div class="notes-preview">${renderNoteMarkdown(content)}</div>` : ''}
+  </div>
+  `}
   <div id="note-selection-bar" style="display:none; position:fixed; left:0; right:0; bottom:0; background:var(--surface); border-top:1px solid var(--border); padding:12px 20px; align-items:center; justify-content:center; gap:10px; box-shadow:0 -4px 16px rgba(0,0,0,0.2); z-index:50; flex-wrap:wrap;">
     <button class="ghost-btn" id="note-correct-btn" onclick="requestNoteCorrection()">✏️ Corrigir</button>
     <button class="ghost-btn" onclick="requestNoteOpinion()">💭 Opinião da IA</button>
@@ -4806,25 +5290,34 @@ function renderNoteEditor(note){
 function renderNotesToolbar(format){
   const id = 'note-editor-textarea';
   const isMarkdown = format !== 'plain';
+  const bold = isMarkdown ? `applyMdWrap('${id}','**')` : `applyRichCommand('bold')`;
+  const italic = isMarkdown ? `applyMdWrap('${id}','*')` : `applyRichCommand('italic')`;
+  const h1 = isMarkdown ? `applyMdLinePrefix('${id}','# ')` : `applyRichCommand('formatBlock','<h1>')`;
+  const h2 = isMarkdown ? `applyMdLinePrefix('${id}','## ')` : `applyRichCommand('formatBlock','<h2>')`;
+  const h3 = isMarkdown ? `applyMdLinePrefix('${id}','### ')` : `applyRichCommand('formatBlock','<h3>')`;
+  const list = isMarkdown ? `applyMdLinePrefix('${id}','- ')` : `applyRichCommand('insertUnorderedList')`;
+  const olist = isMarkdown ? `applyMdLinePrefix('${id}','1. ')` : `applyRichCommand('insertOrderedList')`;
+  const indent = isMarkdown ? `insertTabIndent('${id}')` : `insertRichIndent()`;
+  const alignLeft = isMarkdown ? `applyMdAlign('${id}','left')` : `applyRichCommand('justifyLeft')`;
+  const alignCenter = isMarkdown ? `applyMdAlign('${id}','center')` : `applyRichCommand('justifyCenter')`;
+  const alignRight = isMarkdown ? `applyMdAlign('${id}','right')` : `applyRichCommand('justifyRight')`;
+  const link = isMarkdown ? `applyMdLink('${id}')` : `openInsertRichLinkModal()`;
+  const wikiLink = isMarkdown ? `insertWikiLink('${id}')` : `openInsertWikiLinkModalRich()`;
   return `
   <div class="notes-toolbar">
-    ${isMarkdown ? `
-    <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Negrito" onclick="applyMdWrap('${id}','**')"><strong>B</strong></button>
-    <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Itálico" onclick="applyMdWrap('${id}','*')"><em>I</em></button>
-    <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Título 1" onclick="applyMdLinePrefix('${id}','# ')">H1</button>
-    <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Título 2" onclick="applyMdLinePrefix('${id}','## ')">H2</button>
-    <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Título 3" onclick="applyMdLinePrefix('${id}','### ')">H3</button>
-    <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Lista" onclick="applyMdLinePrefix('${id}','- ')">•</button>
-    <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Lista numerada" onclick="applyMdLinePrefix('${id}','1. ')">1.</button>
-    ` : ''}
-    <button class="icon-btn" title="Recuo de parágrafo (igual à tecla Tab)" onclick="insertTabIndent('${id}')">↹</button>
-    ${isMarkdown ? `
-    <button class="icon-btn" title="Alinhar à esquerda" onclick="applyMdAlign('${id}','left')">⬅</button>
-    <button class="icon-btn" title="Centralizar" onclick="applyMdAlign('${id}','center')">↔</button>
-    <button class="icon-btn" title="Alinhar à direita" onclick="applyMdAlign('${id}','right')">➡</button>
-    <button class="icon-btn" title="Link" onclick="applyMdLink('${id}')">🔗</button>
-    ` : ''}
-    <button class="icon-btn" title="Link pra outra nota" onclick="insertWikiLink('${id}')">🔀</button>
+    <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Negrito" onclick="${bold}"><strong>B</strong></button>
+    <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Itálico" onclick="${italic}"><em>I</em></button>
+    <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Título 1" onclick="${h1}">H1</button>
+    <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Título 2" onclick="${h2}">H2</button>
+    <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Título 3" onclick="${h3}">H3</button>
+    <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Lista" onclick="${list}">•</button>
+    <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Lista numerada" onclick="${olist}">1.</button>
+    <button class="icon-btn" title="Recuo de parágrafo (igual à tecla Tab)" onclick="${indent}">↹</button>
+    <button class="icon-btn" title="Alinhar à esquerda" onclick="${alignLeft}">⬅</button>
+    <button class="icon-btn" title="Centralizar" onclick="${alignCenter}">↔</button>
+    <button class="icon-btn" title="Alinhar à direita" onclick="${alignRight}">➡</button>
+    <button class="icon-btn" title="Link" onclick="${link}">🔗</button>
+    <button class="icon-btn" title="Link pra outra nota" onclick="${wikiLink}">🔀</button>
     <button class="icon-btn" title="Imagem por link" onclick="openInsertImageModal()">🖼️</button>
     <button class="icon-btn" title="Enviar imagem do aparelho" onclick="openNoteImageUploadPicker()">📤</button>
     <span style="width:1px; background:var(--border); margin:2px 2px;"></span>
@@ -5926,6 +6419,8 @@ function renderModal(){
   if(m.type === 'note-paste-correction') return renderNotePasteCorrectionModal(m);
   if(m.type === 'note-opinion') return renderNoteOpinionModal(m);
   if(m.type === 'note-paste-opinion') return renderNotePasteOpinionModal(m);
+  if(m.type === 'insert-rich-link') return renderInsertRichLinkModal(m);
+  if(m.type === 'insert-wiki-link-rich') return renderInsertWikiLinkRichModal(m);
   return `
   <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
     <div class="modal">
@@ -6290,6 +6785,43 @@ function renderNotePasteOpinionModal(m){
       <div class="modal-actions">
         <button class="ghost-btn" onclick="closeModal()">Cancelar</button>
         <button class="primary-btn" onclick="confirmNotePasteOpinion()">Pedir opinião</button>
+      </div>
+    </div>
+  </div>`;
+}
+function renderInsertRichLinkModal(m){
+  return `
+  <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
+    <div class="modal">
+      <h3>Inserir link</h3>
+      <div class="field">
+        <label>URL</label>
+        <input type="text" autofocus placeholder="https://..." value="${escapeHtml(m.url)}" onkeyup="state.modal.url=this.value">
+      </div>
+      <div class="field">
+        <label>TEXTO DO LINK</label>
+        <input type="text" placeholder="Ex: veja mais aqui" value="${escapeHtml(m.text)}" onkeyup="state.modal.text=this.value">
+      </div>
+      <div class="modal-actions">
+        <button class="ghost-btn" onclick="closeModal()">Cancelar</button>
+        <button class="primary-btn" onclick="confirmInsertRichLink()">Inserir</button>
+      </div>
+    </div>
+  </div>`;
+}
+function renderInsertWikiLinkRichModal(m){
+  return `
+  <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
+    <div class="modal">
+      <h3>Link pra outra nota</h3>
+      <div class="field">
+        <label>NOME DA NOTA</label>
+        <input type="text" autofocus placeholder="Ex: Capítulo 2" value="${escapeHtml(m.name)}" onkeyup="state.modal.name=this.value; if(event.key==='Enter') confirmInsertWikiLinkRich();">
+      </div>
+      <p style="font-size:11.5px; color:var(--text-faint); margin:0;">Se a nota ainda não existir, ela é criada ao clicar no link.</p>
+      <div class="modal-actions">
+        <button class="ghost-btn" onclick="closeModal()">Cancelar</button>
+        <button class="primary-btn" onclick="confirmInsertWikiLinkRich()">Inserir</button>
       </div>
     </div>
   </div>`;
