@@ -3986,6 +3986,30 @@ function deleteNoteItem(id){
     showToast('Excluído.');
   }, 'Excluir');
 }
+// duplica só nota (não pasta) — se o conteúdo ainda não foi carregado (nota
+// nunca aberta nesta sessão), busca no R2 antes de copiar, pra não duplicar
+// uma nota vazia por engano.
+async function duplicateNoteItem(id){
+  const item = state.notesItems.find(n=>n.id===id && n.type==='note');
+  if(!item) return;
+  let content = noteContentCache[id];
+  if(content === undefined){
+    try{
+      content = await loadNoteContentFromR2(id);
+    }catch(err){
+      console.error('Falha ao carregar nota pra duplicar', err);
+      showToast('Não consegui carregar essa nota pra duplicar.', 'error');
+      return;
+    }
+  }
+  const copy = makeNoteItem('note', `${item.name} (cópia)`, item.parentId, item.format);
+  copy.linkedDeckId = item.linkedDeckId || null;
+  noteContentCache[copy.id] = content;
+  state.notesItems.push(copy);
+  saveData(); render();
+  saveNoteContentToR2(copy.id, content);
+  showToast('Nota duplicada.');
+}
 let notesSaveTimer = null;
 function onNoteContentInput(id, value){
   const item = state.notesItems.find(n=>n.id===id);
@@ -5601,6 +5625,7 @@ function renderNotesTreeLevel(parentId, depth){
       <div class="notes-tree-label" onclick="openNote('${item.id}')">📄 ${escapeHtml(item.name)}</div>
       <div class="notes-tree-actions">
         <button class="icon-btn" style="width:22px;height:22px;font-size:11px;" title="Renomear" onclick="event.stopPropagation(); openNotesRenameModal('${item.id}')">✏️</button>
+        <button class="icon-btn" style="width:22px;height:22px;font-size:11px;" title="Duplicar" onclick="event.stopPropagation(); duplicateNoteItem('${item.id}')">⧉</button>
         <button class="icon-btn" style="width:22px;height:22px;font-size:11px;" title="Excluir" onclick="event.stopPropagation(); deleteNoteItem('${item.id}')">🗑</button>
       </div>
     </div>`;
