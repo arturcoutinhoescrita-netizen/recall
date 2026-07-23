@@ -3721,6 +3721,7 @@ function makeNoteItem(type, name, parentId){
     id: uid(), type, name: (name||'').trim() || (type==='folder' ? 'Nova pasta' : 'Nova nota'),
     parentId: parentId || null,
     content: type === 'note' ? '' : undefined,
+    linkedDeckId: type === 'note' ? null : undefined,
     createdAt: Date.now(), updatedAt: Date.now()
   };
 }
@@ -3732,6 +3733,7 @@ function normalizeNoteItem(n){
     name: n.name || (type==='folder' ? 'Pasta' : 'Nota'),
     parentId: n.parentId || null,
     content: type === 'folder' ? undefined : (n.content || ''),
+    linkedDeckId: type === 'folder' ? undefined : (n.linkedDeckId || null),
     createdAt: n.createdAt || Date.now(),
     updatedAt: n.updatedAt || Date.now()
   };
@@ -3973,6 +3975,211 @@ function openNoteImageUploadPicker(){
     }
   };
   input.click();
+}
+
+/* --- seleção de texto na nota: criar cartão a partir do trecho, ou pedir
+   correção ortográfica/gramatical à IA. A correção só é oferecida quando a
+   seleção vem da textarea (fonte), porque só ali dá pra saber o start/end
+   exato pra substituir depois — na prévia renderizada não tem como mapear
+   de volta pro markdown original com segurança. --- */
+document.addEventListener('mouseup', handleNoteSelection);
+document.addEventListener('touchend', handleNoteSelection);
+document.addEventListener('keyup', handleNoteSelection);
+document.addEventListener('select', handleNoteSelection);
+function handleNoteSelection(){
+  if(state.view !== 'notes' || !state.currentNoteId) return;
+  const bar = document.getElementById('note-selection-bar');
+  if(!bar) return;
+  const correctBtn = document.getElementById('note-correct-btn');
+  const activeEl = document.activeElement;
+  if(activeEl && activeEl.id === 'note-editor-textarea'){
+    const start = activeEl.selectionStart, end = activeEl.selectionEnd;
+    if(end > start){
+      const text = activeEl.value.slice(start, end).trim();
+      if(text){
+        state.noteSelection = { text, source:'textarea', start, end };
+        bar.style.display = 'flex';
+        if(correctBtn) correctBtn.style.display = '';
+        return;
+      }
+    }
+  } else {
+    const preview = document.querySelector('.notes-preview');
+    const sel = window.getSelection();
+    const text = sel ? sel.toString().trim() : '';
+    if(text && preview && sel.anchorNode && preview.contains(sel.anchorNode)){
+      state.noteSelection = { text, source:'preview' };
+      bar.style.display = 'flex';
+      if(correctBtn) correctBtn.style.display = 'none';
+      return;
+    }
+  }
+  state.noteSelection = null;
+  bar.style.display = 'none';
+}
+function hideNoteSelectionBar(){
+  state.noteSelection = null;
+  const bar = document.getElementById('note-selection-bar');
+  if(bar) bar.style.display = 'none';
+  if(window.getSelection) window.getSelection().removeAllRanges();
+}
+function requestCardFromNoteSelection(){
+  const sel = state.noteSelection;
+  const note = state.notesItems.find(n=>n.id===state.currentNoteId);
+  if(!sel || !sel.text || !note) return;
+  hideNoteSelectionBar();
+  state.modal = { type:'note-passage-card', status:'loading', passage:sel.text, card:{front:'',back:'',note:''}, deckId: note.linkedDeckId || '', noteId: note.id };
+  render();
+  generateCardFromPassage(sel.text).then(card => {
+    if(state.modal && state.modal.type === 'note-passage-card'){
+      state.modal.status = 'review';
+      state.modal.card = card;
+      render();
+    }
+  }).catch(err => {
+    console.error('Falha ao gerar cartão a partir da nota', err);
+    if(state.modal && state.modal.type === 'note-passage-card'){
+      state.modal.status = 'error';
+      state.modal.error = friendlyAiErrorMsg(err);
+      render();
+    }
+  });
+}
+function selectNotePassageCardDeck(value){
+  const m = state.modal;
+  if(!m || m.type !== 'note-passage-card') return;
+  if(value === '__new__'){
+    const note = state.notesItems.find(n=>n.id===m.noteId);
+    m.creatingNewDeck = true;
+    m.newDeckName = (note && note.name) || '';
+  } else {
+    m.deckId = value;
+    m.creatingNewDeck = false;
+  }
+  render();
+}
+function confirmCreateDeckInlineForNote(){
+  const m = state.modal;
+  if(!m || m.type !== 'note-passage-card') return;
+  const name = (m.newDeckName||'').trim();
+  if(!name){ showToast('Dê um nome ao baralho.', 'error'); return; }
+  const color = DECK_COLORS[state.decks.length % DECK_COLORS.length];
+  const deck = { id: uid(), name, color, type: 'standard' };
+  state.decks.push(deck);
+  state.cards[deck.id] = [];
+  m.deckId = deck.id;
+  m.creatingNewDeck = false;
+  saveData(); render();
+  showToast('Baralho criado.');
+}
+function confirmNotePassageCard(){
+  const m = state.modal;
+  if(!m || m.type !== 'note-passage-card') return;
+  const front = (m.card.front||'').trim(), back = (m.card.back||'').trim();
+  if(!front || !back){ showToast('Preencha pergunta e resposta.', 'error'); return; }
+  if(!m.deckId || !state.cards[m.deckId]){ showToast('Escolha um baralho.', 'error'); return; }
+  const card = makeCard(front, back);
+  card.note = (m.card.note||'').trim();
+  state.cards[m.deckId].push(card);
+  const note = state.notesItems.find(n=>n.id===m.noteId);
+  if(note) note.linkedDeckId = m.deckId;
+  state.modal = null;
+  saveData(); render();
+  showToast('Cartão adicionado ao baralho.');
+}
+async function generateTextCorrection(text){
+  const prompt = `Corrija o texto abaixo em português, mudando o MÍNIMO possível: só erros de ortografia, pontuação e gramática. Não reescreva o estilo, não troque palavras por sinônimos, não mude o sentido nem reformule frases que já estão corretas. Se já estiver tudo certo, devolva o texto exatamente igual.\n\nTexto:\n"${text}"\n\nResponda SOMENTE com o texto corrigido, sem aspas e sem nenhum comentário antes ou depois.`;
+  const result = (await callGemini(prompt, { maxTokens: Math.max(200, Math.ceil(text.length*1.3)) })).trim();
+  return result.replace(/^"|"$/g, '');
+}
+function requestNoteCorrection(){
+  const sel = state.noteSelection;
+  const note = state.notesItems.find(n=>n.id===state.currentNoteId);
+  if(!sel || !sel.text || sel.source !== 'textarea' || !note) return;
+  hideNoteSelectionBar();
+  state.modal = { type:'note-correction', status:'loading', original:sel.text, corrected:'', start:sel.start, end:sel.end, noteId: note.id };
+  render();
+  generateTextCorrection(sel.text).then(corrected => {
+    if(state.modal && state.modal.type === 'note-correction'){
+      state.modal.status = 'review';
+      state.modal.corrected = corrected;
+      render();
+    }
+  }).catch(err => {
+    console.error('Falha ao corrigir texto da nota', err);
+    if(state.modal && state.modal.type === 'note-correction'){
+      state.modal.status = 'error';
+      state.modal.error = friendlyAiErrorMsg(err);
+      render();
+    }
+  });
+}
+function confirmNoteCorrection(){
+  const m = state.modal;
+  if(!m || m.type !== 'note-correction') return;
+  const note = state.notesItems.find(n=>n.id===m.noteId);
+  if(!note){ state.modal = null; render(); return; }
+  note.content = note.content.slice(0, m.start) + m.corrected + note.content.slice(m.end);
+  note.updatedAt = Date.now();
+  state.modal = null;
+  saveData(); render();
+  showToast('Texto corrigido.');
+}
+// diff simples por palavra (LCS) — só pra destacar visualmente o que mudou
+// entre o texto original e o corrigido, sem precisar de biblioteca externa.
+function diffWords(oldText, newText){
+  const oldWords = oldText.split(/(\s+)/);
+  const newWords = newText.split(/(\s+)/);
+  const m = oldWords.length, n = newWords.length;
+  const dp = Array.from({length: m+1}, () => new Array(n+1).fill(0));
+  for(let i=m-1; i>=0; i--){
+    for(let j=n-1; j>=0; j--){
+      dp[i][j] = oldWords[i]===newWords[j] ? dp[i+1][j+1]+1 : Math.max(dp[i+1][j], dp[i][j+1]);
+    }
+  }
+  let i=0, j=0; const oldParts=[], newParts=[];
+  while(i<m && j<n){
+    if(oldWords[i]===newWords[j]){ oldParts.push({t:oldWords[i],c:false}); newParts.push({t:newWords[j],c:false}); i++; j++; }
+    else if(dp[i+1][j] >= dp[i][j+1]){ oldParts.push({t:oldWords[i],c:true}); i++; }
+    else { newParts.push({t:newWords[j],c:true}); j++; }
+  }
+  while(i<m){ oldParts.push({t:oldWords[i],c:true}); i++; }
+  while(j<n){ newParts.push({t:newWords[j],c:true}); j++; }
+  return { oldParts, newParts };
+}
+/* --- chat com a IA sobre a nota aberta: manda o conteúdo da nota como
+   contexto em todo turno (a API do Gemini usada aqui não mantém sessão),
+   junto do histórico da conversa formatado como texto. --- */
+function openNoteChat(){
+  const noteId = state.currentNoteId;
+  if(!noteId) return;
+  state.modal = { type:'note-chat', noteId, messages:[], input:'', sending:false };
+  render();
+}
+async function sendNoteChatMessage(){
+  const m = state.modal;
+  if(!m || m.type !== 'note-chat') return;
+  const question = (m.input||'').trim();
+  if(!question || m.sending) return;
+  const note = state.notesItems.find(n=>n.id===m.noteId);
+  m.messages.push({ role:'user', text: question });
+  m.input = '';
+  m.sending = true;
+  render();
+
+  const history = m.messages.slice(0,-1).map(msg => `${msg.role==='user'?'Usuário':'Assistente'}: ${msg.text}`).join('\n');
+  const noteContent = (note && note.content) || '';
+  const prompt = `Você é um assistente dentro de um caderno de notas pessoal. O usuário está com a nota abaixo aberta (em markdown) — use-a como contexto quando a pergunta se relacionar a ela, mas também pode responder perguntas totalmente gerais, sem relação com a nota.\n\n--- NOTA "${note ? note.name : ''}" ---\n${noteContent || '(nota vazia)'}\n--- FIM DA NOTA ---\n\n${history ? `Conversa até agora:\n${history}\n\n` : ''}Usuário: ${question}\n\nResponda de forma direta e natural, como numa conversa de chat. Não repita a pergunta antes de responder.`;
+
+  try{
+    const reply = (await callGemini(prompt, { maxTokens: 700 })).trim();
+    m.messages.push({ role:'assistant', text: reply });
+  }catch(err){
+    console.error('Falha no chat da nota', err);
+    m.messages.push({ role:'assistant', text: friendlyAiErrorMsg(err), error:true });
+  }
+  m.sending = false;
+  render();
 }
 
 /* ============ RENDER ============ */
@@ -4246,16 +4453,23 @@ function renderNoteEditor(note){
   return `
   <div class="notes-editor-header">
     <h3 style="margin:0;">${escapeHtml(note.name)}</h3>
-    <div class="notes-mode-toggle">
-      <button class="ghost-btn ${mode==='source'?'active-mode':''}" onclick="setNotesEditorMode('source')">Editar</button>
-      <button class="ghost-btn ${mode==='split'?'active-mode':''}" onclick="setNotesEditorMode('split')">Dividido</button>
-      <button class="ghost-btn ${mode==='preview'?'active-mode':''}" onclick="setNotesEditorMode('preview')">Prévia</button>
+    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+      <button class="icon-btn" title="Conversar com a IA sobre esta nota" onclick="openNoteChat()">💬</button>
+      <div class="notes-mode-toggle">
+        <button class="ghost-btn ${mode==='source'?'active-mode':''}" onclick="setNotesEditorMode('source')">Editar</button>
+        <button class="ghost-btn ${mode==='split'?'active-mode':''}" onclick="setNotesEditorMode('split')">Dividido</button>
+        <button class="ghost-btn ${mode==='preview'?'active-mode':''}" onclick="setNotesEditorMode('preview')">Prévia</button>
+      </div>
     </div>
   </div>
   ${mode !== 'preview' ? renderNotesToolbar() : ''}
   <div class="notes-editor-panes ${mode}">
     ${mode !== 'preview' ? `<textarea id="note-editor-textarea" class="notes-textarea" placeholder="Escreva em markdown... use [[Nome da nota]] pra linkar outra nota." oninput="onNoteContentInput('${note.id}', this.value)">${escapeHtml(note.content||'')}</textarea>` : ''}
     ${mode !== 'source' ? `<div class="notes-preview">${renderNoteMarkdown(note.content||'')}</div>` : ''}
+  </div>
+  <div id="note-selection-bar" style="display:none; position:fixed; left:0; right:0; bottom:0; background:var(--surface); border-top:1px solid var(--border); padding:12px 20px; align-items:center; justify-content:center; gap:10px; box-shadow:0 -4px 16px rgba(0,0,0,0.2); z-index:50;">
+    <button class="ghost-btn" id="note-correct-btn" onclick="requestNoteCorrection()">✏️ Corrigir</button>
+    <button class="primary-btn" onclick="requestCardFromNoteSelection()">📌 Criar cartão</button>
   </div>
   `;
 }
@@ -5365,6 +5579,9 @@ function renderModal(){
   if(m.type === 'new-note-item') return renderNewNoteItemModal(m);
   if(m.type === 'rename-note-item') return renderRenameNoteItemModal(m);
   if(m.type === 'insert-note-image') return renderInsertNoteImageModal(m);
+  if(m.type === 'note-passage-card') return renderNotePassageCardModal(m);
+  if(m.type === 'note-correction') return renderNoteCorrectionModal(m);
+  if(m.type === 'note-chat') return renderNoteChatModal(m);
   return `
   <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
     <div class="modal">
@@ -5461,6 +5678,138 @@ function renderInsertNoteImageModal(m){
       <div class="modal-actions">
         <button class="ghost-btn" onclick="closeModal()">Cancelar</button>
         <button class="primary-btn" onclick="confirmInsertNoteImage()">Inserir</button>
+      </div>
+    </div>
+  </div>`;
+}
+function renderNotePassageCardModal(m){
+  if(m.status === 'loading'){
+    return `
+    <div class="modal-overlay">
+      <div class="modal" style="width:420px;">
+        <h3>Gerando cartão…</h3>
+        <p style="font-size:11.5px; color:var(--text-faint);">"${escapeHtml(m.passage.length>200 ? m.passage.slice(0,200)+'…' : m.passage)}"</p>
+        <div class="loading-line"><div class="spinner"></div> A IA está lendo o trecho...</div>
+      </div>
+    </div>`;
+  }
+  if(m.status === 'error'){
+    return `
+    <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
+      <div class="modal" style="width:420px;">
+        <h3>Não deu pra gerar o cartão</h3>
+        <p style="font-size:13px; color:var(--text-muted); line-height:1.5;">${escapeHtml(m.error)}</p>
+        <div class="modal-actions">
+          <button class="ghost-btn" onclick="closeModal()">Fechar</button>
+        </div>
+      </div>
+    </div>`;
+  }
+  const standardDecks = state.decks.filter(d => d.type !== 'language');
+  return `
+  <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
+    <div class="modal" style="width:480px; max-height:86vh; overflow-y:auto;">
+      <h3>Revisar cartão</h3>
+      <p style="font-size:11.5px; color:var(--text-faint); margin:0 0 10px 0;">Trecho: "${escapeHtml(m.passage.length>200 ? m.passage.slice(0,200)+'…' : m.passage)}"</p>
+      <div class="field">
+        <label>PERGUNTA</label>
+        <textarea rows="2" onkeyup="state.modal.card.front=this.value">${escapeHtml(m.card.front)}</textarea>
+      </div>
+      <div class="field" style="margin-top:10px;">
+        <label>RESPOSTA</label>
+        <textarea rows="2" onkeyup="state.modal.card.back=this.value">${escapeHtml(m.card.back)}</textarea>
+      </div>
+      <div class="field" style="margin-top:10px;">
+        <label>NOTA</label>
+        <textarea rows="2" onkeyup="state.modal.card.note=this.value">${escapeHtml(m.card.note)}</textarea>
+      </div>
+      <div class="field" style="margin-top:10px;">
+        <label>ADICIONAR AO BARALHO</label>
+        <select onchange="selectNotePassageCardDeck(this.value)">
+          <option value="" ${!m.deckId?'selected':''}>Escolher baralho...</option>
+          ${standardDecks.map(d=>`<option value="${d.id}" ${m.deckId===d.id?'selected':''}>${escapeHtml(d.name)}</option>`).join('')}
+          <option value="__new__">＋ Novo baralho...</option>
+        </select>
+      </div>
+      ${m.creatingNewDeck ? `
+      <div class="field" style="margin-top:10px;">
+        <label>NOME DO NOVO BARALHO</label>
+        <div style="display:flex; gap:8px;">
+          <input type="text" style="flex:1;" value="${escapeHtml(m.newDeckName)}" onkeyup="state.modal.newDeckName=this.value" placeholder="Ex: nome do caderno">
+          <button type="button" class="ghost-btn" onclick="confirmCreateDeckInlineForNote()">Criar</button>
+        </div>
+      </div>
+      ` : ''}
+      <div class="modal-actions">
+        <button class="ghost-btn" onclick="closeModal()">Cancelar</button>
+        <button class="primary-btn" onclick="confirmNotePassageCard()" ${!m.deckId?'disabled':''}>Adicionar cartão</button>
+      </div>
+    </div>
+  </div>`;
+}
+function renderNoteCorrectionModal(m){
+  if(m.status === 'loading'){
+    return `
+    <div class="modal-overlay">
+      <div class="modal" style="width:480px;">
+        <h3>Corrigindo…</h3>
+        <div class="loading-line"><div class="spinner"></div> A IA está revisando o texto...</div>
+      </div>
+    </div>`;
+  }
+  if(m.status === 'error'){
+    return `
+    <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
+      <div class="modal" style="width:480px;">
+        <h3>Não deu pra corrigir</h3>
+        <p style="font-size:13px; color:var(--text-muted); line-height:1.5;">${escapeHtml(m.error)}</p>
+        <div class="modal-actions">
+          <button class="ghost-btn" onclick="closeModal()">Fechar</button>
+        </div>
+      </div>
+    </div>`;
+  }
+  const noChange = m.original.trim() === m.corrected.trim();
+  const diff = diffWords(m.original, m.corrected);
+  return `
+  <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
+    <div class="modal" style="width:520px; max-height:86vh; overflow-y:auto;">
+      <h3>Revisar correção</h3>
+      ${noChange ? `<p style="font-size:12.5px; color:var(--text-faint); margin:0 0 8px 0;">A IA não encontrou nada pra corrigir nesse trecho.</p>` : ''}
+      <div class="field">
+        <label>ANTES</label>
+        <div style="background:var(--bg-2); border:1px solid var(--border); border-radius:8px; padding:12px 14px; font-size:14px; line-height:1.6; white-space:pre-wrap;">${diff.oldParts.map(p=>p.c?`<span style="background:var(--error-soft); color:var(--error); text-decoration:line-through;">${escapeHtml(p.t)}</span>`:escapeHtml(p.t)).join('')}</div>
+      </div>
+      <div class="field" style="margin-top:10px;">
+        <label>DEPOIS</label>
+        <div style="background:var(--bg-2); border:1px solid var(--border); border-radius:8px; padding:12px 14px; font-size:14px; line-height:1.6; white-space:pre-wrap;">${diff.newParts.map(p=>p.c?`<span style="background:var(--success-soft); color:var(--success); font-weight:600;">${escapeHtml(p.t)}</span>`:escapeHtml(p.t)).join('')}</div>
+      </div>
+      <div class="modal-actions">
+        <button class="ghost-btn" onclick="closeModal()">Descartar</button>
+        <button class="primary-btn" onclick="confirmNoteCorrection()" ${noChange?'disabled':''}>Aceitar correção</button>
+      </div>
+    </div>
+  </div>`;
+}
+function renderNoteChatModal(m){
+  const note = state.notesItems.find(n=>n.id===m.noteId);
+  return `
+  <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
+    <div class="modal" style="width:520px; max-height:80vh; display:flex; flex-direction:column;">
+      <h3>💬 Conversar sobre "${escapeHtml(note ? note.name : '')}"</h3>
+      <div style="flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:10px; padding:6px 2px; min-height:200px; max-height:50vh;">
+        ${m.messages.length === 0 ? `<p style="color:var(--text-faint); font-size:12.5px; text-align:center; margin-top:20px;">Pergunte qualquer coisa — a IA já sabe o que está escrito nessa nota.</p>` : ''}
+        ${m.messages.map(msg => `
+        <div style="align-self:${msg.role==='user'?'flex-end':'flex-start'}; max-width:85%; background:${msg.role==='user'?'var(--accent-soft)':'var(--surface-2)'}; color:${msg.error?'var(--error)':'var(--text)'}; border-radius:12px; padding:9px 13px; font-size:13.5px; line-height:1.5; white-space:pre-wrap;">${escapeHtml(msg.text)}</div>
+        `).join('')}
+        ${m.sending ? `<div class="loading-line" style="align-self:flex-start;"><div class="spinner"></div> Pensando...</div>` : ''}
+      </div>
+      <div style="display:flex; gap:8px; margin-top:8px;">
+        <textarea id="note-chat-input" rows="1" placeholder="Pergunte alguma coisa..." style="flex:1; resize:none;" onkeydown="if(event.key==='Enter' && !event.shiftKey){ event.preventDefault(); sendNoteChatMessage(); }" onkeyup="state.modal.input=this.value">${escapeHtml(m.input)}</textarea>
+        <button class="primary-btn" onclick="sendNoteChatMessage()" ${m.sending?'disabled':''}>Enviar</button>
+      </div>
+      <div class="modal-actions">
+        <button class="ghost-btn" onclick="closeModal()">Fechar</button>
       </div>
     </div>
   </div>`;
