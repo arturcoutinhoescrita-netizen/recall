@@ -3429,16 +3429,17 @@ function handleReaderSelection(){
   const bar = document.getElementById('reader-selection-bar');
   if(!bar) return;
   const sel = window.getSelection();
-  const text = sel ? sel.toString().trim() : '';
+  let text = sel ? sel.toString().trim() : '';
+  // em livros de inglês, um simples toque numa palavra (pra traduzir) às vezes
+  // já conta como "selecionou aquela palavra" no celular — sem esse filtro,
+  // nossa barra entrava na frente do toque e travava a tradução. Só trata como
+  // seleção de trecho de propósito quando dá pra ver mais de uma palavra ali.
+  if(book.isEnglish && text && !text.includes(' ')) text = '';
   if(text){
     state.readerSelection = text;
     const preview = document.getElementById('reader-selection-preview');
     if(preview) preview.textContent = '"' + (text.length > 90 ? text.slice(0,90)+'…' : text) + '"';
     bar.style.display = 'flex';
-    // já guardamos o texto — não precisamos mais da seleção "viva" do navegador,
-    // então limpamos ela na hora. Isso fecha o menu nativo do celular (copiar/
-    // compartilhar) que brigava com a nossa barra de ações aparecendo junto.
-    try{ sel.removeAllRanges(); }catch(e){}
   } else {
     state.readerSelection = null;
     bar.style.display = 'none';
