@@ -342,6 +342,7 @@
   .notes-tree-actions{ display:flex; gap:3px; flex-shrink:0; }
   .notes-editor{ flex:1; min-width:0; min-height:0; display:flex; flex-direction:column; gap:10px; overflow:hidden; }
   .notes-editor-header{ display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; }
+  .note-writing-stats{ font-size:11px; color:var(--text-faint); margin-top:3px; font-variant-numeric:tabular-nums; }
   .notes-mode-toggle{ display:flex; gap:6px; }
   .notes-mode-toggle .ghost-btn{ padding:6px 12px; font-size:12px; }
   .notes-mode-toggle .ghost-btn.active-mode{ color:var(--accent); border-color:var(--accent-dim); background:var(--accent-soft); }
@@ -4025,6 +4026,21 @@ async function duplicateNoteItem(id){
   showToast('Nota duplicada.');
 }
 let notesSaveTimer = null;
+const NOTE_WORDS_PER_PAGE = 500;
+function getNoteWritingStats(content){
+  const text = htmlToText(String(content || ''))
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, name, alias) => alias || name);
+  const wordCount = (text.match(/[\p{L}\p{N}]+(?:['’\-][\p{L}\p{N}]+)*/gu) || []).length;
+  const pages = Math.round((wordCount / NOTE_WORDS_PER_PAGE) * 10) / 10;
+  const pageLabel = pages === 1 ? 'página' : 'páginas';
+  return `${wordCount.toLocaleString('pt-BR')} ${wordCount === 1 ? 'palavra' : 'palavras'} · ≈ ${pages.toLocaleString('pt-BR', { maximumFractionDigits:1 })} ${pageLabel}`;
+}
+function updateNoteWritingStats(content){
+  const el = document.getElementById('note-writing-stats');
+  if(el) el.textContent = getNoteWritingStats(content);
+}
 const noteEditHistory = Object.create(null);
 const NOTE_HISTORY_LIMIT = 100;
 function recordNoteHistory(id, before, after){
@@ -4073,6 +4089,7 @@ function onNoteContentInput(id, value, skipHistory){
   if(!skipHistory) recordNoteHistory(id, previous, value);
   noteContentCache[id] = value;
   item.updatedAt = Date.now();
+  updateNoteWritingStats(value);
   // NÃO chama render() aqui — recriar a textarea inteira a cada tecla perdia
   // a posição de rolagem dela (a tela "pulava" ao digitar linhas mais abaixo,
   // pior ainda no celular) e podia cancelar acentos compostos no meio da
@@ -5778,7 +5795,10 @@ function renderNoteEditor(note){
   return `
   ${backBtn}
   <div class="notes-editor-header">
-    <h3 style="margin:0;">${escapeHtml(note.name)}</h3>
+    <div>
+      <h3 style="margin:0;">${escapeHtml(note.name)}</h3>
+      <div id="note-writing-stats" class="note-writing-stats" title="Estimativa baseada em ${NOTE_WORDS_PER_PAGE} palavras por página">${getNoteWritingStats(content)}</div>
+    </div>
     <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
       <button class="icon-btn" title="Sumário (títulos H1/H2/H3)" onclick="openNoteTocModal()">📑</button>
       ${pendingComments.length ? `<button class="icon-btn" style="width:auto; padding:0 10px; font-size:12px; color:var(--success);" title="Revisar comentários pendentes" onclick="openNoteCommentsPanel()">📝 ${pendingComments.length}</button>` : ''}
