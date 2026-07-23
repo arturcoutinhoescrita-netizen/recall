@@ -996,7 +996,7 @@ function awardPoints(card, correct, exType, grade){
 
 /* ============ DECK / CARD CRUD ============ */
 function createDeck(name, color, type){
-  const d = { id: uid(), name: name.trim(), color: color || DECK_COLORS[state.decks.length % DECK_COLORS.length], type: type || 'standard', aiEnabled: true };
+  const d = { id: uid(), name: name.trim(), color: color || DECK_COLORS[state.decks.length % DECK_COLORS.length], type: type || 'standard', aiEnabled: true, sentenceDifficulty: 'intermediate' };
   state.decks.push(d);
   state.cards[d.id] = [];
   state.currentDeckId = d.id;
@@ -1326,7 +1326,7 @@ async function openFromFileSystem(){
   }
 }
 function replaceAllData(data){
-  state.decks = (data.decks || []).map(d => ({ id: d.id || uid(), name: d.name, color: d.color || DECK_COLORS[0], type: d.type || 'standard', enabledExercises: d.enabledExercises, carryOverLang: d.carryOverLang || [], carryOverByMode: d.carryOverByMode || {} }));
+  state.decks = (data.decks || []).map(d => ({ id: d.id || uid(), name: d.name, color: d.color || DECK_COLORS[0], type: d.type || 'standard', enabledExercises: d.enabledExercises, sentenceDifficulty: d.sentenceDifficulty || 'intermediate', carryOverLang: d.carryOverLang || [], carryOverByMode: d.carryOverByMode || {} }));
   const newCards = {};
   state.decks.forEach(d => {
     const oldCards = (data.cards && data.cards[d.id]) || [];
@@ -1388,7 +1388,7 @@ function importFullBackup(data){
   (data.decks || []).forEach(d => {
     const newId = uid();
     deckIdMap[d.id] = newId;
-    state.decks.push({ id:newId, name: d.name, color: d.color || DECK_COLORS[state.decks.length % DECK_COLORS.length], type: d.type || 'standard', enabledExercises: d.enabledExercises, carryOverLang: d.carryOverLang || [], carryOverByMode: d.carryOverByMode || {} });
+    state.decks.push({ id:newId, name: d.name, color: d.color || DECK_COLORS[state.decks.length % DECK_COLORS.length], type: d.type || 'standard', enabledExercises: d.enabledExercises, sentenceDifficulty: d.sentenceDifficulty || 'intermediate', carryOverLang: d.carryOverLang || [], carryOverByMode: d.carryOverByMode || {} });
     const oldCards = (data.cards && data.cards[d.id]) || [];
     state.cards[newId] = oldCards.map(c => normalizeImportedCard(c));
   });
@@ -1584,9 +1584,16 @@ async function generateFlashcardsFromImage(base64Data, mimeType, count, avoidFro
   })).filter(c => c.front && c.back);
 }
 
-async function generateSentenceForTerm(term){
-  const prompt = `Termo em inglês a treinar: "${term}"\n\nEscreva UMA frase natural em inglês, de nível intermediário, que use claramente o termo "${term}" em contexto. Responda SOMENTE com a frase em inglês, sem aspas e sem nenhum texto adicional.`;
-  const text = (await callGemini(prompt, { maxTokens: 150 })).trim();
+function getSentenceDifficulty(deck){
+  return deck && deck.sentenceDifficulty === 'easy' ? 'easy' : 'intermediate';
+}
+function sentenceDifficultyInstruction(difficulty){
+  if(difficulty === 'easy') return 'A frase deve ser MUITO curta (de 4 a 8 palavras), usar vocabulário cotidiano e estruturas básicas de nível iniciante (A1/A2). Use uma única oração simples, de preferência no presente. Não use palavras avançadas, expressões idiomáticas, orações subordinadas ou pontuação complexa.';
+  return 'Use nível intermediário, com uma frase natural e clara.';
+}
+async function generateSentenceForTerm(term, difficulty){
+  const prompt = `Termo em inglês a treinar: "${term}"\n\nEscreva UMA frase natural em inglês que use claramente o termo "${term}" em contexto. ${sentenceDifficultyInstruction(difficulty)} Responda SOMENTE com a frase em inglês, sem aspas e sem nenhum texto adicional.`;
+  const text = (await callGemini(prompt, { maxTokens: difficulty === 'easy' ? 60 : 150 })).trim();
   return text.replace(/^"|"$/g,'');
 }
 
@@ -1693,10 +1700,10 @@ function generateLocalMCStandard(card, deckCards){
 
 /* ============ GERAÇÃO EM LOTE (pré-carrega frases da sessão pra economizar mensagens) ============ */
 const LANG_BATCH_SIZE = 6; // itens processados por chamada de IA
-async function generateSentencesBatch(terms){
+async function generateSentencesBatch(terms, difficulty){
   const listText = terms.map((t,i)=>`${i}. "${t}"`).join('\n');
-  const prompt = `Você vai receber uma lista numerada de termos em inglês para treinar.\n\n${listText}\n\nPara CADA termo, escreva UMA frase natural em inglês, de nível intermediário, que use claramente o termo em contexto.\n\nResponda SOMENTE com um JSON válido, sem nenhum texto antes ou depois, exatamente neste formato:\n[{"i": 0, "sentence": "frase em inglês"}, ...]\n\nO campo "i" deve corresponder ao número do termo na lista acima (começando em 0).`;
-  const text = (await callGemini(prompt, { maxTokens: 120*terms.length })).trim();
+  const prompt = `Você vai receber uma lista numerada de termos em inglês para treinar.\n\n${listText}\n\nPara CADA termo, escreva UMA frase natural em inglês que use claramente o termo em contexto. ${sentenceDifficultyInstruction(difficulty)}\n\nResponda SOMENTE com um JSON válido, sem nenhum texto antes ou depois, exatamente neste formato:\n[{"i": 0, "sentence": "frase em inglês"}, ...]\n\nO campo "i" deve corresponder ao número do termo na lista acima (começando em 0).`;
+  const text = (await callGemini(prompt, { maxTokens: (difficulty === 'easy' ? 60 : 120)*terms.length })).trim();
   const clean = text.replace(/```json|```/g,"").trim();
   const parsed = JSON.parse(clean);
   if(!Array.isArray(parsed)) throw new Error('formato inesperado');
@@ -1722,7 +1729,7 @@ async function prefetchSessionContent(s){
     const batchIds = writeIds.slice(i, i+LANG_BATCH_SIZE);
     const terms = batchIds.map(id => cardsById[id].front);
     try{
-      const results = await generateSentencesBatch(terms);
+      const results = await generateSentencesBatch(terms, s.sentenceDifficulty);
       results.forEach(r => {
         const cardId = batchIds[r.i];
         if(cardId && r.sentence) s.contentCache[`${cardId}:write`] = { sentence: r.sentence };
@@ -2382,6 +2389,12 @@ function toggleExerciseType(deckId, exType){
   deck.enabledExercises = enabled;
   saveData(); render();
 }
+function setSentenceDifficulty(deckId, difficulty){
+  const deck = state.decks.find(d=>d.id===deckId);
+  if(!deck || !['easy','intermediate'].includes(difficulty)) return;
+  deck.sentenceDifficulty = difficulty;
+  saveData(); render();
+}
 function getEnabledStandardTypes(deck){
   if(deck.enabledStandardTypes && deck.enabledStandardTypes.length) return deck.enabledStandardTypes;
   return [...STANDARD_STUDY_TYPES]; // padrão: todos ativos
@@ -2479,6 +2492,7 @@ function startLanguageSession(deckId){
 
   state.session = {
     deckId, mode: 'lang-mixed',
+    sentenceDifficulty: getSentenceDifficulty(deck),
     queue, index: 0,
     correct: 0, total: queue.length,
     startTime: Date.now(), cardStart: Date.now(),
@@ -2541,7 +2555,7 @@ async function loadContentForCurrent(){
   s.loadingContent = true; s.content = null; render();
   try{
     if(exType === 'write'){
-      s.content = { sentence: await generateSentenceForTerm(card.front) };
+      s.content = { sentence: await generateSentenceForTerm(card.front, s.sentenceDifficulty) };
     }
   }catch(e){
     console.error(e);
@@ -6232,6 +6246,15 @@ function renderStudyPicker(deck){
           </button>
         `).join('')}
       </div>
+      ${enabled.includes('write') ? `
+      <div style="margin-top:14px;">
+        <label style="font-size:11px; letter-spacing:0.06em; color:var(--text-faint); text-transform:uppercase; font-weight:600;">Dificuldade da tradução de frase</label>
+        <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">
+          <button type="button" class="ghost-btn" style="padding:8px 14px; font-size:12.5px; ${getSentenceDifficulty(deck)==='easy' ? 'border-color:var(--accent); color:var(--accent);' : 'opacity:0.6;'}" onclick="setSentenceDifficulty('${deck.id}','easy')">✓ Fácil</button>
+          <button type="button" class="ghost-btn" style="padding:8px 14px; font-size:12.5px; ${getSentenceDifficulty(deck)==='intermediate' ? 'border-color:var(--accent); color:var(--accent);' : 'opacity:0.6;'}" onclick="setSentenceDifficulty('${deck.id}','intermediate')">Intermediário</button>
+        </div>
+        <p style="font-size:11.5px; color:var(--text-faint); margin:7px 0 0 0;">Fácil usa frases curtas, com vocabulário do dia a dia e estruturas básicas.</p>
+      </div>` : ''}
       ${enabled.length === 0 ? `<p style="font-size:11.5px; color:var(--error); margin-top:8px;">Ative pelo menos 1 tipo de exercício pra estudar.</p>` : ''}
       ${usesAI && carryCount > 0 ? `<p style="font-size:11.5px; color:var(--accent); margin-top:8px;">🔁 ${carryCount} exercício(s) pendente(s) da sessão anterior serão priorizados agora.</p>` : ''}
     </div>
