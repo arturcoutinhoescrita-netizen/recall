@@ -331,25 +331,25 @@
   .notes-tree-row.active .notes-tree-label{ color:var(--accent); font-weight:600; }
   .notes-tree-label{ flex:1; font-size:13px; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:flex; align-items:center; gap:6px; }
   .notes-tree-actions{ display:flex; gap:3px; flex-shrink:0; }
-  .notes-editor{ flex:1; min-width:0; display:flex; flex-direction:column; gap:10px; overflow:hidden; }
+  .notes-editor{ flex:1; min-width:0; min-height:0; display:flex; flex-direction:column; gap:10px; overflow:hidden; }
   .notes-editor-header{ display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; }
   .notes-mode-toggle{ display:flex; gap:6px; }
   .notes-mode-toggle .ghost-btn{ padding:6px 12px; font-size:12px; }
   .notes-mode-toggle .ghost-btn.active-mode{ color:var(--accent); border-color:var(--accent-dim); background:var(--accent-soft); }
-  .notes-toolbar{ display:flex; gap:6px; flex-wrap:wrap; background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:6px; }
-  .notes-editor-panes{ flex:1; display:flex; gap:14px; overflow:hidden; }
+  .notes-toolbar{ display:flex; gap:6px; flex-wrap:wrap; background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:6px; flex-shrink:0; }
+  .notes-editor-panes{ flex:1; min-height:0; display:flex; gap:14px; overflow:hidden; }
   .notes-editor-panes.source, .notes-editor-panes.preview{ display:block; overflow-y:auto; }
   .notes-textarea{
-    flex:1; min-width:0; height:100%; resize:none;
+    flex:1; min-width:0; min-height:0; height:100%; resize:none;
     font-family:ui-monospace,'SF Mono','Cascadia Code','Roboto Mono',Consolas,'Courier New',monospace;
     font-size:13.5px; line-height:1.6;
   }
   .notes-editor-panes.source .notes-textarea{ width:100%; height:100%; }
   .notes-preview{
-    flex:1; min-width:0; overflow-y:auto; background:var(--bg-2); border:1px solid var(--border);
+    flex:1; min-width:0; min-height:0; height:100%; overflow-y:auto; background:var(--bg-2); border:1px solid var(--border);
     border-radius:10px; padding:18px 22px; line-height:1.7; font-size:14.5px;
   }
-  .notes-editor-panes.preview .notes-preview{ width:100%; }
+  .notes-editor-panes.preview .notes-preview{ width:100%; height:100%; }
   .notes-preview h1, .notes-preview h2, .notes-preview h3{ margin:0.8em 0 0.4em 0; line-height:1.3; }
   .notes-preview h1:first-child, .notes-preview h2:first-child, .notes-preview h3:first-child{ margin-top:0; }
   .notes-preview p{ margin:0 0 0.8em 0; }
@@ -391,9 +391,8 @@
     #app.step-home .main{ display:none; }
     .mobile-back-btn{ display:inline-flex; }
 
-    .notes-layout{ flex-direction:column; height:auto; }
-    .notes-explorer{ width:100%; max-height:260px; }
-    .notes-editor{ min-height:60vh; }
+    .notes-layout{ flex-direction:column; height:calc(100dvh - 160px); }
+    .notes-explorer{ width:100%; max-height:220px; flex-shrink:0; }
     .notes-editor-panes.split{ flex-direction:column; }
   }
 </style>
@@ -3986,8 +3985,12 @@ document.addEventListener('mouseup', handleNoteSelection);
 document.addEventListener('touchend', handleNoteSelection);
 document.addEventListener('keyup', handleNoteSelection);
 document.addEventListener('select', handleNoteSelection);
-function handleNoteSelection(){
+function handleNoteSelection(e){
   if(state.view !== 'notes' || !state.currentNoteId) return;
+  // clicar nos próprios botões da barra (Corrigir/Criar cartão) dispara um mouseup
+  // fora da textarea/prévia, que sem essa guarda apagaria state.noteSelection um
+  // instante antes do onclick do botão rodar — os botões pareciam não fazer nada.
+  if(e && e.target && e.target.closest && e.target.closest('#note-selection-bar')) return;
   const bar = document.getElementById('note-selection-bar');
   if(!bar) return;
   const correctBtn = document.getElementById('note-correct-btn');
@@ -4180,6 +4183,77 @@ async function sendNoteChatMessage(){
   }
   m.sending = false;
   render();
+}
+/* --- caminho alternativo pro celular: a seleção nativa de texto do sistema
+   toma conta da tela e não dá pra encaixar nossa barra flutuante ali no meio
+   (mesma limitação já conhecida do leitor de epub). Em vez de brigar com o
+   seletor do sistema, o usuário copia o trecho por fora e cola aqui dentro —
+   a IA processa do mesmo jeito. --- */
+function openNotePasteCardModal(){
+  if(!state.currentNoteId) return;
+  state.modal = { type:'note-paste-card', text:'' };
+  render();
+}
+function confirmNotePasteCard(){
+  const m = state.modal;
+  const text = (m.text||'').trim();
+  if(!text){ showToast('Cole o texto primeiro.', 'error'); return; }
+  const note = state.notesItems.find(n=>n.id===state.currentNoteId);
+  if(!note) return;
+  state.modal = { type:'note-passage-card', status:'loading', passage:text, card:{front:'',back:'',note:''}, deckId: note.linkedDeckId || '', noteId: note.id };
+  render();
+  generateCardFromPassage(text).then(card => {
+    if(state.modal && state.modal.type === 'note-passage-card'){
+      state.modal.status = 'review';
+      state.modal.card = card;
+      render();
+    }
+  }).catch(err => {
+    console.error('Falha ao gerar cartão a partir de texto colado', err);
+    if(state.modal && state.modal.type === 'note-passage-card'){
+      state.modal.status = 'error';
+      state.modal.error = friendlyAiErrorMsg(err);
+      render();
+    }
+  });
+}
+function openNotePasteCorrectionModal(){
+  if(!state.currentNoteId) return;
+  state.modal = { type:'note-paste-correction', status:'input', text:'' };
+  render();
+}
+function confirmNotePasteCorrection(){
+  const m = state.modal;
+  if(!m || m.type !== 'note-paste-correction') return;
+  const text = (m.text||'').trim();
+  if(!text){ showToast('Cole o texto primeiro.', 'error'); return; }
+  m.status = 'loading';
+  m.original = text;
+  render();
+  generateTextCorrection(text).then(corrected => {
+    if(state.modal && state.modal.type === 'note-paste-correction'){
+      state.modal.status = 'review';
+      state.modal.corrected = corrected;
+      render();
+    }
+  }).catch(err => {
+    console.error('Falha ao corrigir texto colado', err);
+    if(state.modal && state.modal.type === 'note-paste-correction'){
+      state.modal.status = 'error';
+      state.modal.error = friendlyAiErrorMsg(err);
+      render();
+    }
+  });
+}
+async function copyPasteCorrectionResult(){
+  const m = state.modal;
+  if(!m || m.type !== 'note-paste-correction') return;
+  try{
+    await navigator.clipboard.writeText(m.corrected);
+    showToast('Texto corrigido copiado! Cole na nota onde precisar.');
+  }catch(e){
+    showToast('Não consegui copiar automaticamente. Selecione o texto manualmente.', 'error');
+  }
 }
 
 /* ============ RENDER ============ */
@@ -4491,6 +4565,9 @@ function renderNotesToolbar(){
     <button class="icon-btn" title="Link pra outra nota" onclick="insertWikiLink('${id}')">🔀</button>
     <button class="icon-btn" title="Imagem por link" onclick="openInsertImageModal()">🖼️</button>
     <button class="icon-btn" title="Enviar imagem do aparelho" onclick="openNoteImageUploadPicker()">📤</button>
+    <span style="width:1px; background:var(--border); margin:2px 2px;"></span>
+    <button class="icon-btn" title="Criar cartão colando um texto (útil no celular)" onclick="openNotePasteCardModal()">📌</button>
+    <button class="icon-btn" title="Corrigir um texto colado (útil no celular)" onclick="openNotePasteCorrectionModal()">✏️</button>
   </div>`;
 }
 function renderLibraryView(){
@@ -5582,6 +5659,8 @@ function renderModal(){
   if(m.type === 'note-passage-card') return renderNotePassageCardModal(m);
   if(m.type === 'note-correction') return renderNoteCorrectionModal(m);
   if(m.type === 'note-chat') return renderNoteChatModal(m);
+  if(m.type === 'note-paste-card') return renderNotePasteCardModal(m);
+  if(m.type === 'note-paste-correction') return renderNotePasteCorrectionModal(m);
   return `
   <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
     <div class="modal">
@@ -5810,6 +5889,83 @@ function renderNoteChatModal(m){
       </div>
       <div class="modal-actions">
         <button class="ghost-btn" onclick="closeModal()">Fechar</button>
+      </div>
+    </div>
+  </div>`;
+}
+function renderNotePasteCardModal(m){
+  return `
+  <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
+    <div class="modal" style="width:480px;">
+      <h3>📌 Criar cartão a partir de um texto colado</h3>
+      <p style="font-size:12px; color:var(--text-faint); margin:0 0 6px 0;">Cole abaixo o trecho que você copiou (por exemplo, selecionado no celular) e a IA monta a pergunta e resposta.</p>
+      <div class="field">
+        <textarea rows="6" autofocus placeholder="Cole o texto aqui..." onkeyup="state.modal.text=this.value">${escapeHtml(m.text)}</textarea>
+      </div>
+      <div class="modal-actions">
+        <button class="ghost-btn" onclick="closeModal()">Cancelar</button>
+        <button class="primary-btn" onclick="confirmNotePasteCard()">Gerar cartão</button>
+      </div>
+    </div>
+  </div>`;
+}
+function renderNotePasteCorrectionModal(m){
+  if(m.status === 'loading'){
+    return `
+    <div class="modal-overlay">
+      <div class="modal" style="width:480px;">
+        <h3>Corrigindo…</h3>
+        <div class="loading-line"><div class="spinner"></div> A IA está revisando o texto...</div>
+      </div>
+    </div>`;
+  }
+  if(m.status === 'error'){
+    return `
+    <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
+      <div class="modal" style="width:480px;">
+        <h3>Não deu pra corrigir</h3>
+        <p style="font-size:13px; color:var(--text-muted); line-height:1.5;">${escapeHtml(m.error)}</p>
+        <div class="modal-actions">
+          <button class="ghost-btn" onclick="closeModal()">Fechar</button>
+        </div>
+      </div>
+    </div>`;
+  }
+  if(m.status === 'review'){
+    const noChange = m.original.trim() === m.corrected.trim();
+    const diff = diffWords(m.original, m.corrected);
+    return `
+    <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
+      <div class="modal" style="width:520px; max-height:86vh; overflow-y:auto;">
+        <h3>Revisar correção</h3>
+        ${noChange ? `<p style="font-size:12.5px; color:var(--text-faint); margin:0 0 8px 0;">A IA não encontrou nada pra corrigir nesse trecho.</p>` : ''}
+        <div class="field">
+          <label>ANTES</label>
+          <div style="background:var(--bg-2); border:1px solid var(--border); border-radius:8px; padding:12px 14px; font-size:14px; line-height:1.6; white-space:pre-wrap;">${diff.oldParts.map(p=>p.c?`<span style="background:var(--error-soft); color:var(--error); text-decoration:line-through;">${escapeHtml(p.t)}</span>`:escapeHtml(p.t)).join('')}</div>
+        </div>
+        <div class="field" style="margin-top:10px;">
+          <label>DEPOIS</label>
+          <div style="background:var(--bg-2); border:1px solid var(--border); border-radius:8px; padding:12px 14px; font-size:14px; line-height:1.6; white-space:pre-wrap;">${diff.newParts.map(p=>p.c?`<span style="background:var(--success-soft); color:var(--success); font-weight:600;">${escapeHtml(p.t)}</span>`:escapeHtml(p.t)).join('')}</div>
+        </div>
+        <p style="font-size:11.5px; color:var(--text-faint); margin:8px 0 0 0;">Copie o texto corrigido e cole na nota, no lugar do trecho original.</p>
+        <div class="modal-actions">
+          <button class="ghost-btn" onclick="closeModal()">Fechar</button>
+          <button class="primary-btn" onclick="copyPasteCorrectionResult()">📋 Copiar corrigido</button>
+        </div>
+      </div>
+    </div>`;
+  }
+  return `
+  <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
+    <div class="modal" style="width:480px;">
+      <h3>✏️ Corrigir um texto colado</h3>
+      <p style="font-size:12px; color:var(--text-faint); margin:0 0 6px 0;">Cole abaixo o trecho que você copiou e a IA corrige só ortografia, pontuação e gramática.</p>
+      <div class="field">
+        <textarea rows="6" autofocus placeholder="Cole o texto aqui..." onkeyup="state.modal.text=this.value">${escapeHtml(m.text)}</textarea>
+      </div>
+      <div class="modal-actions">
+        <button class="ghost-btn" onclick="closeModal()">Cancelar</button>
+        <button class="primary-btn" onclick="confirmNotePasteCorrection()">Corrigir</button>
       </div>
     </div>
   </div>`;
