@@ -373,6 +373,12 @@
   .wiki-link{ color:var(--accent); text-decoration:none; border-bottom:1px dotted var(--accent-dim); }
   .wiki-link:hover{ border-bottom-style:solid; }
   .wiki-link-new{ color:var(--text-faint); border-bottom-color:var(--text-faint); }
+  .revisor-mark{ background:var(--success-soft); color:var(--success); border-bottom:2px solid var(--success); padding:0 1px; border-radius:2px; cursor:pointer; font:inherit; }
+  .notes-comments-panel{ display:flex; flex-direction:column; gap:8px; background:var(--surface); border:1px solid var(--success); border-radius:10px; padding:12px 14px; margin-bottom:8px; }
+  .notes-comments-panel-nav{ display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  .notes-comments-panel-versions{ display:flex; flex-direction:column; gap:6px; }
+  .notes-comments-panel-versions div{ font-size:13px; line-height:1.5; padding:8px 10px; border-radius:8px; background:var(--bg-2); border:1px solid var(--border); }
+  .notes-comments-panel-actions{ display:flex; gap:8px; flex-wrap:wrap; }
 
 
   @media (max-width:820px){
@@ -4378,6 +4384,7 @@ function handleNoteSelection(e){
   const bar = document.getElementById('note-selection-bar');
   if(!bar) return;
   const correctBtn = document.getElementById('note-correct-btn');
+  const commentBtn = document.getElementById('note-comment-btn');
   const activeEl = document.activeElement;
   if(activeEl && activeEl.id === 'note-editor-textarea'){
     const start = activeEl.selectionStart, end = activeEl.selectionEnd;
@@ -4387,6 +4394,7 @@ function handleNoteSelection(e){
         state.noteSelection = { text, source:'textarea', start, end };
         bar.style.display = 'flex';
         if(correctBtn) correctBtn.style.display = '';
+        if(commentBtn) commentBtn.style.display = '';
         return;
       }
     }
@@ -4404,6 +4412,7 @@ function handleNoteSelection(e){
       state.noteSelection = { text, source:'richtext', start, end };
       bar.style.display = 'flex';
       if(correctBtn) correctBtn.style.display = '';
+      if(commentBtn) commentBtn.style.display = '';
       return;
     }
     const preview = document.querySelector('.notes-preview');
@@ -4411,6 +4420,7 @@ function handleNoteSelection(e){
       state.noteSelection = { text, source:'preview' };
       bar.style.display = 'flex';
       if(correctBtn) correctBtn.style.display = 'none';
+      if(commentBtn) commentBtn.style.display = 'none';
       return;
     }
   }
@@ -4432,6 +4442,157 @@ function isMacPlatform(){
 function noteShortcutLabel(letter){
   return isMacPlatform() ? `⌘⇧${letter.toUpperCase()}` : `Ctrl+Shift+${letter.toUpperCase()}`;
 }
+/* --- Revisor: testar uma mudança num trecho sem comprometer o texto ainda.
+   Em vez de guardar os comentários numa lista separada (que exigiria recalcular
+   a posição de cada um toda vez que outro trecho do texto muda de tamanho), a
+   marcação fica EMBUTIDA no próprio conteúdo da nota, como uma tag <mark> —
+   o mesmo truque que os wikilinks já usam (preprocessWikiLinks). Assim, um
+   comentário nunca fica "desalinhado": ele é sempre encontrado pelo id, não por
+   posição. Guarda a versão antiga e a nova nos atributos, e mostra uma das duas
+   como conteúdo visível da tag, conforme o usuário for alternando. --- */
+function noteCommentTagRegex(id){
+  return new RegExp(`<mark class="revisor-mark" data-comment-id="${id}" data-original="([^"]*)" data-proposed="([^"]*)" data-showing="(?:proposed|original)">[\\s\\S]*?<\\/mark>`);
+}
+function getNoteComments(note){
+  const content = getNoteContent(note.id);
+  const re = /<mark class="revisor-mark" data-comment-id="([^"]+)" data-original="([^"]*)" data-proposed="([^"]*)" data-showing="(proposed|original)">[\s\S]*?<\/mark>/g;
+  const out = [];
+  let m;
+  while((m = re.exec(content))){
+    out.push({ id:m[1], original: htmlToText(m[2]), proposed: htmlToText(m[3]), showing: m[4] });
+  }
+  return out;
+}
+function openNoteCommentModal(){
+  const sel = state.noteSelection;
+  const note = state.notesItems.find(n=>n.id===state.currentNoteId);
+  if(!sel || !sel.text || (sel.source !== 'textarea' && sel.source !== 'richtext') || !note) return;
+  if(note.format !== 'plain' && /\n/.test(sel.text)){
+    showToast('Por enquanto, selecione um trecho de uma linha só pra comentar.', 'error');
+    return;
+  }
+  hideNoteSelectionBar();
+  state.modal = { type:'note-comment-create', noteId: note.id, source: sel.source, start: sel.start, end: sel.end, original: sel.text, proposed: sel.text };
+  render();
+}
+function confirmCreateNoteComment(){
+  const m = state.modal;
+  if(!m || m.type !== 'note-comment-create') return;
+  const proposed = (m.proposed||'').trim();
+  if(!proposed){ showToast('Escreva o texto novo.', 'error'); return; }
+  const note = state.notesItems.find(n=>n.id===m.noteId);
+  if(!note) return;
+  const id = uid();
+  const originalEsc = escapeHtml(m.original);
+  const proposedEsc = escapeHtml(proposed);
+  const tag = `<mark class="revisor-mark" data-comment-id="${id}" data-original="${originalEsc}" data-proposed="${proposedEsc}" data-showing="proposed">${proposedEsc}</mark>`;
+
+  if(m.source === 'richtext'){
+    const el = document.getElementById('note-editor-plain');
+    const range = el ? textOffsetToRange(el, m.start, m.end) : null;
+    if(!el || !range){ showToast('Não consegui localizar o trecho — tente selecionar de novo.', 'error'); return; }
+    el.focus();
+    const winSel = window.getSelection();
+    winSel.removeAllRanges();
+    winSel.addRange(range);
+    document.execCommand('insertHTML', false, tag);
+    noteContentCache[note.id] = el.innerHTML;
+  } else {
+    const current = getNoteContent(note.id);
+    noteContentCache[note.id] = current.slice(0, m.start) + tag + current.slice(m.end);
+  }
+  note.updatedAt = Date.now();
+  state.modal = null;
+  saveData(); render();
+  saveNoteContentToR2(note.id, noteContentCache[note.id]);
+  showToast('Comentário criado — o trecho novo está destacado em verde.');
+}
+// aplica a troca de tag no conteúdo (string) da nota e salva — usado tanto pra
+// alternar entre versões quanto pra resolver (finalizar/descartar) um comentário.
+function saveNoteContentUpdate(note, updated){
+  noteContentCache[note.id] = updated;
+  note.updatedAt = Date.now();
+  saveData();
+  saveNoteContentToR2(note.id, updated);
+}
+function openNoteCommentsPanel(focusCommentId){
+  const note = state.notesItems.find(n=>n.id===state.currentNoteId);
+  if(!note) return;
+  const comments = getNoteComments(note);
+  if(!comments.length){ showToast('Essa nota não tem comentários pendentes.', 'error'); return; }
+  let index = focusCommentId ? comments.findIndex(c=>c.id===focusCommentId) : 0;
+  if(index < 0) index = 0;
+  state.noteCommentsPanel = { index };
+  render();
+}
+function closeNoteCommentsPanel(){
+  state.noteCommentsPanel = null;
+  render();
+}
+function nextNoteComment(){
+  const note = state.notesItems.find(n=>n.id===state.currentNoteId);
+  const p = state.noteCommentsPanel;
+  if(!note || !p) return;
+  const n = getNoteComments(note).length;
+  if(!n) return;
+  p.index = (p.index+1) % n;
+  render();
+}
+function prevNoteComment(){
+  const note = state.notesItems.find(n=>n.id===state.currentNoteId);
+  const p = state.noteCommentsPanel;
+  if(!note || !p) return;
+  const n = getNoteComments(note).length;
+  if(!n) return;
+  p.index = (p.index-1+n) % n;
+  render();
+}
+function toggleActiveNoteComment(){
+  const note = state.notesItems.find(n=>n.id===state.currentNoteId);
+  const p = state.noteCommentsPanel;
+  if(!note || !p) return;
+  const c = getNoteComments(note)[p.index];
+  if(!c) return;
+  const content = getNoteContent(note.id);
+  const match = content.match(noteCommentTagRegex(c.id));
+  if(!match) return;
+  const [full, originalEsc, proposedEsc] = match;
+  const newShowing = c.showing === 'proposed' ? 'original' : 'proposed';
+  const displayEsc = newShowing === 'proposed' ? proposedEsc : originalEsc;
+  const newTag = `<mark class="revisor-mark" data-comment-id="${c.id}" data-original="${originalEsc}" data-proposed="${proposedEsc}" data-showing="${newShowing}">${displayEsc}</mark>`;
+  const updated = content.slice(0, match.index) + newTag + content.slice(match.index + full.length);
+  saveNoteContentUpdate(note, updated);
+  render();
+}
+// resolve (aplica ou descarta) o comentário ativo: troca a tag inteira pelo
+// texto escolhido puro, sem marcação — o comentário deixa de existir.
+function resolveActiveNoteComment(keepProposed){
+  const note = state.notesItems.find(n=>n.id===state.currentNoteId);
+  const p = state.noteCommentsPanel;
+  if(!note || !p) return;
+  const c = getNoteComments(note)[p.index];
+  if(!c) return;
+  const content = getNoteContent(note.id);
+  const match = content.match(noteCommentTagRegex(c.id));
+  if(!match) return;
+  const [full, originalEsc, proposedEsc] = match;
+  const chosenEsc = keepProposed ? proposedEsc : originalEsc;
+  // nota markdown guarda texto puro (o textarea decodifica sozinho); nota "texto
+  // normal" guarda innerHTML, onde o caractere precisa continuar escapado.
+  const chosen = note.format === 'plain' ? chosenEsc : htmlToText(chosenEsc);
+  const updated = content.slice(0, match.index) + chosen + content.slice(match.index + full.length);
+  saveNoteContentUpdate(note, updated);
+  const remaining = getNoteComments(note);
+  state.noteCommentsPanel = remaining.length ? { index: Math.min(p.index, remaining.length-1) } : null;
+  render();
+  showToast(keepProposed ? 'Mudança aplicada — o comentário foi resolvido.' : 'Comentário descartado — o texto voltou ao original.');
+}
+document.addEventListener('click', (e) => {
+  const mark = e.target.closest && e.target.closest('.revisor-mark');
+  if(!mark || !mark.dataset.commentId) return;
+  e.preventDefault();
+  openNoteCommentsPanel(mark.dataset.commentId);
+});
 function requestCardFromNoteSelection(){
   const sel = state.noteSelection;
   const note = state.notesItems.find(n=>n.id===state.currentNoteId);
@@ -5413,6 +5574,35 @@ function renderNoteFindBar(fr){
   ` : ''}
   `;
 }
+function renderNoteCommentsPanel(note){
+  const p = state.noteCommentsPanel;
+  if(!p) return '';
+  const comments = getNoteComments(note);
+  const c = comments[p.index];
+  if(!c) return '';
+  return `
+  <div class="notes-comments-panel">
+    <div class="notes-comments-panel-nav">
+      <span style="font-size:12px; color:var(--text-faint);">📝 Comentário ${p.index+1} de ${comments.length}</span>
+      <div style="display:flex; gap:6px;">
+        <button class="icon-btn" style="width:26px;height:26px;font-size:12px;" title="Anterior" onclick="prevNoteComment()">‹</button>
+        <button class="icon-btn" style="width:26px;height:26px;font-size:12px;" title="Próximo" onclick="nextNoteComment()">›</button>
+        <button class="icon-btn" style="width:26px;height:26px;font-size:12px;" title="Fechar" onclick="closeNoteCommentsPanel()">✕</button>
+      </div>
+    </div>
+    <div class="notes-comments-panel-versions">
+      <div style="${c.showing==='original'?'border-color:var(--success); font-weight:600;':'opacity:0.6;'}">ANTIGA: ${escapeHtml(c.original)}</div>
+      <div style="${c.showing==='proposed'?'border-color:var(--success); font-weight:600;':'opacity:0.6;'}">NOVA: ${escapeHtml(c.proposed)}</div>
+    </div>
+    <p style="font-size:11.5px; color:var(--text-faint); margin:0;">Mostrando agora na nota: <strong>${c.showing==='proposed'?'a versão nova':'a versão antiga'}</strong>.</p>
+    <div class="notes-comments-panel-actions">
+      <button class="ghost-btn" style="font-size:12px; padding:6px 10px;" onclick="toggleActiveNoteComment()">🔁 Alternar versão</button>
+      <button class="ghost-btn" style="font-size:12px; padding:6px 10px;" onclick="resolveActiveNoteComment(false)">🗑️ Descartar (mantém a antiga)</button>
+      <button class="primary-btn" style="font-size:12px; padding:6px 10px;" onclick="resolveActiveNoteComment(${c.showing==='proposed'?'true':'false'})">✅ Finalizar mudança (mantém a ${c.showing==='proposed'?'nova':'antiga'})</button>
+    </div>
+  </div>
+  `;
+}
 function renderNoteEditor(note){
   const backBtn = `<button class="ghost-btn mobile-back-btn" onclick="closeCurrentNote()">← Notas</button>`;
   if(noteContentError[note.id]){
@@ -5429,11 +5619,13 @@ function renderNoteEditor(note){
   const content = getNoteContent(note.id);
   const isPlain = note.format === 'plain';
   const mode = isPlain ? null : (state.notesEditorMode || 'split');
+  const pendingComments = getNoteComments(note);
   return `
   ${backBtn}
   <div class="notes-editor-header">
     <h3 style="margin:0;">${escapeHtml(note.name)}</h3>
     <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+      ${pendingComments.length ? `<button class="icon-btn" style="width:auto; padding:0 10px; font-size:12px; color:var(--success);" title="Revisar comentários pendentes" onclick="openNoteCommentsPanel()">📝 ${pendingComments.length}</button>` : ''}
       <button class="icon-btn" title="Buscar e substituir nesta nota" onclick="openNoteFind()">🔍</button>
       <button class="icon-btn" title="Conversar com a IA sobre esta nota" onclick="openNoteChat()">💬</button>
       ${!isPlain ? `
@@ -5445,6 +5637,7 @@ function renderNoteEditor(note){
       ` : ''}
     </div>
   </div>
+  ${renderNoteCommentsPanel(note)}
   ${state.noteFindReplace && state.noteFindReplace.active ? renderNoteFindBar(state.noteFindReplace) : ''}
   ${(isPlain || mode !== 'preview') ? renderNotesToolbar(note.format) : ''}
   ${isPlain ? `
@@ -5460,6 +5653,7 @@ function renderNoteEditor(note){
   <div id="note-selection-bar" style="display:none; position:fixed; left:0; right:0; bottom:0; background:var(--surface); border-top:1px solid var(--border); padding:12px 20px; align-items:center; justify-content:center; gap:10px; box-shadow:0 -4px 16px rgba(0,0,0,0.2); z-index:50; flex-wrap:wrap;">
     <button class="ghost-btn" id="note-correct-btn" title="Atalho: ${noteShortcutLabel('g')}" onclick="requestNoteCorrection()">✏️ Corrigir</button>
     <button class="ghost-btn" title="Atalho: ${noteShortcutLabel('v')}" onclick="requestNoteOpinion()">💭 Opinião da IA</button>
+    <button class="ghost-btn" id="note-comment-btn" onclick="openNoteCommentModal()">📝 Comentário</button>
     <button class="primary-btn" title="Atalho: ${noteShortcutLabel('f')}" onclick="requestCardFromNoteSelection()">📌 Criar cartão</button>
   </div>
   `;
@@ -6600,6 +6794,7 @@ function renderModal(){
   if(m.type === 'insert-note-image') return renderInsertNoteImageModal(m);
   if(m.type === 'note-passage-card') return renderNotePassageCardModal(m);
   if(m.type === 'note-correction') return renderNoteCorrectionModal(m);
+  if(m.type === 'note-comment-create') return renderNoteCommentCreateModal(m);
   if(m.type === 'note-chat') return renderNoteChatModal(m);
   if(m.type === 'note-paste-card') return renderNotePasteCardModal(m);
   if(m.type === 'note-paste-correction') return renderNotePasteCorrectionModal(m);
@@ -6821,6 +7016,27 @@ function renderNoteCorrectionModal(m){
       <div class="modal-actions">
         <button class="ghost-btn" onclick="closeModal()">Descartar</button>
         <button class="primary-btn" onclick="confirmNoteCorrection()" ${noChange?'disabled':''}>Aceitar correção</button>
+      </div>
+    </div>
+  </div>`;
+}
+function renderNoteCommentCreateModal(m){
+  return `
+  <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
+    <div class="modal" style="width:480px;">
+      <h3>📝 Comentário — testar uma mudança</h3>
+      <div class="field">
+        <label>TRECHO ORIGINAL</label>
+        <div style="background:var(--bg-2); border:1px solid var(--border); border-radius:8px; padding:10px 12px; font-size:13.5px; line-height:1.5; white-space:pre-wrap;">${escapeHtml(m.original)}</div>
+      </div>
+      <div class="field" style="margin-top:10px;">
+        <label>TEXTO NOVO (provisório — não altera a nota ainda)</label>
+        <textarea rows="3" autofocus onkeyup="state.modal.proposed=this.value">${escapeHtml(m.proposed)}</textarea>
+      </div>
+      <p style="font-size:11.5px; color:var(--text-faint); margin:8px 0 0 0;">O trecho fica destacado em verde na nota. Você decide depois, no menu de comentários, se aplica ou descarta.</p>
+      <div class="modal-actions">
+        <button class="ghost-btn" onclick="closeModal()">Cancelar</button>
+        <button class="primary-btn" onclick="confirmCreateNoteComment()">Criar comentário</button>
       </div>
     </div>
   </div>`;
