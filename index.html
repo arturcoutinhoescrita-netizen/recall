@@ -4317,6 +4317,16 @@ function replaceRichTextRange(container, start, end, replacement){
   range.insertNode(fragment);
   return true;
 }
+// Versão para o marcador de comentário. O HTML é produzido só pelo próprio
+// app, com o conteúdo do usuário escapado antes de chegar aqui.
+function replaceRichHtmlRange(container, start, end, html){
+  const range = textOffsetToRange(container, start, end);
+  if(!range) return false;
+  const fragment = range.createContextualFragment(html);
+  range.deleteContents();
+  range.insertNode(fragment);
+  return true;
+}
 // o inverso de textOffsetToRange: acha o índice de caractere (relativo ao
 // .textContent do container) que corresponde a um nó+offset do DOM. Usado
 // pra guardar a seleção como números (que sobrevivem a um render()) em vez
@@ -4529,13 +4539,10 @@ function confirmCreateNoteComment(){
 
   if(m.source === 'richtext'){
     const el = document.getElementById('note-editor-plain');
-    const range = el ? textOffsetToRange(el, m.start, m.end) : null;
-    if(!el || !range){ showToast('Não consegui localizar o trecho — tente selecionar de novo.', 'error'); return; }
-    el.focus();
-    const winSel = window.getSelection();
-    winSel.removeAllRanges();
-    winSel.addRange(range);
-    document.execCommand('insertHTML', false, tag);
+    if(!el || !replaceRichHtmlRange(el, m.start, m.end, tag)){
+      showToast('Não consegui localizar o trecho — tente selecionar de novo.', 'error');
+      return;
+    }
     noteContentCache[note.id] = el.innerHTML;
   } else {
     const current = getNoteContent(note.id);
@@ -5732,10 +5739,10 @@ function renderNoteEditor(note){
   </div>
   `}
   <div id="note-selection-bar" style="display:none; position:fixed; left:0; right:0; bottom:0; background:var(--surface); border-top:1px solid var(--border); padding:12px 20px; align-items:center; justify-content:center; gap:10px; box-shadow:0 -4px 16px rgba(0,0,0,0.2); z-index:50; flex-wrap:wrap;">
-    <button class="ghost-btn" id="note-correct-btn" title="Atalho: ${noteShortcutLabel('g')}" onclick="requestNoteCorrection()">✏️ Corrigir</button>
-    <button class="ghost-btn" title="Atalho: ${noteShortcutLabel('v')}" onclick="requestNoteOpinion()">💭 Opinião da IA</button>
-    <button class="ghost-btn" id="note-comment-btn" onclick="openNoteCommentModal()">📝 Comentário</button>
-    <button class="primary-btn" title="Atalho: ${noteShortcutLabel('f')}" onclick="requestCardFromNoteSelection()">📌 Criar cartão</button>
+    <button class="ghost-btn" id="note-correct-btn" onmousedown="event.preventDefault()" title="Atalho: ${noteShortcutLabel('g')}" onclick="requestNoteCorrection()">✏️ Corrigir</button>
+    <button class="ghost-btn" onmousedown="event.preventDefault()" title="Atalho: ${noteShortcutLabel('v')}" onclick="requestNoteOpinion()">💭 Opinião da IA</button>
+    <button class="ghost-btn" id="note-comment-btn" onmousedown="event.preventDefault()" onclick="openNoteCommentModal()">📝 Comentário</button>
+    <button class="primary-btn" onmousedown="event.preventDefault()" title="Atalho: ${noteShortcutLabel('f')}" onclick="requestCardFromNoteSelection()">📌 Criar cartão</button>
   </div>
   `;
 }
