@@ -1858,9 +1858,11 @@ function normalizeBookEpub(epub){
   if(!epub) return null;
   return {
     ...epub,
+    currentPageIndex: epub.currentPageIndex || 0,
+    pagesInCurrentChapter: epub.pagesInCurrentChapter || 1,
     toc: Array.isArray(epub.toc) ? epub.toc : [],
     chapterTitles: Array.isArray(epub.chapterTitles) ? epub.chapterTitles : [],
-    bookmarks: Array.isArray(epub.bookmarks) ? epub.bookmarks : [],
+    bookmarks: Array.isArray(epub.bookmarks) ? epub.bookmarks.map(bm => ({ ...bm, pageIndex: bm.pageIndex || 0 })) : [],
     highlights: Array.isArray(epub.highlights) ? epub.highlights : []
   };
 }
@@ -2850,7 +2852,6 @@ function endSessionEarly(){
 // serializáveis e não fazem sentido sincronizar; só os metadados leves (book.epub)
 // e as citações/cartões criados a partir da leitura sincronizam normalmente.
 let epubRuntime = {}; // bookId -> { zip, chapterPaths, paragraphsCache: {index: [parágrafos]} }
-let epubScrollSaveTimer = null;
 
 async function parseEpubFile(blob){
   const zip = await JSZip.loadAsync(blob);
@@ -3008,10 +3009,43 @@ async function loadEpubChapterParagraphs(bookId, index){
   runtime.paragraphsCache[index] = paragraphs;
   return paragraphs;
 }
+// divide os parágrafos de um capítulo em "páginas" de tamanho parecido (por
+// contagem de palavras) — é o que abandona a rolagem infinita: cada página
+// vira um bloco curto, e o Anterior/Próximo passa por elas uma de cada vez.
+// Nunca quebra um parágrafo ao meio, então uma página pode ficar um pouco
+// maior que o alvo se um único parágrafo já for longo.
+const EPUB_WORDS_PER_PAGE = 220;
+function chunkParagraphsIntoPages(paragraphs){
+  if(paragraphs.length === 0) return [{ start:0, end:0 }];
+  const pages = [];
+  let start = 0, count = 0;
+  for(let i=0;i<paragraphs.length;i++){
+    const words = (paragraphs[i].match(/\S+/g)||[]).length;
+    if(count > 0 && count + words > EPUB_WORDS_PER_PAGE){
+      pages.push({ start, end:i });
+      start = i; count = 0;
+    }
+    count += words;
+  }
+  pages.push({ start, end:paragraphs.length });
+  return pages;
+}
+// só calcula (e guarda em cache) depois que os parágrafos do capítulo já
+// foram carregados — devolve null se ainda não deu tempo.
+function getEpubPages(bookId, chapterIndex){
+  const runtime = epubRuntime[bookId];
+  const paragraphs = runtime && runtime.paragraphsCache[chapterIndex];
+  if(!paragraphs) return null;
+  runtime.pagesCache = runtime.pagesCache || {};
+  if(!runtime.pagesCache[chapterIndex]) runtime.pagesCache[chapterIndex] = chunkParagraphsIntoPages(paragraphs);
+  return runtime.pagesCache[chapterIndex];
+}
 function getEpubReadPercent(book){
   if(!book || !book.epub || !book.epub.chapterCount) return 0;
   const idx = book.epub.currentChapterIndex || 0;
-  const frac = book.epub.scrollFraction || 0;
+  const pageIdx = book.epub.currentPageIndex || 0;
+  const pagesInChapter = book.epub.pagesInCurrentChapter || 1;
+  const frac = pagesInChapter > 0 ? Math.min(1, pageIdx / pagesInChapter) : 0;
   return Math.max(0, Math.min(100, Math.round(((idx + frac) / book.epub.chapterCount) * 100)));
 }
 function openEpubUploadPicker(bookId){
@@ -3031,7 +3065,7 @@ function openEpubUploadPicker(bookId){
       epubRuntime[bookId] = { zip: parsed.zip, chapterPaths: parsed.chapterPaths, paragraphsCache: {} };
       book.epub = {
         title: parsed.title, author: parsed.author, fileName: file.name,
-        chapterCount: parsed.chapterPaths.length, currentChapterIndex: 0, scrollFraction: 0, uploadedAt: Date.now(),
+        chapterCount: parsed.chapterPaths.length, currentChapterIndex: 0, currentPageIndex: 0, pagesInCurrentChapter: 1, uploadedAt: Date.now(),
         toc: parsed.toc, chapterTitles: parsed.chapterTitles, bookmarks: [], highlights: []
       };
       if(!book.coverUrl && parsed.coverUrl) book.coverUrl = parsed.coverUrl;
@@ -3070,7 +3104,7 @@ function openEpubUploadForNewBook(){
       book.coverUrl = parsed.coverUrl || '';
       book.epub = {
         title: parsed.title, author: parsed.author, fileName: file.name,
-        chapterCount: parsed.chapterPaths.length, currentChapterIndex: 0, scrollFraction: 0, uploadedAt: Date.now(),
+        chapterCount: parsed.chapterPaths.length, currentChapterIndex: 0, currentPageIndex: 0, pagesInCurrentChapter: 1, uploadedAt: Date.now(),
         toc: parsed.toc, chapterTitles: parsed.chapterTitles, bookmarks: [], highlights: []
       };
       book.totalPages = await estimateEpubPageCount(parsed.zip, parsed.chapterPaths);
@@ -3111,30 +3145,78 @@ function epubErrorMessage(err){
   if(err && err.message === 'epub_upload_error') return 'Não consegui salvar esse arquivo agora. Tente de novo.';
   return 'Não consegui abrir esse arquivo. Confira se é um .epub válido, sem proteção DRM.';
 }
+// pula pro início de um capítulo (página 0) — usado pelo sumário, marcadores e
+// pelos próprios Anterior/Próximo quando cruzam a fronteira de um capítulo.
 function goToEpubChapter(bookId, index){
   const book = state.books.find(b=>b.id===bookId);
   if(!book || !book.epub) return;
   const clamped = Math.max(0, Math.min(book.epub.chapterCount-1, index));
   book.epub.currentChapterIndex = clamped;
-  book.epub.scrollFraction = 0;
+  book.epub.currentPageIndex = 0;
   saveData(); render();
-  requestAnimationFrame(() => { const m = document.querySelector('.main'); if(m) m.scrollTop = 0; });
+  scrollEpubMainToTop();
 }
 function jumpToEpubTocEntry(bookId, chapterIndex){
   closeModal();
   goToEpubChapter(bookId, chapterIndex);
 }
+function scrollEpubMainToTop(){
+  requestAnimationFrame(() => { const m = document.querySelector('.main'); if(m) m.scrollTop = 0; });
+}
+// avança/volta uma "página" (bloco de parágrafos) por vez, sem rolagem contínua.
+// Quando chega no fim/início do capítulo carregado, pula pro capítulo vizinho —
+// se esse capítulo ainda não foi carregado, marca uma "página pendente" que o
+// renderEpubReaderView resolve assim que os parágrafos chegarem.
+function nextEpubPage(bookId){
+  const book = state.books.find(b=>b.id===bookId);
+  if(!book || !book.epub) return;
+  const idx = book.epub.currentChapterIndex;
+  const pages = getEpubPages(bookId, idx);
+  const pageIdx = book.epub.currentPageIndex || 0;
+  if(pages && pageIdx < pages.length-1){
+    book.epub.currentPageIndex = pageIdx + 1;
+    book.epub.pagesInCurrentChapter = pages.length;
+    saveData(); render();
+    scrollEpubMainToTop();
+    return;
+  }
+  if(idx < book.epub.chapterCount-1){
+    book.epub.currentChapterIndex = idx + 1;
+    book.epub.currentPageIndex = 0;
+    saveData(); render();
+    scrollEpubMainToTop();
+  }
+}
+function prevEpubPage(bookId){
+  const book = state.books.find(b=>b.id===bookId);
+  if(!book || !book.epub) return;
+  const idx = book.epub.currentChapterIndex;
+  const pageIdx = book.epub.currentPageIndex || 0;
+  if(pageIdx > 0){
+    book.epub.currentPageIndex = pageIdx - 1;
+    saveData(); render();
+    scrollEpubMainToTop();
+    return;
+  }
+  if(idx > 0){
+    book.epub.currentChapterIndex = idx - 1;
+    state._epubPendingPageJump = 'last'; // resolvido no render() quando o capítulo anterior carregar
+    render();
+  }
+}
 function addEpubBookmark(bookId){
   const book = state.books.find(b=>b.id===bookId);
   if(!book || !book.epub) return;
   const idx = book.epub.currentChapterIndex;
-  const runtime = epubRuntime[bookId];
-  const paragraphs = runtime && runtime.paragraphsCache[idx];
-  const excerpt = paragraphs && paragraphs.length ? paragraphs[0].slice(0, 80) : '';
+  const pageIdx = book.epub.currentPageIndex || 0;
+  const paragraphs = epubRuntime[bookId] && epubRuntime[bookId].paragraphsCache[idx];
+  const pages = getEpubPages(bookId, idx);
+  const pageStart = paragraphs && pages && pages[pageIdx] ? paragraphs[pages[pageIdx].start] : null;
+  const excerpt = pageStart ? pageStart.slice(0, 80) : '';
   const label = (book.epub.chapterTitles && book.epub.chapterTitles[idx]) || `Capítulo ${idx+1}`;
   book.epub.bookmarks = book.epub.bookmarks || [];
   book.epub.bookmarks.push({
-    id: uid(), chapterIndex: idx, scrollFraction: book.epub.scrollFraction || 0,
+    id: uid(), chapterIndex: idx, pageIndex: pageIdx,
     label, excerpt, createdAt: Date.now()
   });
   saveData(); render();
@@ -3151,10 +3233,10 @@ function goToEpubBookmark(bookId, bookmarkId){
   const bm = book && book.epub && (book.epub.bookmarks||[]).find(b=>b.id===bookmarkId);
   if(!book || !bm) return;
   book.epub.currentChapterIndex = bm.chapterIndex;
-  book.epub.scrollFraction = bm.scrollFraction;
-  state._epubRestorePending = true;
+  book.epub.currentPageIndex = bm.pageIndex || 0;
   closeModal();
   saveData(); render();
+  scrollEpubMainToTop();
 }
 function removeEpubHighlight(bookId, highlightId){
   const book = state.books.find(b=>b.id===bookId);
@@ -3182,42 +3264,16 @@ function openEpubReader(bookId){
   if(!book) return;
   state.currentBookId = bookId;
   state.view = 'epub-reader';
-  state._epubRestorePending = true;
+  state._epubPendingPageJump = null;
   playBookOpen();
   render();
 }
 function closeEpubReader(){
-  saveEpubScrollPosition();
+  state._epubPendingPageJump = null;
   state.view = 'library';
   state.currentBookId = null;
   render();
 }
-function restoreEpubScrollPosition(){
-  const book = state.books.find(b=>b.id===state.currentBookId);
-  const m = document.querySelector('.main');
-  if(!book || !book.epub || !m) return;
-  const frac = book.epub.scrollFraction || 0;
-  m.scrollTop = frac * Math.max(0, m.scrollHeight - m.clientHeight);
-}
-function onEpubReaderScroll(){
-  if(epubScrollSaveTimer) clearTimeout(epubScrollSaveTimer);
-  epubScrollSaveTimer = setTimeout(saveEpubScrollPosition, 500);
-}
-function saveEpubScrollPosition(){
-  if(state.view !== 'epub-reader') return;
-  const book = state.books.find(b=>b.id===state.currentBookId);
-  const m = document.querySelector('.main');
-  if(!book || !book.epub || !m) return;
-  const maxScroll = m.scrollHeight - m.clientHeight;
-  book.epub.scrollFraction = maxScroll > 0 ? Math.max(0, Math.min(1, m.scrollTop / maxScroll)) : 0;
-  saveData();
-}
-// escuta o scroll de ".main" via captura no document — necessário porque o innerHTML
-// de #app (incluindo .main) é recriado a cada render(), o que perderia um listener
-// preso diretamente ao elemento antigo. "scroll" não borbulha, então usamos capture:true.
-document.addEventListener('scroll', (e) => {
-  if(e.target && e.target.classList && e.target.classList.contains('main')) onEpubReaderScroll();
-}, true);
 
 /* transforma o texto de um parágrafo em HTML com cada palavra clicável, agrupada
    por frase (guardada num atributo data-sentence) pra dar contexto à tradução —
@@ -3376,7 +3432,7 @@ function renderEpubReaderView(){
     state.view = 'book';
     return '';
   }
-  const gearBtn = `<button class="icon-btn" title="Editar propriedades do livro" onclick="saveEpubScrollPosition(); state.view='book'; render();">⚙️</button>`;
+  const gearBtn = `<button class="icon-btn" title="Editar propriedades do livro" onclick="state.view='book'; render();">⚙️</button>`;
   if(book.epubStatus === 'downloading' || !epubRuntime[book.id]){
     if(!epubRuntime[book.id] && book.epubStatus !== 'downloading') ensureEpubLoaded(book.id);
     return `
@@ -3394,37 +3450,51 @@ function renderEpubReaderView(){
     <button class="ghost-btn mobile-back-btn" onclick="closeEpubReader()">← Leituras</button>
     <div class="loading-line" style="justify-content:center; padding:60px;"><div class="spinner"></div> Carregando capítulo...</div>`;
   }
-  if(state._epubRestorePending){
-    state._epubRestorePending = false;
-    requestAnimationFrame(restoreEpubScrollPosition);
-  }
   const paragraphs = runtime.paragraphsCache[idx];
+  const pages = getEpubPages(book.id, idx);
+  // "Anterior" cruzando pra um capítulo ainda não carregado: assim que os
+  // parágrafos chegam (guarda acima), resolve aqui indo pra última página dele.
+  if(state._epubPendingPageJump === 'last'){
+    state._epubPendingPageJump = null;
+    book.epub.currentPageIndex = pages.length - 1;
+    book.epub.pagesInCurrentChapter = pages.length;
+    saveData();
+  }
+  book.epub.pagesInCurrentChapter = pages.length;
+  const pageIdx = Math.min(book.epub.currentPageIndex || 0, pages.length - 1);
+  const page = pages[pageIdx];
+  const pageParagraphs = paragraphs.slice(page.start, page.end);
+  const isFirstPageOfChapter = pageIdx === 0;
+  const atFirstPage = idx === 0 && pageIdx === 0;
+  const atLastPage = idx >= book.epub.chapterCount-1 && pageIdx >= pages.length-1;
   const chapterTitle = (book.epub.chapterTitles && book.epub.chapterTitles[idx]) || `Capítulo ${idx+1}`;
   const totalPages = book.totalPages || 0;
   const currentPage = totalPages ? Math.max(1, Math.round((getEpubReadPercent(book)/100) * totalPages)) : 0;
   const highlights = (book.epub.highlights || []).filter(h => h.chapterIndex === idx);
   return `
-  <div style="position:sticky; top:0; z-index:20; background:var(--bg); display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; padding:calc(10px + env(safe-area-inset-top, 0px)) 0 10px 0; gap:10px; border-bottom:1px solid var(--border);">
-    <button class="ghost-btn" onclick="closeEpubReader()">← Leituras</button>
-    <div style="display:flex; align-items:center; gap:6px;">
-      <button class="icon-btn" title="Sumário" onclick="state.modal={type:'epub-toc', bookId:'${book.id}'}; render();">📑</button>
-      <button class="icon-btn" title="Marcadores e destaques" onclick="state.modal={type:'epub-nav', bookId:'${book.id}'}; render();">🔖</button>
-      ${gearBtn}
+  <div style="position:sticky; top:0; z-index:20; background:var(--bg); padding:calc(10px + env(safe-area-inset-top, 0px)) 0 8px 0; border-bottom:1px solid var(--border);">
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:8px;">
+      <button class="ghost-btn" onclick="closeEpubReader()">← Leituras</button>
+      <div style="display:flex; align-items:center; gap:6px;">
+        <button class="icon-btn" title="Sumário" onclick="state.modal={type:'epub-toc', bookId:'${book.id}'}; render();">📑</button>
+        <button class="icon-btn" title="Marcadores e destaques" onclick="state.modal={type:'epub-nav', bookId:'${book.id}'}; render();">🔖</button>
+        ${gearBtn}
+      </div>
+    </div>
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+      <button class="ghost-btn" ${atFirstPage?'disabled':''} onclick="prevEpubPage('${book.id}')">← Anterior</button>
+      <span style="font-size:12px; color:var(--text-muted); text-align:center;">Cap. ${idx+1}/${book.epub.chapterCount} · pág. ${pageIdx+1}/${pages.length}${currentPage ? ` · ~${currentPage} de ${totalPages}` : ''}</span>
+      <button class="ghost-btn" ${atLastPage?'disabled':''} onclick="nextEpubPage('${book.id}')">Próximo →</button>
     </div>
   </div>
-  <div style="margin-bottom:14px; text-align:center;">
+  <div style="margin:14px 0; text-align:center;">
     <h3 style="margin:0;">${escapeHtml(book.epub.title)}</h3>
     ${book.epub.author ? `<p style="color:var(--text-muted); font-size:12.5px; margin:2px 0 0 0;">${escapeHtml(book.epub.author)}</p>` : ''}
   </div>
-  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-    <button class="ghost-btn" ${idx===0?'disabled':''} onclick="goToEpubChapter('${book.id}', ${idx-1})">← Anterior</button>
-    <span style="font-size:12.5px; color:var(--text-muted); text-align:center;">Capítulo ${idx+1} de ${book.epub.chapterCount} · ${getEpubReadPercent(book)}% lido${currentPage ? ` · página ~${currentPage} de ${totalPages}` : ''}</span>
-    <button class="ghost-btn" ${idx>=book.epub.chapterCount-1?'disabled':''} onclick="goToEpubChapter('${book.id}', ${idx+1})">Próximo →</button>
-  </div>
   <p style="font-size:11px; color:var(--text-faint); text-align:center; margin:0 0 14px 0;">${book.isEnglish ? '💡 Toque numa palavra pra ver a tradução · selecione um trecho pra destacar' : '💡 Selecione um trecho pra guardar como citação, pedir um cartão ou destacar'}</p>
   <div class="epub-page" style="max-width:640px; margin:0 auto; line-height:1.9; font-size:15.5px;">
-    <h2 style="text-align:center; font-size:23px; margin:6px 0 26px 0;">${escapeHtml(chapterTitle)}</h2>
-    ${paragraphs.length===0 ? `<p style="color:var(--text-faint);">(Capítulo sem texto legível)</p>` : paragraphs.map((p,pIdx) => `<p>${renderEpubParagraphHtml(p, pIdx, book, book.linkedDeckId||'', highlights)}</p>`).join('')}
+    ${isFirstPageOfChapter ? `<h2 style="text-align:center; font-size:23px; margin:6px 0 26px 0;">${escapeHtml(chapterTitle)}</h2>` : ''}
+    ${pageParagraphs.length===0 ? `<p style="color:var(--text-faint);">(Capítulo sem texto legível)</p>` : pageParagraphs.map((p,i) => `<p>${renderEpubParagraphHtml(p, page.start+i, book, book.linkedDeckId||'', highlights)}</p>`).join('')}
   </div>
   <div id="reader-selection-bar" style="display:none; position:fixed; left:0; right:0; bottom:0; background:var(--surface); border-top:1px solid var(--border); padding:12px 20px; align-items:center; justify-content:center; gap:10px; flex-wrap:wrap; box-shadow:0 -4px 16px rgba(0,0,0,0.2); z-index:50;">
     ${!book.isEnglish ? `
@@ -3457,6 +3527,7 @@ function fmtDue(due){
   return `em ${days}d`;
 }
 
+let __lastRenderKey = null;
 function render(){
   // guarda foco e posição do cursor ANTES de recriar a tela, pra restaurar depois —
   // evita que re-renders disparados por outra coisa (ex: o toast sumindo sozinho)
@@ -3467,6 +3538,15 @@ function render(){
     savedId = active.id;
     try{ savedStart = active.selectionStart; savedEnd = active.selectionEnd; }catch(e){}
   }
+  // idem pra rolagem: render() recria .main do zero a cada chamada, então sem isso
+  // qualquer clique (marcar status, adicionar tag, favoritar...) jogava a tela de
+  // volta pro topo. Só restaura se a "tela" continua sendo a mesma (mesma view,
+  // mesmo livro/baralho/aba) — trocar de tela deve mesmo começar do topo.
+  const prevMain = document.querySelector('.main');
+  const prevScrollTop = prevMain ? prevMain.scrollTop : 0;
+  const renderKey = `${state.view}|${state.currentBookId||''}|${state.currentDeckId||''}|${state.tab||''}`;
+  const restoreScroll = renderKey === __lastRenderKey;
+  __lastRenderKey = renderKey;
 
   const app = document.getElementById('app');
   if(!hasClaudeStorage() && !state.firebaseUser){
@@ -3482,6 +3562,10 @@ function render(){
     ${state.modal ? renderModal() : ''}
     ${state.toast ? renderToast() : ''}
   `;
+  if(restoreScroll){
+    const newMain = document.querySelector('.main');
+    if(newMain) newMain.scrollTop = prevScrollTop;
+  }
 
   if(savedId){
     const el = document.getElementById(savedId);
@@ -3806,6 +3890,7 @@ function renderBookDetailView(){
       </div>
     `).join('')}
   </div>`}
+  <button class="primary-btn" style="width:100%; margin-top:28px; padding:16px; font-size:15px; background:var(--success); color:#06210F;" onclick="backToLibrary()">✓ Concluir</button>
   `;
 }
 
@@ -5116,7 +5201,7 @@ function renderEpubTocModal(m){
 function renderEpubNavModal(m){
   const book = state.books.find(b=>b.id===m.bookId);
   if(!book || !book.epub) return `<div class="modal-overlay" onclick="closeModal()"><div class="modal"><p>Livro não encontrado.</p></div></div>`;
-  const bookmarks = (book.epub.bookmarks||[]).slice().sort((a,b)=> a.chapterIndex-b.chapterIndex || a.scrollFraction-b.scrollFraction);
+  const bookmarks = (book.epub.bookmarks||[]).slice().sort((a,b)=> a.chapterIndex-b.chapterIndex || a.pageIndex-b.pageIndex);
   const highlights = (book.epub.highlights||[]).slice().sort((a,b)=> a.chapterIndex-b.chapterIndex);
   return `
   <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
