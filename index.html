@@ -3823,7 +3823,7 @@ function openNotes(){
   render();
 }
 function openNotesCreateModal(parentId, kind){
-  state.modal = { type:'new-note-item', kind: kind || 'note', name:'', format:'markdown', parentId: parentId || null };
+  state.modal = { type:'new-note-item', kind: kind || 'note', name:'', format:'plain', parentId: parentId || null };
   render();
 }
 function confirmCreateNoteItem(){
@@ -3856,7 +3856,13 @@ function openNote(id){
     delete noteContentError[id];
     render();
     loadNoteContentFromR2(id).then(content => {
-      noteContentCache[id] = content;
+      const note = state.notesItems.find(n=>n.id===id);
+      // notas "texto normal" fazem a conversão de texto legado (de antes da
+      // reescrita pra WYSIWYG) UMA VEZ SÓ aqui, no carregamento — nunca a
+      // cada render(), senão o texto ia sendo escapado de novo a cada vez
+      // que a tela recarregasse (abrir a busca, por exemplo), acumulando
+      // "código" (entidades HTML tipo &amp;lt;) visível no meio da nota.
+      noteContentCache[id] = (note && note.format === 'plain') ? normalizePlainNoteContentForEditing(content) : content;
       delete noteContentLoading[id];
       render();
     }).catch(err => {
@@ -4158,10 +4164,35 @@ function insertRichIndent(){
   const el = document.getElementById('note-editor-plain');
   if(el) onNoteContentInput(state.currentNoteId, el.innerHTML);
 }
+// captura a posição do cursor/seleção no contenteditable ANTES de abrir um
+// modal — a Selection global do navegador se move assim que o modal ganha
+// foco (o input de dentro dele tem autofocus), então sem isso qualquer
+// inserção feita depois (link, imagem) sempre acabava caindo no início do
+// texto em vez de onde o usuário realmente estava escrevendo.
+function captureRichCursorOffset(){
+  const el = document.getElementById('note-editor-plain');
+  const sel = window.getSelection();
+  if(!el || !sel || !sel.rangeCount || !el.contains(sel.anchorNode)) return null;
+  const r = sel.getRangeAt(0);
+  return {
+    start: domPositionToTextOffset(el, r.startContainer, r.startOffset),
+    end: domPositionToTextOffset(el, r.endContainer, r.endOffset)
+  };
+}
+function restoreRichCursorOffset(el, savedOffset){
+  if(!savedOffset) return;
+  const range = textOffsetToRange(el, savedOffset.start, savedOffset.end);
+  if(range){
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+}
 function openInsertRichLinkModal(){
   const sel = window.getSelection();
   const text = sel ? sel.toString() : '';
-  state.modal = { type:'insert-rich-link', url:'', text };
+  const savedOffset = captureRichCursorOffset();
+  state.modal = { type:'insert-rich-link', url:'', text, savedOffset };
   render();
 }
 function confirmInsertRichLink(){
@@ -4169,31 +4200,40 @@ function confirmInsertRichLink(){
   const url = (m.url||'').trim();
   if(!url){ showToast('Cole o link.', 'error'); return; }
   const text = (m.text||'').trim() || url;
+  const savedOffset = m.savedOffset;
   state.modal = null;
   render();
-  focusRichEditor();
-  document.execCommand('insertHTML', false, `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(text)}</a>`);
   const el = document.getElementById('note-editor-plain');
-  if(el) onNoteContentInput(state.currentNoteId, el.innerHTML);
+  if(el){
+    el.focus();
+    restoreRichCursorOffset(el, savedOffset);
+    document.execCommand('insertHTML', false, `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(text)}</a>`);
+    onNoteContentInput(state.currentNoteId, el.innerHTML);
+  }
 }
 function openInsertWikiLinkModalRich(){
   const sel = window.getSelection();
   const name = sel ? sel.toString() : '';
-  state.modal = { type:'insert-wiki-link-rich', name };
+  const savedOffset = captureRichCursorOffset();
+  state.modal = { type:'insert-wiki-link-rich', name, savedOffset };
   render();
 }
 function confirmInsertWikiLinkRich(){
   const m = state.modal;
   const name = (m.name||'').trim();
   if(!name){ showToast('Digite o nome da nota.', 'error'); return; }
+  const savedOffset = m.savedOffset;
   state.modal = null;
   render();
-  focusRichEditor();
-  const exists = !!findNoteByName(name);
-  const cls = exists ? 'wiki-link' : 'wiki-link wiki-link-new';
-  document.execCommand('insertHTML', false, `<a href="#" class="${cls}" data-note-name="${escapeHtml(name)}" title="${exists?'Abrir nota':'Criar nota'}">${escapeHtml(name)}</a>`);
   const el = document.getElementById('note-editor-plain');
-  if(el) onNoteContentInput(state.currentNoteId, el.innerHTML);
+  if(el){
+    el.focus();
+    restoreRichCursorOffset(el, savedOffset);
+    const exists = !!findNoteByName(name);
+    const cls = exists ? 'wiki-link' : 'wiki-link wiki-link-new';
+    document.execCommand('insertHTML', false, `<a href="#" class="${cls}" data-note-name="${escapeHtml(name)}" title="${exists?'Abrir nota':'Criar nota'}">${escapeHtml(name)}</a>`);
+    onNoteContentInput(state.currentNoteId, el.innerHTML);
+  }
 }
 // notas "texto normal" criadas antes dessa mudança guardavam texto puro (sem
 // tag nenhuma); se o conteúdo não parece ter HTML, escapa e vira <br> nas
@@ -4245,7 +4285,9 @@ function domPositionToTextOffset(container, node, offset){
   return range.toString().length;
 }
 function openInsertImageModal(){
-  state.modal = { type:'insert-note-image', url:'', alt:'' };
+  const note = state.notesItems.find(n=>n.id===state.currentNoteId);
+  const savedOffset = (note && note.format === 'plain') ? captureRichCursorOffset() : null;
+  state.modal = { type:'insert-note-image', url:'', alt:'', savedOffset };
   render();
 }
 function confirmInsertNoteImage(){
@@ -4253,14 +4295,18 @@ function confirmInsertNoteImage(){
   const url = (m.url||'').trim();
   if(!url){ showToast('Cole o link da imagem.', 'error'); return; }
   const alt = m.alt||'';
+  const savedOffset = m.savedOffset;
   state.modal = null;
   render();
   const note = state.notesItems.find(n=>n.id===state.currentNoteId);
   if(note && note.format === 'plain'){
-    focusRichEditor();
-    document.execCommand('insertHTML', false, `<img src="${escapeHtml(url)}" alt="${escapeHtml(alt)}">`);
     const el = document.getElementById('note-editor-plain');
-    if(el) onNoteContentInput(state.currentNoteId, el.innerHTML);
+    if(el){
+      el.focus();
+      restoreRichCursorOffset(el, savedOffset);
+      document.execCommand('insertHTML', false, `<img src="${escapeHtml(url)}" alt="${escapeHtml(alt)}">`);
+      onNoteContentInput(state.currentNoteId, el.innerHTML);
+    }
   } else {
     insertImageMarkdown('note-editor-textarea', url, alt);
   }
@@ -4268,6 +4314,8 @@ function confirmInsertNoteImage(){
 function openNoteImageUploadPicker(){
   const noteId = state.currentNoteId;
   if(!noteId) return;
+  const note = state.notesItems.find(n=>n.id===noteId);
+  const savedOffset = (note && note.format === 'plain') ? captureRichCursorOffset() : null;
   const input = document.createElement('input');
   input.type = 'file';
   input.accept = 'image/*';
@@ -4278,12 +4326,14 @@ function openNoteImageUploadPicker(){
     try{
       const url = await uploadNoteImage(file);
       const alt = file.name.replace(/\.[^/.]+$/, '');
-      const note = state.notesItems.find(n=>n.id===noteId);
       if(note && note.format === 'plain'){
-        focusRichEditor();
-        document.execCommand('insertHTML', false, `<img src="${escapeHtml(url)}" alt="${escapeHtml(alt)}">`);
         const el = document.getElementById('note-editor-plain');
-        if(el) onNoteContentInput(noteId, el.innerHTML);
+        if(el){
+          el.focus();
+          restoreRichCursorOffset(el, savedOffset);
+          document.execCommand('insertHTML', false, `<img src="${escapeHtml(url)}" alt="${escapeHtml(alt)}">`);
+          onNoteContentInput(noteId, el.innerHTML);
+        }
       } else {
         insertImageMarkdown('note-editor-textarea', url, alt);
       }
@@ -5131,7 +5181,7 @@ function renderNotesView(){
   const hasRootItems = state.notesItems.some(n=>n.parentId===null);
   const searchQuery = (state.notesSearch && state.notesSearch.query) || '';
   return `
-  <button class="ghost-btn mobile-back-btn" onclick="backToHome()">← Início</button>
+  ${!currentNote ? `<button class="ghost-btn mobile-back-btn" onclick="backToHome()">← Início</button>` : ''}
   <div class="notes-layout ${currentNote ? 'note-open' : ''}">
     <div class="notes-explorer">
       <div class="notes-explorer-header">
@@ -5272,7 +5322,7 @@ function renderNoteEditor(note){
   ${(isPlain || mode !== 'preview') ? renderNotesToolbar(note.format) : ''}
   ${isPlain ? `
   <div class="notes-editor-panes plain">
-    <div id="note-editor-plain" class="notes-plain-editor notes-preview" contenteditable="true" data-placeholder="Escreva à vontade, sem se preocupar com formatação..." oninput="onNoteContentInput('${note.id}', this.innerHTML)" onkeydown="if(event.key==='Tab'){ event.preventDefault(); insertRichIndent(); }">${normalizePlainNoteContentForEditing(content)}</div>
+    <div id="note-editor-plain" class="notes-plain-editor notes-preview" contenteditable="true" data-placeholder="Escreva à vontade, sem se preocupar com formatação..." oninput="onNoteContentInput('${note.id}', this.innerHTML)" onkeydown="if(event.key==='Tab'){ event.preventDefault(); insertRichIndent(); }">${content}</div>
   </div>
   ` : `
   <div class="notes-editor-panes ${mode}">
@@ -5290,6 +5340,13 @@ function renderNoteEditor(note){
 function renderNotesToolbar(format){
   const id = 'note-editor-textarea';
   const isMarkdown = format !== 'plain';
+  // onmousedown com preventDefault: sem isso, clicar no botão tira o foco/a
+  // seleção do contenteditable ANTES do onclick rodar — dava a impressão de
+  // negrito/itálico "grudado" (o comando aplicava na posição errada, ou numa
+  // seleção já vazia) e inserções (link, imagem) iam sempre pro início do
+  // texto em vez de onde o cursor estava. Não afeta o modo markdown (a
+  // textarea guarda selectionStart/End independente do foco).
+  const noSteal = isMarkdown ? '' : `onmousedown="event.preventDefault()" `;
   const bold = isMarkdown ? `applyMdWrap('${id}','**')` : `applyRichCommand('bold')`;
   const italic = isMarkdown ? `applyMdWrap('${id}','*')` : `applyRichCommand('italic')`;
   const h1 = isMarkdown ? `applyMdLinePrefix('${id}','# ')` : `applyRichCommand('formatBlock','<h1>')`;
@@ -5301,25 +5358,27 @@ function renderNotesToolbar(format){
   const alignLeft = isMarkdown ? `applyMdAlign('${id}','left')` : `applyRichCommand('justifyLeft')`;
   const alignCenter = isMarkdown ? `applyMdAlign('${id}','center')` : `applyRichCommand('justifyCenter')`;
   const alignRight = isMarkdown ? `applyMdAlign('${id}','right')` : `applyRichCommand('justifyRight')`;
+  const alignJustify = isMarkdown ? `applyMdAlign('${id}','justify')` : `applyRichCommand('justifyFull')`;
   const link = isMarkdown ? `applyMdLink('${id}')` : `openInsertRichLinkModal()`;
   const wikiLink = isMarkdown ? `insertWikiLink('${id}')` : `openInsertWikiLinkModalRich()`;
   return `
   <div class="notes-toolbar">
-    <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Negrito" onclick="${bold}"><strong>B</strong></button>
-    <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Itálico" onclick="${italic}"><em>I</em></button>
-    <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Título 1" onclick="${h1}">H1</button>
-    <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Título 2" onclick="${h2}">H2</button>
-    <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Título 3" onclick="${h3}">H3</button>
-    <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Lista" onclick="${list}">•</button>
-    <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Lista numerada" onclick="${olist}">1.</button>
-    <button class="icon-btn" title="Recuo de parágrafo (igual à tecla Tab)" onclick="${indent}">↹</button>
-    <button class="icon-btn" title="Alinhar à esquerda" onclick="${alignLeft}">⬅</button>
-    <button class="icon-btn" title="Centralizar" onclick="${alignCenter}">↔</button>
-    <button class="icon-btn" title="Alinhar à direita" onclick="${alignRight}">➡</button>
-    <button class="icon-btn" title="Link" onclick="${link}">🔗</button>
-    <button class="icon-btn" title="Link pra outra nota" onclick="${wikiLink}">🔀</button>
-    <button class="icon-btn" title="Imagem por link" onclick="openInsertImageModal()">🖼️</button>
-    <button class="icon-btn" title="Enviar imagem do aparelho" onclick="openNoteImageUploadPicker()">📤</button>
+    <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Negrito" onclick="${bold}"><strong>B</strong></button>
+    <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Itálico" onclick="${italic}"><em>I</em></button>
+    <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Título 1" onclick="${h1}">H1</button>
+    <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Título 2" onclick="${h2}">H2</button>
+    <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Título 3" onclick="${h3}">H3</button>
+    <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Lista" onclick="${list}">•</button>
+    <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Lista numerada" onclick="${olist}">1.</button>
+    <button class="icon-btn" ${noSteal}title="Recuo de parágrafo (igual à tecla Tab)" onclick="${indent}">↹</button>
+    <button class="icon-btn" ${noSteal}title="Alinhar à esquerda" onclick="${alignLeft}">⬅</button>
+    <button class="icon-btn" ${noSteal}title="Centralizar" onclick="${alignCenter}">↔</button>
+    <button class="icon-btn" ${noSteal}title="Alinhar à direita" onclick="${alignRight}">➡</button>
+    <button class="icon-btn" ${noSteal}title="Justificar" onclick="${alignJustify}">≡</button>
+    <button class="icon-btn" ${noSteal}title="Link" onclick="${link}">🔗</button>
+    <button class="icon-btn" ${noSteal}title="Link pra outra nota" onclick="${wikiLink}">🔀</button>
+    <button class="icon-btn" ${noSteal}title="Imagem por link" onclick="openInsertImageModal()">🖼️</button>
+    <button class="icon-btn" ${noSteal}title="Enviar imagem do aparelho" onclick="openNoteImageUploadPicker()">📤</button>
     <span style="width:1px; background:var(--border); margin:2px 2px;"></span>
     <button class="icon-btn" title="Criar cartão colando um texto (útil no celular)" onclick="openNotePasteCardModal()">📌</button>
     <button class="icon-btn" title="Corrigir um texto colado (útil no celular)" onclick="openNotePasteCorrectionModal()">✏️</button>
