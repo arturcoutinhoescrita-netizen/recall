@@ -6325,7 +6325,7 @@ function renderSidebar(){
       <div>
         <h1>Recall</h1>
         <span>REPETIÇÃO ESPAÇADA</span>
-        <span class="brand-version">v2026.07.24.10</span>
+        <span class="brand-version">v2026.07.24.11</span>
       </div>
     </div>
     <button class="ghost-btn" style="font-size:13px; padding:10px 12px; margin-bottom:6px; ${(state.view==='library'||state.view==='book') ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="openLibrary()">📚 Leituras</button>
@@ -6610,9 +6610,7 @@ function renderNoteEditor(note){
   ${(isPlain || mode !== 'preview') ? renderNotesToolbar(note.format) : ''}
   ${isPlain ? `
   <div class="notes-editor-panes plain ${state.notesPageView ? 'page-view' : ''}" style="${state.notesPageView ? pageStyle : ''}">
-    ${state.notesPageView ? `<div class="notes-page-title">${escapeHtml(note.name)}</div>` : ''}
-    <div id="note-editor-plain" class="notes-plain-editor notes-preview" contenteditable="true" data-placeholder="Escreva à vontade, sem se preocupar com formatação..." oninput="onNoteContentInput('${note.id}', this.innerHTML)" onkeydown="if(event.key==='Tab'){ event.preventDefault(); insertRichIndent(); }">${content}</div>
-    ${state.notesPageView ? renderCurrentPageNumber(note, content) : ''}
+    ${state.notesPageView ? renderPagedNotePreview(note, content) : `<div id="note-editor-plain" class="notes-plain-editor notes-preview" contenteditable="true" data-placeholder="Escreva à vontade, sem se preocupar com formatação..." oninput="onNoteContentInput('${note.id}', this.innerHTML)" onkeydown="if(event.key==='Tab'){ event.preventDefault(); insertRichIndent(); }">${content}</div>`}
   </div>
   ` : `
   <div class="notes-editor-panes ${mode}">
