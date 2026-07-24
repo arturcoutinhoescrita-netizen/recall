@@ -4039,9 +4039,38 @@ function normalizeNoteItem(n){
     parentId: n.parentId || null,
     format: type === 'folder' ? undefined : (n.format === 'plain' ? 'plain' : 'markdown'),
     linkedDeckId: type === 'folder' ? undefined : (n.linkedDeckId || null),
+    aiConversations: type === 'folder' ? undefined : (Array.isArray(n.aiConversations) ? n.aiConversations.slice(0,30) : []),
     createdAt: n.createdAt || Date.now(),
     updatedAt: n.updatedAt || Date.now()
   };
+}
+const NOTE_CONVERSATION_MESSAGE_LIMIT = 80;
+function getNoteConversations(note){
+  if(!note) return [];
+  if(!Array.isArray(note.aiConversations)) note.aiConversations = [];
+  return note.aiConversations;
+}
+function createNoteConversation(note, type, data){
+  const conversation = { id:uid(), type, title:(data && data.title) || (type==='chat' ? 'Nova conversa' : 'Sugestão de texto'), createdAt:Date.now(), updatedAt:Date.now(), favorite:false, messages:[], ...(data||{}) };
+  getNoteConversations(note).unshift(conversation);
+  note.aiConversations = note.aiConversations.slice(0,30);
+  saveData();
+  return conversation;
+}
+function saveNoteConversation(note, conversation){
+  if(!note || !conversation) return;
+  const list = getNoteConversations(note);
+  const index = list.findIndex(c=>c.id===conversation.id);
+  if(index < 0) return;
+  conversation.messages = (conversation.messages||[]).slice(-NOTE_CONVERSATION_MESSAGE_LIMIT);
+  conversation.updatedAt = Date.now();
+  list[index] = conversation;
+  saveData();
+}
+function getConversationTitle(conversation){
+  if(conversation.title && conversation.title !== 'Nova conversa') return conversation.title;
+  const firstUser = (conversation.messages||[]).find(m=>m.role==='user');
+  return firstUser ? firstUser.text.slice(0,52) : (conversation.type==='chat' ? 'Nova conversa' : 'Sugestão de texto');
 }
 // migração de uma versão anterior, que guardava o texto da nota junto com os
 // metadados no Firestore: se ainda achar isso nos dados carregados, joga pro
@@ -5129,6 +5158,12 @@ function requestNoteOpinion(){
     if(state.modal && state.modal.type === 'note-opinion'){
       state.modal.status = 'ready';
       state.modal.opinion = opinion;
+      const note = state.notesItems.find(n=>n.id===state.modal.noteId);
+      if(note){
+        const conversation = createNoteConversation(note, 'suggestion', { title:`Sugestão: ${sel.text.slice(0,45)}`, passage:sel.text, opinion, source:sel.source, start:sel.start, end:sel.end });
+        state.modal.conversationId = conversation.id;
+        state.modal.conversationSearch = '';
+      }
       render();
     }
   }).catch(err => {
@@ -5187,6 +5222,9 @@ async function sendNoteOpinionChatMessage(){
   const question = (m.input||'').trim();
   if(!question || m.sending) return;
   m.messages.push({ role:'user', text: question });
+  const note = m.noteId ? state.notesItems.find(n=>n.id===m.noteId) : null;
+  const conversation = note && getNoteConversations(note).find(c=>c.id===m.conversationId);
+  if(conversation){ conversation.messages = m.messages; saveNoteConversation(note, conversation); }
   m.input = '';
   m.sending = true;
   render();
@@ -5208,6 +5246,7 @@ async function sendNoteOpinionChatMessage(){
     console.error('Falha no chat sobre a opinião da IA', err);
     m.messages.push({ role:'assistant', text: friendlyAiErrorMsg(err), error:true });
   }
+  if(conversation){ conversation.messages = m.messages; saveNoteConversation(note, conversation); }
   m.sending = false;
   render();
   scrollChatMessagesToBottom('.note-opinion-messages');
@@ -5286,15 +5325,75 @@ function diffTextParts(oldText, newText){
    junto do histórico da conversa formatado como texto. --- */
 function openNoteChat(){
   const noteId = state.currentNoteId;
-  if(!noteId) return;
-  state.modal = { type:'note-chat', noteId, messages:[], input:'', sending:false };
+  const note = state.notesItems.find(n=>n.id===noteId);
+  if(!note) return;
+  const conversation = createNoteConversation(note, 'chat', {});
+  state.modal = { type:'note-chat', noteId, conversationId:conversation.id, messages:conversation.messages, input:'', sending:false, conversationSearch:'' };
   render();
+}
+function openSavedNoteConversation(noteId, conversationId){
+  const note = state.notesItems.find(n=>n.id===noteId);
+  const conversation = note && getNoteConversations(note).find(c=>c.id===conversationId);
+  if(!note || !conversation) return;
+  if(conversation.type === 'chat'){
+    state.modal = { type:'note-chat', noteId, conversationId:conversation.id, messages:conversation.messages||[], input:'', sending:false, conversationSearch:'' };
+  }else{
+    state.modal = { type:'note-opinion', status:'ready', noteId, conversationId:conversation.id, passage:conversation.passage||'', opinion:conversation.opinion||'', source:null, start:null, end:null, messages:conversation.messages||[], input:'', sending:false, conversationSearch:'' };
+  }
+  render();
+}
+function openNoteSuggestionLibrary(){
+  const note = state.notesItems.find(n=>n.id===state.currentNoteId);
+  const conversation = note && getNoteConversations(note).filter(c=>c.type==='suggestion').sort((a,b)=>(b.favorite-a.favorite)||(b.updatedAt-a.updatedAt))[0];
+  if(!conversation){ showToast('Esta nota ainda não tem conversas de sugestão.', 'error'); return; }
+  openSavedNoteConversation(note.id, conversation.id);
+}
+function toggleActiveNoteConversationFavorite(){
+  const m = state.modal;
+  const note = m && state.notesItems.find(n=>n.id===m.noteId);
+  const conversation = note && getNoteConversations(note).find(c=>c.id===m.conversationId);
+  if(!conversation) return;
+  conversation.favorite = !conversation.favorite;
+  saveNoteConversation(note, conversation);
+  render();
+}
+function convertActiveNoteConversationToNote(){
+  const m = state.modal;
+  const source = m && state.notesItems.find(n=>n.id===m.noteId);
+  const conversation = source && getNoteConversations(source).find(c=>c.id===m.conversationId);
+  if(!source || !conversation) return;
+  const copy = makeNoteItem('note', `Conversa — ${getConversationTitle(conversation).slice(0,36)}`, source.parentId, 'markdown');
+  const lines = [`# ${getConversationTitle(conversation)}`, ''];
+  if(conversation.passage) lines.push(`> ${conversation.passage.replace(/\n/g,'\n> ')}`, '');
+  if(conversation.opinion) lines.push(`## Sugestão inicial`, conversation.opinion, '');
+  (conversation.messages||[]).forEach(msg => lines.push(`## ${msg.role==='user' ? 'Você' : 'IA'}`, msg.text, ''));
+  noteContentCache[copy.id] = lines.join('\n');
+  state.notesItems.push(copy);
+  saveData();
+  saveNoteContentToR2(copy.id, noteContentCache[copy.id]);
+  showToast('Conversa transformada em nota.');
 }
 // render() recria a tela inteira do zero, então sem isso a lista de mensagens
 // sempre reaparecia rolada pro topo depois de cada resposta da IA.
 function scrollChatMessagesToBottom(selector){
   const el = document.querySelector(selector);
   if(el) el.scrollTop = el.scrollHeight;
+}
+function renderNoteConversationLibrary(m, type){
+  const note = state.notesItems.find(n=>n.id===m.noteId);
+  if(!note) return '';
+  const query = (m.conversationSearch||'').toLowerCase().trim();
+  const conversations = getNoteConversations(note).filter(c => c.type===type && (!query || `${getConversationTitle(c)} ${(c.messages||[]).map(msg=>msg.text).join(' ')}`.toLowerCase().includes(query)));
+  const current = conversations.find(c=>c.id===m.conversationId);
+  return `
+  <div style="border:1px solid var(--border); border-radius:9px; padding:8px; margin:0 0 8px;">
+    <div style="display:flex; gap:6px; align-items:center;">
+      <input type="text" placeholder="Buscar conversas e favoritas..." value="${escapeHtml(m.conversationSearch||'')}" style="flex:1; padding:6px 8px; font-size:11.5px;" oninput="state.modal.conversationSearch=this.value; render();">
+      <button class="icon-btn" style="width:28px;height:28px;font-size:12px;${current&&current.favorite?'color:var(--accent);':''}" title="Favoritar conversa" onclick="toggleActiveNoteConversationFavorite()">★</button>
+      <button class="icon-btn" style="width:28px;height:28px;font-size:12px;" title="Transformar em nota" onclick="convertActiveNoteConversationToNote()">📄</button>
+    </div>
+    ${conversations.length ? `<div style="display:flex; gap:5px; overflow-x:auto; margin-top:7px; padding-bottom:1px;">${conversations.sort((a,b)=>(b.favorite-a.favorite)||(b.updatedAt-a.updatedAt)).map(c=>`<button class="ghost-btn" style="white-space:nowrap; padding:5px 8px; font-size:10.5px; ${c.id===m.conversationId?'border-color:var(--accent); color:var(--accent);':''}" onclick="openSavedNoteConversation('${note.id}','${c.id}')">${c.favorite?'★ ':''}${escapeHtml(getConversationTitle(c))}</button>`).join('')}</div>` : `<div style="font-size:11px; color:var(--text-faint); margin-top:6px;">Nenhuma conversa encontrada.</div>`}
+  </div>`;
 }
 async function sendNoteChatMessage(){
   const m = state.modal;
@@ -5303,6 +5402,8 @@ async function sendNoteChatMessage(){
   if(!question || m.sending) return;
   const note = state.notesItems.find(n=>n.id===m.noteId);
   m.messages.push({ role:'user', text: question });
+  const conversation = note && getNoteConversations(note).find(c=>c.id===m.conversationId);
+  if(conversation){ conversation.messages = m.messages; conversation.title = getConversationTitle(conversation); saveNoteConversation(note, conversation); }
   m.input = '';
   m.sending = true;
   render();
@@ -5319,6 +5420,7 @@ async function sendNoteChatMessage(){
     console.error('Falha no chat da nota', err);
     m.messages.push({ role:'assistant', text: friendlyAiErrorMsg(err), error:true });
   }
+  if(conversation){ conversation.messages = m.messages; conversation.title = getConversationTitle(conversation); saveNoteConversation(note, conversation); }
   m.sending = false;
   render();
   scrollChatMessagesToBottom('.note-chat-messages');
@@ -6027,6 +6129,7 @@ function renderNoteEditor(note){
       ${pendingComments.length ? `<button class="icon-btn" style="width:auto; padding:0 10px; font-size:12px; color:var(--success);" title="Revisar comentários pendentes" onclick="openNoteCommentsPanel()">📝 ${pendingComments.length}</button>` : ''}
       <button class="icon-btn" title="Buscar e substituir nesta nota" onclick="openNoteFind()">🔍</button>
       <button class="icon-btn" title="Conversar com a IA sobre esta nota" onclick="openNoteChat()">💬</button>
+      <button class="icon-btn" title="Conversas de sugestões salvas" onclick="openNoteSuggestionLibrary()">💭</button>
       ${!isPlain ? `
       <div class="notes-mode-toggle">
         <button class="ghost-btn ${mode==='source'?'active-mode':''}" onclick="setNotesEditorMode('source')">Editar</button>
@@ -7523,6 +7626,7 @@ function renderNoteChatModal(m){
   <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
     <div class="modal" style="width:520px; max-height:80vh; display:flex; flex-direction:column;">
       <h3>💬 Conversar sobre "${escapeHtml(note ? note.name : '')}"</h3>
+      ${renderNoteConversationLibrary(m, 'chat')}
       <div class="note-chat-messages" style="flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:10px; padding:6px 2px; min-height:200px; max-height:50vh;">
         ${m.messages.length === 0 ? `<p style="color:var(--text-faint); font-size:12.5px; text-align:center; margin-top:20px;">Pergunte qualquer coisa — a IA já sabe o que está escrito nessa nota.</p>` : ''}
         ${m.messages.map(msg => `
@@ -7648,6 +7752,7 @@ function renderNoteOpinionModal(m){
     <div class="modal" style="width:520px; max-height:80vh; display:flex; flex-direction:column;">
       <h3>💭 O que a IA achou</h3>
       <p style="font-size:11.5px; color:var(--text-faint); margin:0 0 10px 0;">Trecho: "${escapeHtml(m.passage.length>200 ? m.passage.slice(0,200)+'…' : m.passage)}"</p>
+      ${m.noteId ? renderNoteConversationLibrary(m, 'suggestion') : ''}
       <div class="note-opinion-messages" style="flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:10px; padding:2px; min-height:120px; max-height:46vh;">
         <div style="align-self:flex-start; max-width:92%; background:var(--surface-2); border-radius:12px; padding:9px 13px; font-size:13.5px; line-height:1.5; white-space:pre-wrap;">${escapeHtml(m.opinion)}</div>
         ${m.messages.map((msg, idx) => `
