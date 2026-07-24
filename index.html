@@ -4379,8 +4379,18 @@ let notesSaveTimer = null;
 // Em fonte de leitura comum (aprox. 12 pt, entrelinha 1,5), isso equivale a
 // cerca de 230 palavras por página — ainda é uma estimativa, não paginação real.
 const NOTE_WORDS_PER_PAGE = 230;
-const DEFAULT_NOTE_PAGE_SETTINGS = { width:15, height:21, margin:2, unit:'cm', pageNumbers:false, pageNumberPosition:'right', hiddenPages:'' };
+const NOTE_PAGE_PRESETS = {
+  book:{ key:'book', label:'Livro — 15 × 21 cm', width:15, height:21 },
+  a4:{ key:'a4', label:'A4 — 21 × 29,7 cm', width:21, height:29.7 },
+  a3:{ key:'a3', label:'A3 — 29,7 × 42 cm', width:29.7, height:42 }
+};
+const DEFAULT_NOTE_PAGE_SETTINGS = { preset:'book', width:15, height:21, margin:2, unit:'cm', pageNumbers:false, pageNumberPosition:'right', hiddenPages:'' };
 function getNotePageSettings(note){ return { ...DEFAULT_NOTE_PAGE_SETTINGS, ...((note && note.pageSettings) || {}) }; }
+function getNotePagePresetKey(settings){
+  const s=settings||DEFAULT_NOTE_PAGE_SETTINGS;
+  const exact=Object.values(NOTE_PAGE_PRESETS).find(p=>Math.abs(Number(s.width)-p.width)<.01 && Math.abs(Number(s.height)-p.height)<.01 && s.unit!=='px');
+  return exact ? exact.key : 'book';
+}
 function getNoteWordsPerPage(note){
   const p = getNotePageSettings(note);
   const factor = p.unit === 'px' ? 37.795 : 1;
@@ -4388,15 +4398,16 @@ function getNoteWordsPerPage(note){
   const height = Math.max(1, p.height / factor - 2 * p.margin / factor);
   return Math.max(60, Math.round(230 * (width * height) / (12 * 18)));
 }
-function getNoteWritingStats(content, note){
+function getNoteWritingStats(content, note, actualPages){
   const text = htmlToText(String(content || ''))
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
     .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
     .replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, name, alias) => alias || name);
   const wordCount = (text.match(/[\p{L}\p{N}]+(?:['’\-][\p{L}\p{N}]+)*/gu) || []).length;
-  const pages = Math.round((wordCount / getNoteWordsPerPage(note)) * 10) / 10;
+  const hasActualPages=Number.isFinite(actualPages);
+  const pages = hasActualPages ? actualPages : Math.round((wordCount / getNoteWordsPerPage(note)) * 10) / 10;
   const pageLabel = pages === 1 ? 'página' : 'páginas';
-  return `${wordCount.toLocaleString('pt-BR')} ${wordCount === 1 ? 'palavra' : 'palavras'} · ≈ ${pages.toLocaleString('pt-BR', { maximumFractionDigits:1 })} ${pageLabel}`;
+  return `${wordCount.toLocaleString('pt-BR')} ${wordCount === 1 ? 'palavra' : 'palavras'} · ${hasActualPages?'':'≈ '}${pages.toLocaleString('pt-BR', { maximumFractionDigits:1 })} ${pageLabel}`;
 }
 function renderCurrentPageNumber(note, content){
   const settings = getNotePageSettings(note);
@@ -4527,6 +4538,7 @@ function splitNoteHtmlByRenderedHeight(content, contentWidth, contentHeight){
   measureShell.remove();
   return pages.length?pages:[''];
 }
+let lastRenderedNotePageCount=null;
 function renderPagedNotePreview(note, content){
   const s=getNotePageSettings(note), factor=s.unit==='px'?1:37.795;
   const configuredWidth=s.width*factor, configuredHeight=s.height*factor, configuredMargin=s.margin*factor;
@@ -4537,11 +4549,27 @@ function renderPagedNotePreview(note, content){
   const footerReserve=s.pageNumbers?Math.max(22,Math.min(34,configuredMargin*.55)):0;
   const contentWidth=Math.max(40,configuredWidth-configuredMargin*2);
   const contentHeight=Math.max(40,configuredHeight-configuredMargin*2-footerReserve);
+  const fontProbe=document.createElement('div');
+  fontProbe.innerHTML=content||'';
+  let largestFont=14.5;
+  fontProbe.querySelectorAll('[style*="font-size"],font[size]').forEach(el=>{
+    let size=parseFloat(el.style.fontSize);
+    if(el.style.fontSize.endsWith('pt')) size*=96/72;
+    else if(el.style.fontSize.endsWith('em')) size*=14.5;
+    if(!size && el.hasAttribute('size')) size=({1:10,2:13,3:16,4:18,5:24,6:32,7:48})[Number(el.getAttribute('size'))]||14.5;
+    if(Number.isFinite(size)) largestFont=Math.max(largestFont,size);
+  });
+  // Reserva uma linha inteira da maior fonte. Diferenças de arredondamento,
+  // margens de listas e fontes carregadas não conseguem mais empurrar a última
+  // linha para fora da folha depois que o fragmento já foi aprovado.
+  const paginationSafety=Math.ceil(largestFont*1.9);
+  const paginationHeight=Math.max(40,contentHeight-paginationSafety);
   // A paginação usa o tamanho físico configurado. O scale abaixo é apenas o
   // zoom de visualização necessário para a folha caber na tela: fonte, margem,
   // imagens e rodapé diminuem juntos, como num editor de documentos.
-  const chunks = splitNoteHtmlByRenderedHeight(content,contentWidth,contentHeight).map(html=>({html}));
+  const chunks = splitNoteHtmlByRenderedHeight(content,contentWidth,paginationHeight).map(html=>({html}));
   if(!chunks.length) chunks.push({ html:'' });
+  lastRenderedNotePageCount=chunks.length;
   return `<div class="notes-paged-preview">${chunks.map((chunk,index)=>{ const page=index+1; const position=s.pageNumberPosition==='book' ? (page%2?'right':'left') : s.pageNumberPosition; const number=s.pageNumbers&&!pageNumberIsHidden(page,s.hiddenPages) ? `<div class="note-page-sheet-number" style="text-align:${position}; padding:0 ${configuredMargin}px ${Math.max(8,configuredMargin*.25)}px;">${page}</div>` : ''; return `<div class="note-page-frame" style="width:${displayWidth}px; height:${displayHeight}px;"><article class="note-page-sheet" style="width:${configuredWidth}px; height:${configuredHeight}px; padding:${configuredMargin}px; transform:scale(${scale});"><div class="note-page-sheet-content" style="height:${contentHeight}px; max-height:${contentHeight}px;">${chunk.html}</div>${number}</article></div>`; }).join('')}</div>`;
 }
 function updateNoteWritingStats(content){
@@ -4625,7 +4653,10 @@ function setNotesEditorMode(mode){
 function openNotePageSettings(){
   const note = state.notesItems.find(n=>n.id===state.currentNoteId);
   if(!note) return;
-  state.modal = { type:'note-page-settings', noteId:note.id, settings:getNotePageSettings(note) };
+  const current=getNotePageSettings(note);
+  const presetKey=getNotePagePresetKey(current);
+  const preset=NOTE_PAGE_PRESETS[presetKey];
+  state.modal = { type:'note-page-settings', noteId:note.id, settings:{...current,preset:presetKey,width:preset.width,height:preset.height,unit:'cm'} };
   render();
 }
 function confirmNotePageSettings(){
@@ -4633,7 +4664,9 @@ function confirmNotePageSettings(){
   const note = m && state.notesItems.find(n=>n.id===m.noteId);
   if(!note) return;
   const s = m.settings;
-  note.pageSettings = { width:Math.max(1, Number(s.width)||15), height:Math.max(1, Number(s.height)||21), margin:Math.max(0, Number(s.margin)||0), unit:s.unit==='px'?'px':'cm', pageNumbers:!!s.pageNumbers, pageNumberPosition:s.pageNumberPosition||'right', hiddenPages:String(s.hiddenPages||'') };
+  const preset=NOTE_PAGE_PRESETS[s.preset]||NOTE_PAGE_PRESETS.book;
+  const margin=Math.min(Math.max(0,Number(s.margin)||0),Math.min(preset.width,preset.height)/2-.5);
+  note.pageSettings = { preset:preset.key, width:preset.width, height:preset.height, margin, unit:'cm', pageNumbers:!!s.pageNumbers, pageNumberPosition:s.pageNumberPosition||'right', hiddenPages:String(s.hiddenPages||'') };
   note.updatedAt = Date.now(); state.modal = null; saveData(); render();
 }
 function findNoteByName(name){
@@ -4792,18 +4825,23 @@ function setRichHighlight(color){ applyRichCommand('hiliteColor', color); }
 function setRichFont(font){ applyRichCommand('fontName', font); }
 function setRichFontSize(size){
   const px=Math.max(8,Math.min(72,Number(size)||14));
-  focusRichEditor();
+  const editor=document.getElementById('note-editor-plain');
+  if(!editor) return;
+  // O HTML exibido é a fonte de verdade para o histórico. Capturá-lo antes do
+  // execCommand impede que "Desfazer" restaure marcação intermediária <font>.
+  noteContentCache[state.currentNoteId]=editor.innerHTML;
+  editor.focus();
   // execCommand aceita somente os tamanhos legados 1–7. O valor 7 funciona
   // como marcador temporário; em seguida ele é convertido para CSS em pixels,
   // que preserva o tamanho exato e também é respeitado pela paginação.
   document.execCommand('fontSize',false,'7');
-  const editor=document.getElementById('note-editor-plain');
-  if(!editor) return;
   editor.querySelectorAll('font[size="7"]').forEach(el=>{
     el.removeAttribute('size');
     el.style.fontSize=`${px}px`;
   });
   onNoteContentInput(state.currentNoteId,editor.innerHTML);
+  const picker=document.querySelector('select[title="Tamanho da fonte"]');
+  if(picker) picker.value='';
 }
 function openRichColorMenu(kind){
   const savedOffset = captureRichCursorOffset();
@@ -6464,7 +6502,7 @@ function renderSidebar(){
       <div>
         <h1>Recall</h1>
         <span>REPETIÇÃO ESPAÇADA</span>
-        <span class="brand-version">v2026.07.24.19</span>
+        <span class="brand-version">v2026.07.24.21</span>
       </div>
     </div>
     <button class="ghost-btn" style="font-size:13px; padding:10px 12px; margin-bottom:6px; ${(state.view==='library'||state.view==='book') ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="openLibrary()">📚 Leituras</button>
@@ -6721,12 +6759,14 @@ function renderNoteEditor(note){
   const pageStyle = `--page-w:${page.width*px}px; --page-h:${page.height*px}px; --page-margin:${page.margin*px}px;`;
   const mode = isPlain ? null : (state.notesEditorMode || 'split');
   const pendingComments = getNoteComments(note);
+  const pagedPreview = isPlain && state.notesPageView ? renderPagedNotePreview(note,content) : '';
+  const actualPageCount = isPlain && state.notesPageView ? lastRenderedNotePageCount : null;
   return `
   ${backBtn}
   <div class="notes-editor-header">
     <div>
       <h3 style="margin:0;">${escapeHtml(note.name)}</h3>
-      <div id="note-writing-stats" class="note-writing-stats" title="Estimativa baseada no tamanho e nas margens configurados para esta nota">${getNoteWritingStats(content, note)}</div>
+      <div id="note-writing-stats" class="note-writing-stats" title="${actualPageCount?'Contagem real da visualização em páginas':'Estimativa baseada no tamanho e nas margens configurados para esta nota'}">${getNoteWritingStats(content, note, actualPageCount)}</div>
     </div>
     <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
       <button class="icon-btn" title="Sumário (títulos H1/H2/H3)" onclick="openNoteTocModal()">📑</button>
@@ -6749,7 +6789,7 @@ function renderNoteEditor(note){
   ${(isPlain || mode !== 'preview') ? renderNotesToolbar(note.format) : ''}
   ${isPlain ? `
   <div class="notes-editor-panes plain ${state.notesPageView ? 'page-view' : ''}" style="${state.notesPageView ? pageStyle : ''}">
-    ${state.notesPageView ? renderPagedNotePreview(note, content) : `<div id="note-editor-plain" class="notes-plain-editor notes-preview" contenteditable="true" data-placeholder="Escreva à vontade, sem se preocupar com formatação..." oninput="onNoteContentInput('${note.id}', this.innerHTML)" onkeydown="if(event.key==='Tab'){ event.preventDefault(); insertRichIndent(); }">${content}</div>`}
+    ${state.notesPageView ? pagedPreview : `<div id="note-editor-plain" class="notes-plain-editor notes-preview" contenteditable="true" data-placeholder="Escreva à vontade, sem se preocupar com formatação..." oninput="onNoteContentInput('${note.id}', this.innerHTML)" onkeydown="if(event.key==='Tab'){ event.preventDefault(); insertRichIndent(); }">${content}</div>`}
   </div>
   ` : `
   <div class="notes-editor-panes ${mode}">
@@ -8055,8 +8095,9 @@ function renderNotePageSettingsModal(m){
   const s = m.settings;
   return `<div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal" style="width:440px;">
     <h3>Configuração de página</h3>
-    <div class="card-form page-settings" style="padding:0; border:0; background:none;"><div class="row"><div class="field"><label>LARGURA</label><input type="text" value="${s.width}" oninput="state.modal.settings.width=this.value"></div><div class="field"><label>ALTURA</label><input type="text" value="${s.height}" oninput="state.modal.settings.height=this.value"></div><div class="field"><label>UNIDADE</label><select onchange="state.modal.settings.unit=this.value"><option value="cm" ${s.unit==='cm'?'selected':''}>cm</option><option value="px" ${s.unit==='px'?'selected':''}>px</option></select></div></div>
-    <div class="field"><label>MARGEM DE SEGURANÇA (em ${escapeHtml(s.unit)})</label><input type="text" value="${s.margin}" oninput="state.modal.settings.margin=this.value"></div>
+    <div class="card-form page-settings" style="padding:0; border:0; background:none;">
+    <div class="field"><label>FORMATO DA PÁGINA</label><select onchange="const p=NOTE_PAGE_PRESETS[this.value]||NOTE_PAGE_PRESETS.book; Object.assign(state.modal.settings,{preset:p.key,width:p.width,height:p.height,unit:'cm'});"><option value="book" ${s.preset==='book'?'selected':''}>Livro — 15 × 21 cm</option><option value="a4" ${s.preset==='a4'?'selected':''}>A4 — 21 × 29,7 cm</option><option value="a3" ${s.preset==='a3'?'selected':''}>A3 — 29,7 × 42 cm</option></select></div>
+    <div class="field"><label>MARGEM DE SEGURANÇA (cm)</label><input type="text" inputmode="decimal" value="${s.margin}" oninput="state.modal.settings.margin=this.value"></div>
     <div class="field" style="margin-top:10px;"><label><input type="checkbox" ${s.pageNumbers?'checked':''} onchange="state.modal.settings.pageNumbers=this.checked"> Mostrar número de página</label><select style="margin-top:7px;" onchange="state.modal.settings.pageNumberPosition=this.value"><option value="left" ${s.pageNumberPosition==='left'?'selected':''}>Inferior esquerdo</option><option value="center" ${s.pageNumberPosition==='center'?'selected':''}>Inferior central</option><option value="right" ${s.pageNumberPosition==='right'?'selected':''}>Inferior direito</option><option value="book" ${s.pageNumberPosition==='book'?'selected':''}>Alternado como livro</option></select></div>
     <div class="field" style="margin-top:10px;"><label>PÁGINAS SEM NÚMERO</label><input type="text" placeholder="Ex.: 1, 3, 8-10" value="${escapeHtml(s.hiddenPages)}" oninput="state.modal.settings.hiddenPages=this.value"></div></div>
     <div class="modal-actions"><button class="ghost-btn" onclick="closeModal()">Cancelar</button><button class="primary-btn" onclick="confirmNotePageSettings()">Salvar</button></div>
