@@ -4418,9 +4418,24 @@ function splitNoteHtmlIntoPages(content, wordsPerPage){
   const holder = document.createElement('div'); holder.innerHTML = content || '';
   const pages = [], current = []; let count = 0;
   const push = () => { if(current.length){ pages.push(current.join('')); current.length=0; count=0; } };
-  Array.from(holder.childNodes).forEach(node => {
+  const wordCount = node => (node.textContent||'').trim().split(/\s+/).filter(Boolean).length;
+  const units = [];
+  const collect = node => {
+    const words = wordCount(node);
+    if(node.nodeType===3 && words > wordsPerPage){
+      const parts=(node.textContent||'').trim().split(/\s+/);
+      for(let i=0;i<parts.length;i+=wordsPerPage) units.push(document.createTextNode(parts.slice(i,i+wordsPerPage).join(' ')));
+      return;
+    }
+    // Containers grandes (div, p, section) são abertos até seus filhos. Já
+    // elementos pequenos como <strong>, <em> e <li> continuam inteiros.
+    if(node.nodeType===1 && words > wordsPerPage && node.childNodes.length>1 && !/^(LI|STRONG|EM|A)$/i.test(node.tagName)) Array.from(node.childNodes).forEach(collect);
+    else units.push(node);
+  };
+  Array.from(holder.childNodes).forEach(collect);
+  units.forEach(node => {
     const html = node.outerHTML || escapeHtml(node.textContent||'');
-    const words = (node.textContent||'').trim().split(/\s+/).filter(Boolean).length;
+    const words = wordCount(node);
     if(current.length && count + words > wordsPerPage) push();
     current.push(html); count += words;
   });
@@ -6344,7 +6359,7 @@ function renderSidebar(){
       <div>
         <h1>Recall</h1>
         <span>REPETIÇÃO ESPAÇADA</span>
-        <span class="brand-version">v2026.07.24.15</span>
+        <span class="brand-version">v2026.07.24.16</span>
       </div>
     </div>
     <button class="ghost-btn" style="font-size:13px; padding:10px 12px; margin-bottom:6px; ${(state.view==='library'||state.view==='book') ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="openLibrary()">📚 Leituras</button>
