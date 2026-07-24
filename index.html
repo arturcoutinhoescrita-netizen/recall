@@ -927,7 +927,12 @@ function recordStudyActivity(session){
 function ensureAgendaReviewTasks(){
   const today=agendaDateKey(new Date());
   let changed=false;
+  const archivedIds=new Set(state.decks.filter(deck=>deck.archived).map(deck=>deck.id));
+  const before=state.agendaEvents.length;
+  state.agendaEvents=state.agendaEvents.filter(event=>!(event.autoReview&&archivedIds.has(event.deckId)&&!event.completedAt));
+  if(state.agendaEvents.length!==before) changed=true;
   state.decks.forEach(deck=>{
+    if(deck.archived) return;
     const due=getDueCards(deck.id).length;
     const task=state.agendaEvents.find(event=>event.autoReview && event.deckId===deck.id && event.date===today);
     if(due>0 && !task){
@@ -937,11 +942,17 @@ function ensureAgendaReviewTasks(){
   if(changed) saveData();
 }
 function updateAgendaReviewTask(deckId){
+  const deck=state.decks.find(item=>item.id===deckId);
+  if(deck?.archived){
+    const before=state.agendaEvents.length;
+    state.agendaEvents=state.agendaEvents.filter(event=>!(event.autoReview&&event.deckId===deckId&&!event.completedAt));
+    if(state.agendaEvents.length!==before) saveData();
+    return;
+  }
   const today=agendaDateKey(new Date());
   let task=state.agendaEvents.find(event=>event.autoReview && event.deckId===deckId && event.date===today && !event.completedAt);
   const remaining=getDueCards(deckId).length;
   if(!task && remaining===0){
-    const deck=state.decks.find(item=>item.id===deckId);
     task={id:uid(),title:`Revisar ${deck?deck.name:'baralho'}`,date:today,time:null,notes:'Concluída automaticamente após a sessão de flashcards.',deckId,autoReview:true,expectedCount:0,completedAt:Date.now(),createdAt:Date.now(),updatedAt:Date.now()};
     state.agendaEvents.unshift(task); saveData(); return;
   }
@@ -1197,7 +1208,9 @@ function scheduleCardGraded(card, grade){
   }
   card.due = now + card.interval * 24*60*60*1000;
 }
-function getDueCards(deckId){
+function getDueCards(deckId, options={}){
+  const deck=state.decks.find(item=>item.id===deckId);
+  if(deck?.archived && !options.includeArchived) return [];
   const cards = state.cards[deckId] || [];
   const now = Date.now();
   return cards.filter(c => !c.learned && (c.due||0) <= now);
@@ -1293,7 +1306,7 @@ function awardPoints(card, correct, exType, grade){
 
 /* ============ DECK / CARD CRUD ============ */
 function createDeck(name, color, type){
-  const d = { id: uid(), name: name.trim(), color: color || DECK_COLORS[state.decks.length % DECK_COLORS.length], type: type || 'standard', aiEnabled: true, sentenceDifficulty: 'intermediate', favorite:false };
+  const d = { id: uid(), name: name.trim(), color: color || DECK_COLORS[state.decks.length % DECK_COLORS.length], type: type || 'standard', aiEnabled: true, sentenceDifficulty: 'intermediate', favorite:false, archived:false };
   state.decks.push(d);
   state.cards[d.id] = [];
   state.currentDeckId = d.id;
@@ -1315,6 +1328,16 @@ function toggleDeckFavorite(deckId){
   if(!deck) return;
   deck.favorite=!deck.favorite;
   saveData(); render();
+}
+function toggleDeckArchive(deckId){
+  const deck=state.decks.find(d=>d.id===deckId);
+  if(!deck) return;
+  deck.archived=!deck.archived;
+  if(deck.archived){
+    state.agendaEvents=state.agendaEvents.filter(event=>!(event.autoReview&&event.deckId===deckId&&!event.completedAt));
+  }
+  saveData(); render();
+  showToast(deck.archived ? 'Baralho arquivado. Ele continua disponível para estudo manual.' : 'Baralho reativado na agenda.');
 }
 function deleteDeck(id){
   const deck = state.decks.find(d=>d.id===id);
@@ -1646,7 +1669,7 @@ async function openFromFileSystem(){
   }
 }
 function replaceAllData(data){
-  state.decks = (data.decks || []).map(d => ({ id: d.id || uid(), name: d.name, color: d.color || DECK_COLORS[0], type: d.type || 'standard', enabledExercises: d.enabledExercises, sentenceDifficulty: d.sentenceDifficulty || 'intermediate', carryOverLang: d.carryOverLang || [], carryOverByMode: d.carryOverByMode || {} }));
+  state.decks = (data.decks || []).map(d => ({ id: d.id || uid(), name: d.name, color: d.color || DECK_COLORS[0], type: d.type || 'standard', enabledExercises: d.enabledExercises, sentenceDifficulty: d.sentenceDifficulty || 'intermediate', carryOverLang: d.carryOverLang || [], carryOverByMode: d.carryOverByMode || {}, archived:!!d.archived }));
   const newCards = {};
   state.decks.forEach(d => {
     const oldCards = (data.cards && data.cards[d.id]) || [];
@@ -1708,7 +1731,7 @@ function importFullBackup(data){
   (data.decks || []).forEach(d => {
     const newId = uid();
     deckIdMap[d.id] = newId;
-    state.decks.push({ id:newId, name: d.name, color: d.color || DECK_COLORS[state.decks.length % DECK_COLORS.length], type: d.type || 'standard', enabledExercises: d.enabledExercises, sentenceDifficulty: d.sentenceDifficulty || 'intermediate', carryOverLang: d.carryOverLang || [], carryOverByMode: d.carryOverByMode || {} });
+    state.decks.push({ id:newId, name: d.name, color: d.color || DECK_COLORS[state.decks.length % DECK_COLORS.length], type: d.type || 'standard', enabledExercises: d.enabledExercises, sentenceDifficulty: d.sentenceDifficulty || 'intermediate', carryOverLang: d.carryOverLang || [], carryOverByMode: d.carryOverByMode || {}, archived:!!d.archived });
     const oldCards = (data.cards && data.cards[d.id]) || [];
     state.cards[newId] = oldCards.map(c => normalizeImportedCard(c));
   });
@@ -2449,7 +2472,7 @@ function getActivityTotals(activities){
 }
 function getAgendaReviewGroups(dateKey){
   const today=agendaDateKey(new Date());
-  return state.decks.map(deck=>{
+  return state.decks.filter(deck=>!deck.archived).map(deck=>{
     const count=(state.cards[deck.id]||[]).filter(card=>{
       if(card.learned) return false;
       const dueKey=agendaDateKey(card.due||Date.now());
@@ -2821,7 +2844,7 @@ function startSession(deckId, mode){
   finishReadingActivity();
   const deck = state.decks.find(d=>d.id===deckId);
   const isImageMode = mode === 'image-answer' || mode === 'image-locate';
-  const due = getDueCards(deckId).filter(c => isImageCard(c) === isImageMode);
+  const due = getDueCards(deckId,{includeArchived:true}).filter(c => isImageCard(c) === isImageMode);
   const basePool = due.length ? due : getStudyPool(deckId).filter(c => isImageCard(c) === isImageMode);
   if(basePool.length === 0){ showToast(isImageMode ? 'Nenhum cartão de imagem pronto pra estudar.' : 'Este baralho ainda não tem cartões.', 'error'); return; }
   const pool = expandPoolForPriority(basePool);
@@ -2965,7 +2988,7 @@ function startMixedStandardSession(deckId){
   const deck = state.decks.find(d=>d.id===deckId);
   const enabledTypes = deck ? getEnabledStandardTypes(deck) : STANDARD_STUDY_TYPES;
   if(enabledTypes.length === 0){ showToast('Ative pelo menos 1 tipo de exercício antes de estudar.', 'error'); return; }
-  const due = getDueCards(deckId);
+  const due = getDueCards(deckId,{includeArchived:true});
   const basePool = due.length ? due : getStudyPool(deckId);
   if(basePool.length === 0){ showToast('Este baralho ainda não tem cartões.', 'error'); return; }
   const pool = expandPoolForPriority(basePool);
@@ -3016,7 +3039,7 @@ function startLanguageSession(deckId){
   const deck = state.decks.find(d=>d.id===deckId);
   const enabledTypes = deck ? getEnabledExercises(deck) : EXERCISE_TYPES;
   if(enabledTypes.length === 0){ showToast('Ative pelo menos 1 tipo de exercício antes de estudar.', 'error'); return; }
-  const due = getDueCards(deckId);
+  const due = getDueCards(deckId,{includeArchived:true});
   const basePool = due.length ? due : getStudyPool(deckId);
   if(basePool.length === 0){ showToast('Este baralho ainda não tem termos.', 'error'); return; }
   const pool = expandPoolForPriority(basePool);
@@ -7436,7 +7459,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='agenda'?'active':''}" onclick="openAgenda()">🗓️ Agenda</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.24.71</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.24.72</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -7459,7 +7482,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.24.71</span>
+        <span class="brand-version">v2026.07.24.72</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -7517,7 +7540,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.71</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.72</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
@@ -8059,10 +8082,13 @@ function renderDeckView(){
   <button class="ghost-btn mobile-back-btn" onclick="backToHome()">← Baralhos</button>
   <div class="deck-header">
     <div>
-      <h2>${escapeHtml(deck.name)}</h2>
-      <p>${cards.length} cartão(ões) neste baralho</p>
+      <h2>${escapeHtml(deck.name)}${deck.archived?' <span style="font-size:12px; font-weight:600; color:var(--text-faint); vertical-align:middle;">📦 Arquivado</span>':''}</h2>
+      <p>${cards.length} cartão(ões) neste baralho${deck.archived?' · fora da agenda, disponível para estudo manual':''}</p>
     </div>
-    <button class="ghost-btn" style="color:var(--error); border-color:var(--error);" onclick="deleteDeck('${deck.id}')" title="Excluir baralho">🗑 Excluir baralho</button>
+    <div style="display:flex; gap:7px; flex-wrap:wrap; justify-content:flex-end;">
+      <button class="ghost-btn" onclick="toggleDeckArchive('${deck.id}')" title="${deck.archived?'Voltar este baralho para a agenda':'Manter para estudo manual, sem aparecer na agenda'}">${deck.archived?'↩ Reativar':'📦 Arquivar'}</button>
+      <button class="ghost-btn" style="color:var(--error); border-color:var(--error);" onclick="deleteDeck('${deck.id}')" title="Excluir baralho">🗑 Excluir</button>
+    </div>
   </div>
   <div class="stat-row">
     <div class="stat-chip"><div class="num">${cards.length}</div><div class="lbl">total de cartões</div></div>
@@ -8295,13 +8321,13 @@ function submitNewTerm(deckId){
 }
 
 function renderStudyPicker(deck){
-  const due = getDueCards(deck.id).length;
+  const due = getDueCards(deck.id,{includeArchived:true}).length;
   const total = (state.cards[deck.id]||[]).length;
   if(total === 0){
     return `<div style="color:var(--text-faint); font-size:13.5px;">Adicione ${deck.type==='language'?'termos':'cartões'} na aba "Cartões" antes de estudar.</div>`;
   }
   const dueLine = `<p style="color:var(--text-muted); font-size:13.5px; margin-bottom:14px;">
-    ${due>0 ? `${due} ${deck.type==='language'?'termo(s)':'cartão(ões)'} prontos para revisão hoje.` : `Nada vencido — você pode revisar o baralho inteiro mesmo assim.`}
+    ${deck.archived ? `Este baralho está arquivado: não entra na agenda, mas pode ser estudado livremente.` : due>0 ? `${due} ${deck.type==='language'?'termo(s)':'cartão(ões)'} prontos para revisão hoje.` : `Nada vencido — você pode revisar o baralho inteiro mesmo assim.`}
   </p>`;
   if(deck.type === 'language'){
     const enabled = getEnabledExercises(deck);
