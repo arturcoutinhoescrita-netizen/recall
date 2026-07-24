@@ -18,6 +18,13 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
 <style>
+  @font-face{ font-family:'Cinzel Decorative'; src:url('fonts/CinzelDecorative-Regular.ttf') format('truetype'); font-display:swap; }
+  @font-face{ font-family:'Great Vibes'; src:url('fonts/GreatVibes-Regular.ttf') format('truetype'); font-display:swap; }
+  @font-face{ font-family:'Nickainley'; src:url('fonts/Nickainley-Normal.otf') format('opentype'); font-display:swap; }
+  @font-face{ font-family:'SangGuru'; src:url('fonts/SangGuru-Regular.ttf') format('truetype'); font-display:swap; }
+  @font-face{ font-family:'Special Elite'; src:url('fonts/SpecialElite-Regular.ttf') format('truetype'); font-display:swap; }
+  @font-face{ font-family:'Zeyada'; src:url('fonts/Zeyada-Regular.ttf') format('truetype'); font-display:swap; }
+  @font-face{ font-family:'Arial Rounded'; src:url('fonts/ArialRounded-Bold.ttf') format('truetype'); font-weight:700; font-display:swap; }
   :root{
     /* tema escuro (padrão) */
     --bg:#14162B;
@@ -4915,6 +4922,11 @@ function applyRichCommand(cmd, value){
 function setRichTextColor(color){ applyRichCommand('foreColor', color); }
 function setRichHighlight(color){ applyRichCommand('hiliteColor', color); }
 function setRichFont(font){ applyRichCommand('fontName', font); }
+function setRichHeading(level){
+  if(!['h1','h2','h3'].includes(level)) return;
+  state.lastRichHeading=level;
+  applyRichCommand('formatBlock',`<${level}>`);
+}
 function setRichFontSize(size){
   const px=Math.max(8,Math.min(72,Number(size)||14));
   const editor=document.getElementById('note-editor-plain');
@@ -6872,7 +6884,7 @@ function renderSidebar(){
       <div>
         <h1>Recall</h1>
         <span>REPETIÇÃO ESPAÇADA</span>
-        <span class="brand-version">v2026.07.24.34</span>
+        <span class="brand-version">v2026.07.24.37</span>
       </div>
     </div>
     <button class="ghost-btn" style="font-size:13px; padding:10px 12px; margin-bottom:6px; ${(state.view==='library'||state.view==='book') ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="openLibrary()">📚 Leituras</button>
@@ -7202,9 +7214,6 @@ function renderNotesToolbar(format){
   const noSteal = isMarkdown ? '' : `onmousedown="event.preventDefault()" `;
   const bold = isMarkdown ? `applyMdWrap('${id}','**')` : `applyRichCommand('bold')`;
   const italic = isMarkdown ? `applyMdWrap('${id}','*')` : `applyRichCommand('italic')`;
-  const h1 = isMarkdown ? `applyMdLinePrefix('${id}','# ')` : `applyRichCommand('formatBlock','<h1>')`;
-  const h2 = isMarkdown ? `applyMdLinePrefix('${id}','## ')` : `applyRichCommand('formatBlock','<h2>')`;
-  const h3 = isMarkdown ? `applyMdLinePrefix('${id}','### ')` : `applyRichCommand('formatBlock','<h3>')`;
   const list = isMarkdown ? `applyMdLinePrefix('${id}','- ')` : `applyRichCommand('insertUnorderedList')`;
   const olist = isMarkdown ? `applyMdLinePrefix('${id}','1. ')` : `applyRichCommand('insertOrderedList')`;
   const indent = isMarkdown ? `insertTabIndent('${id}')` : `insertRichIndent()`;
@@ -7223,11 +7232,9 @@ function renderNotesToolbar(format){
     <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Itálico" onclick="${italic}"><em>I</em></button>
     ${!isMarkdown ? `<span style="display:inline-flex; position:relative;"><button class="icon-btn" ${noSteal}title="Aplicar última cor de texto" onclick="applyLastRichColor('text')" style="font-size:13px; border-bottom:3px solid ${state.lastRichTextColor||'#F5A623'};">A</button><button class="icon-btn" ${noSteal}title="Escolher cor do texto" onclick="openRichColorMenu('text')" style="width:20px; font-size:10px; margin-left:-4px;">▾</button>${renderRichColorPalette('text')}</span>
     <span style="display:inline-flex; position:relative;"><button class="icon-btn" ${noSteal}title="Aplicar último destaque" onclick="applyLastRichColor('highlight')" style="font-size:14px; border-bottom:3px solid ${state.lastRichHighlight||'#F5D76E'};">🖍</button><button class="icon-btn" ${noSteal}title="Escolher cor do destaque" onclick="openRichColorMenu('highlight')" style="width:20px; font-size:10px; margin-left:-4px;">▾</button>${renderRichColorPalette('highlight')}</span>
-    <select title="Fonte" style="width:auto; max-width:108px; padding:5px 7px; font-size:11px;" onchange="setRichFont(this.value)"><option value="inherit">Fonte</option><option value="Arial">Arial</option><option value="Georgia">Georgia</option><option value="Verdana">Verdana</option><option value="Courier New">Monoespaçada</option></select>
+    <select title="Fonte" style="width:auto; max-width:150px; padding:5px 7px; font-size:11px;" onchange="setRichFont(this.value)"><option value="inherit">Fonte</option><option value="Arial">Arial</option><option value="Arial Rounded">Arial Rounded</option><option value="Georgia">Georgia</option><option value="Verdana">Verdana</option><option value="Courier New">Monoespaçada</option><option value="Cinzel Decorative">Cinzel Decorative</option><option value="Great Vibes">Great Vibes</option><option value="Nickainley">Nickainley</option><option value="SangGuru">SangGuru</option><option value="Special Elite">Special Elite</option><option value="Zeyada">Zeyada</option></select>
     <select title="Tamanho da fonte" style="width:auto; max-width:84px; padding:5px 7px; font-size:11px;" onchange="setRichFontSize(this.value)"><option value="">Tamanho</option><option value="10">10 px</option><option value="12">12 px</option><option value="14">14 px</option><option value="16">16 px</option><option value="18">18 px</option><option value="20">20 px</option><option value="24">24 px</option><option value="28">28 px</option><option value="32">32 px</option><option value="36">36 px</option></select>` : ''}
-    <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Título 1" onclick="${h1}">H1</button>
-    <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Título 2" onclick="${h2}">H2</button>
-    <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Título 3" onclick="${h3}">H3</button>
+    ${!isMarkdown ? `<select title="Estilo de título" style="width:auto; max-width:86px; padding:5px 7px; font-size:11px;" onchange="setRichHeading(this.value)"><option value="h1" ${(state.lastRichHeading||'h1')==='h1'?'selected':''}>H1</option><option value="h2" ${(state.lastRichHeading||'h1')==='h2'?'selected':''}>H2</option><option value="h3" ${(state.lastRichHeading||'h1')==='h3'?'selected':''}>H3</option></select>` : `<button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Título 1" onclick="applyMdLinePrefix('${id}','# ')">H1</button>`}
     <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Lista" onclick="${list}">•</button>
     <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Lista numerada" onclick="${olist}">1.</button>
     <button class="icon-btn" ${noSteal}title="Recuo de parágrafo (igual à tecla Tab)" onclick="${indent}">↹</button>
@@ -7239,10 +7246,6 @@ function renderNotesToolbar(format){
     <button class="icon-btn" ${noSteal}title="Link pra outra nota (${noteShortcutLabel('l')})" onclick="${wikiLink}">🔀</button>
     <button class="icon-btn" ${noSteal}title="Imagem por link" onclick="openInsertImageModal()">🖼️</button>
     <button class="icon-btn" ${noSteal}title="Enviar imagem do aparelho" onclick="openNoteImageUploadPicker()">📤</button>
-    <span style="width:1px; background:var(--border); margin:2px 2px;"></span>
-    <button class="icon-btn" title="Criar cartão colando um texto (útil no celular)" onclick="openNotePasteCardModal()">📌</button>
-    <button class="icon-btn" title="Corrigir um texto colado (útil no celular)" onclick="openNotePasteCorrectionModal()">✏️</button>
-    <button class="icon-btn" title="Opinião da IA sobre um texto colado (útil no celular)" onclick="openNotePasteOpinionModal()">💭</button>
   </div>`;
 }
 function renderLibraryView(){
