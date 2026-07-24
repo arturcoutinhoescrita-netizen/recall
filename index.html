@@ -95,7 +95,10 @@
   @media (min-width:821px){
     #app > .sidebar, #app > .sidebar-edge-trigger{ display:none; }
     .desktop-top-nav{ display:flex; align-items:center; gap:5px; align-self:center; margin:16px 0 0; padding:5px; border:1px solid var(--border); border-radius:12px; background:var(--surface); box-shadow:0 5px 18px rgba(0,0,0,.08); }
-    .desktop-top-brand{ display:flex; align-items:center; gap:7px; padding:3px 9px 3px 3px; margin-right:3px; border-right:1px solid var(--border); color:var(--text); text-align:left; }
+    .desktop-top-brand{ display:flex; align-items:center; gap:7px; padding:3px 12px 3px 3px; margin-right:3px; border:0; border-right:1px solid var(--border); border-radius:0; background:transparent; color:var(--text); text-align:left; box-shadow:none; }
+    .desktop-top-brand:hover{ background:transparent; filter:none; transform:none; }
+    .desktop-top-brand:focus{ outline:none; }
+    .desktop-top-brand:focus-visible{ outline:2px solid var(--accent-dim); outline-offset:3px; border-radius:8px; }
     .desktop-top-brand .brand-mark{ width:30px; height:30px; border-radius:8px; }
     .desktop-top-brand strong{ display:block; font-size:12px; line-height:1.1; }
     .desktop-top-brand small{ display:block; color:var(--text-faint); font-size:9px; letter-spacing:.06em; text-transform:uppercase; margin-top:2px; }
@@ -7036,7 +7039,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.24.47</span>
+        <span class="brand-version">v2026.07.24.48</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -7094,7 +7097,7 @@ function renderMobileSidebar(){
   const section=state.mobileHomeSection||null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.47</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.48</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${section==='decks' ? `<div class="mobile-deck-actions"><button class="icon-btn" title="Novo baralho" onclick="openNewDeckModal()">＋</button><button class="icon-btn" title="Tirar foto para criar cartões" onclick="openPhotoImportPicker(true)">📷</button><button class="icon-btn" title="Carregar imagem para criar cartões" onclick="openPhotoImportPicker(false)">🖼️</button></div><div class="mobile-deck-list">${getOrderedDecks().length ? getOrderedDecks().map(d=>{ const due=getDueCards(d.id).length; return `<div class="mobile-deck-card" onclick="selectDeck('${d.id}')"><span class="deck-dot" style="background:${d.color}"></span><span class="deck-item-name">${escapeHtml(d.name)}</span>${due?`<span class="due-badge">${due}</span>`:''}<button class="mobile-deck-star ${d.favorite?'active':''}" title="Favoritar" onclick="event.stopPropagation(); toggleDeckFavorite('${d.id}')">${d.favorite?'★':'☆'}</button></div>`; }).join('') : `<p style="font-size:12px; color:var(--text-faint); text-align:center;">Crie seu primeiro baralho.</p>`}</div>`:''}
