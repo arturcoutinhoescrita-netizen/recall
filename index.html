@@ -369,8 +369,8 @@
   .notes-plain-editor{ width:100%; height:100%; outline:none; cursor:text; }
   .notes-editor-panes.page-view{ padding:24px; background:var(--bg-2); }
   .notes-editor-panes.page-view .notes-plain-editor{ width:min(100%, 794px); min-height:1123px; height:auto; margin:0 auto; padding:72px 76px; background:var(--surface); border:1px solid var(--border); border-radius:2px; box-shadow:0 8px 30px rgba(0,0,0,.18); }
-  .notes-paged-preview{ display:flex; flex-direction:column; gap:14px; align-items:center; width:100%; overflow-x:auto; }
-  .note-page-frame{ position:relative; flex:none; }
+  .notes-paged-preview{ display:flex; flex-direction:column; gap:14px; align-items:flex-start; width:100%; overflow-x:auto; }
+  .note-page-frame{ position:relative; flex:none; margin-inline:auto; }
   .note-page-sheet{ position:absolute; inset:0 auto auto 0; box-sizing:border-box; transform-origin:top left; background:var(--surface); border:1px solid var(--border); box-shadow:0 8px 30px rgba(0,0,0,.18); overflow:hidden; line-height:1.7; font-size:14.5px; }
   .note-page-sheet-content{ overflow:hidden; white-space:pre-wrap; overflow-wrap:anywhere; word-break:normal; }
   .note-page-sheet-number{ position:absolute; bottom:0; left:0; right:0; font-size:12px; color:var(--text-faint); }
@@ -447,7 +447,7 @@
     .notes-layout.note-open .notes-explorer{ display:none; }
     .notes-layout:not(.note-open) .notes-editor{ display:none; }
     .notes-editor-panes.split{ flex-direction:column; }
-    .notes-paged-preview{ align-items:center; overflow-x:hidden; }
+    .notes-paged-preview{ align-items:flex-start; overflow-x:auto; }
   }
 </style>
 <script>
@@ -4567,7 +4567,11 @@ function renderPagedNotePreview(note, content){
   const configuredWidth=s.width*factor, configuredHeight=s.height*factor, configuredMargin=s.margin*factor;
   const pane=document.querySelector('.notes-editor-panes');
   const availableWidth=Math.max(240,(pane ? pane.clientWidth : window.innerWidth)-48);
-  const scale=Math.min(1,availableWidth/configuredWidth);
+  // Todos os formatos usam o mesmo nível de zoom, calculado pelo 15×21.
+  // Antes A4 e A3 eram espremidos para a mesma largura da tela, diminuindo
+  // fonte e margens. Agora a folha realmente cresce e pode rolar na horizontal.
+  const referenceWidth=15*37.795;
+  const scale=Math.min(1,availableWidth/referenceWidth);
   const displayWidth=configuredWidth*scale, displayHeight=configuredHeight*scale;
   const footerReserve=s.pageNumbers?Math.max(22,Math.min(34,configuredMargin*.55)):0;
   const contentWidth=Math.max(40,configuredWidth-configuredMargin*2);
@@ -6525,7 +6529,7 @@ function renderSidebar(){
       <div>
         <h1>Recall</h1>
         <span>REPETIÇÃO ESPAÇADA</span>
-        <span class="brand-version">v2026.07.24.24</span>
+        <span class="brand-version">v2026.07.24.25</span>
       </div>
     </div>
     <button class="ghost-btn" style="font-size:13px; padding:10px 12px; margin-bottom:6px; ${(state.view==='library'||state.view==='book') ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="openLibrary()">📚 Leituras</button>
