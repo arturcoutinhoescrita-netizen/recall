@@ -735,6 +735,7 @@ let state = {
   routineActivities: [],
   routineActive: null,
   routineLastCheckInAt: null,
+  pwaInstallAvailable: false,
   globalAiMessages: [],
   fileHandle: null,
   pendingFileHandle: null,
@@ -768,6 +769,16 @@ function showToast(message, type){
   render();
   if(toastTimer) clearTimeout(toastTimer);
   toastTimer = setTimeout(()=>{ state.toast = null; render(); }, 3800);
+}
+let deferredPwaInstallPrompt = null;
+async function requestPwaInstall(){
+  if(!deferredPwaInstallPrompt){ showToast('Use “Adicionar à Tela de Início” no menu do navegador para instalar o Letther B.'); return; }
+  const promptEvent=deferredPwaInstallPrompt;
+  deferredPwaInstallPrompt=null;
+  state.pwaInstallAvailable=false;
+  await promptEvent.prompt();
+  await promptEvent.userChoice.catch(()=>null);
+  render();
 }
 function renderToast(){
   const t = state.toast;
@@ -2523,7 +2534,14 @@ function stopRoutineActivity(showMessage=true){
 }
 function ensureRoutineTimer(){
   if(routineTimer) return;
-  routineTimer=setInterval(()=>{ if(state.view==='routine'&&state.routineActive) render(); },1000);
+  routineTimer=setInterval(()=>{
+    syncRoutineTimerDisplay();
+  },1000);
+}
+function syncRoutineTimerDisplay(){
+  if(state.view!=='routine'||!state.routineActive) return;
+  const elapsed=formatRoutineElapsed(state.routineActive.startedAt);
+  document.querySelectorAll('[data-routine-elapsed]').forEach(el=>{ el.textContent=elapsed; });
 }
 function openRoutine(){
   finishReadingActivity(); finishWritingActivity();
@@ -2566,11 +2584,17 @@ async function submitRoutineCatchup(){
 function renderRoutineView(){
   const active=state.routineActive;
   const history=state.activities.filter(item=>item.type==='routine').slice(0,8);
-  return `<div style="max-width:980px; margin:0 auto;"><button class="ghost-btn mobile-back-btn" onclick="backToHome()">← Menu</button><div class="deck-header" style="margin-bottom:14px;"><div><h2 style="margin:0 0 5px;">🌿 Rotina</h2><p>Toque em uma atividade para iniciar; toque novamente para encerrar e registrar na Agenda.</p></div><button class="primary-btn" onclick="openRoutineActionModal()">＋ Criar atividade</button></div>${active?`<div class="routine-active-banner"><div><strong>${escapeHtml(active.icon)} ${escapeHtml(active.title)}</strong><div style="font-size:12px; color:var(--text-muted); margin-top:3px;">Em andamento desde ${routineTimeLabel(active.startedAt)} · <span class="mono">${formatRoutineElapsed(active.startedAt)}</span></div></div><button class="primary-btn" onclick="stopRoutineActivity()">✓ Concluir</button></div>`:''}<div class="routine-grid">${getRoutineActions().map(item=>`<button class="routine-action ${active?.id===item.id?'active':''}" onclick="startRoutineActivity('${item.id}')"><span class="routine-action-icon">${escapeHtml(item.icon)}</span><span class="routine-action-name">${escapeHtml(item.title)}</span><span class="routine-action-time">${active?.id===item.id?formatRoutineElapsed(active.startedAt):'Iniciar'}</span></button>`).join('')}</div><div style="margin-top:22px;"><h3 style="font-size:15px; margin:0 0 8px;">Últimos registros</h3>${history.length?`<div style="display:flex; flex-direction:column; gap:6px;">${history.map(item=>`<div class="agenda-card" style="margin:0; display:flex; justify-content:space-between; gap:10px;"><span>${escapeHtml(item.icon||'✅')} <strong>${escapeHtml(item.title||'Atividade')}</strong></span><span class="agenda-meta">${new Date(item.at).toLocaleDateString('pt-BR',{day:'2-digit',month:'short'})} · ${routineTimeLabel(item.startedAt||item.at)}–${routineTimeLabel(item.endedAt||(item.at+(item.durationMs||0)))} · ${formatActivityDuration(item.durationMs)}</span></div>`).join('')}</div>`:`<p style="color:var(--text-faint); font-size:13px;">Seus registros de rotina aparecerão aqui e na Agenda.</p>`}</div></div>`;
+  return `<div style="max-width:980px; margin:0 auto;"><button class="ghost-btn mobile-back-btn" onclick="backToHome()">← Menu</button><div class="deck-header" style="margin-bottom:14px;"><div><h2 style="margin:0 0 5px;">🌿 Rotina</h2><p>Toque em uma atividade para iniciar; toque novamente para encerrar e registrar na Agenda.</p></div><button class="primary-btn" onclick="openRoutineActionModal()">＋ Criar atividade</button></div>${active?`<div class="routine-active-banner"><div><strong>${escapeHtml(active.icon)} ${escapeHtml(active.title)}</strong><div style="font-size:12px; color:var(--text-muted); margin-top:3px;">Em andamento desde ${routineTimeLabel(active.startedAt)} · <span class="mono" data-routine-elapsed>${formatRoutineElapsed(active.startedAt)}</span></div></div><button class="primary-btn" onclick="stopRoutineActivity()">✓ Concluir</button></div>`:''}<div class="routine-grid">${getRoutineActions().map(item=>`<button class="routine-action ${active?.id===item.id?'active':''}" onclick="startRoutineActivity('${item.id}')"><span class="routine-action-icon">${escapeHtml(item.icon)}</span><span class="routine-action-name">${escapeHtml(item.title)}</span><span class="routine-action-time" ${active?.id===item.id?'data-routine-elapsed':''}>${active?.id===item.id?formatRoutineElapsed(active.startedAt):'Iniciar'}</span></button>`).join('')}</div><div style="margin-top:22px;"><h3 style="font-size:15px; margin:0 0 8px;">Últimos registros</h3>${history.length?`<div style="display:flex; flex-direction:column; gap:6px;">${history.map(item=>`<div class="agenda-card" style="margin:0; display:flex; justify-content:space-between; gap:10px;"><span>${escapeHtml(item.icon||'✅')} <strong>${escapeHtml(item.title||'Atividade')}</strong></span><span class="agenda-meta">${new Date(item.at).toLocaleDateString('pt-BR',{day:'2-digit',month:'short'})} · ${routineTimeLabel(item.startedAt||item.at)}–${routineTimeLabel(item.endedAt||(item.at+(item.durationMs||0)))} · ${formatActivityDuration(item.durationMs)}</span></div>`).join('')}</div>`:`<p style="color:var(--text-faint); font-size:13px;">Seus registros de rotina aparecerão aqui e na Agenda.</p>`}</div></div>`;
 }
 function openAgendaEventModal(eventId){
   const event=eventId && state.agendaEvents.find(item=>item.id===eventId);
   state.modal={type:'agenda-event',eventId:event?event.id:null,title:event?event.title:'',date:event?event.date:'',time:event?event.time:'',notes:event?event.notes:''}; render();
+}
+function openAgendaEventAt(event,date,time){
+  event.preventDefault();
+  event.stopPropagation();
+  state.modal={type:'agenda-event',eventId:null,title:'',date:date||'',time:time||'',notes:''};
+  render();
 }
 function confirmAgendaEvent(){
   const m=state.modal; if(!m || m.type!=='agenda-event') return;
@@ -2655,7 +2679,7 @@ function renderAgendaWeekView(){
     const dayTasks=state.agendaEvents.filter(event=>event.date===key&&!event.time).filter(event=>!event.autoReview||event.completedAt);
     const reviews=getAgendaReviewGroups(key).filter(review=>!state.agendaEvents.some(event=>event.date===key&&event.deckId===review.deckId&&!event.autoReview));
     const scheduled=state.agendaEvents.filter(event=>event.date===key&&event.time);
-    return `<div class="agenda-week-day ${key===todayKey?'today':''}"><div class="agenda-week-title">${date.toLocaleDateString('pt-BR',{weekday:'short'}).replace('.','')}<br><span style="color:var(--text-faint);">${date.getDate()}</span></div><div class="agenda-day-tasks" ondragover="agendaDragOver(event)" ondragleave="agendaDragLeave(event)" ondrop="dropAgendaEvent(event,'${key}',null)"><span class="agenda-day-tasks-label">TAREFAS DO DIA</span>${dayTasks.map(event=>eventCard(event,true)).join('')}${reviews.map(review=>`<button class="agenda-review-task" onclick="planAgendaReview('${review.deckId}','${key}',${review.count})">🧠 Revisar ${escapeHtml(review.name)} · ${review.count}</button>`).join('')}${!dayTasks.length&&!reviews.length?`<span style="font-size:10px; color:var(--text-faint);">Nenhuma tarefa sem hora</span>`:''}</div><div class="agenda-day-hours">${hours.map(time=>`<div class="agenda-slot" ondragover="agendaDragOver(event)" ondragleave="agendaDragLeave(event)" ondrop="dropAgendaEvent(event,'${key}','${time}')"><span class="agenda-slot-time">${time}</span>${scheduled.filter(event=>String(event.time).slice(0,2)===time.slice(0,2)).map(event=>eventCard(event,false)).join('')}</div>`).join('')}</div></div>`;
+    return `<div class="agenda-week-day ${key===todayKey?'today':''}"><div class="agenda-week-title">${date.toLocaleDateString('pt-BR',{weekday:'short'}).replace('.','')}<br><span style="color:var(--text-faint);">${date.getDate()}</span></div><div class="agenda-day-tasks" ondragover="agendaDragOver(event)" ondragleave="agendaDragLeave(event)" ondrop="dropAgendaEvent(event,'${key}',null)"><span class="agenda-day-tasks-label">TAREFAS DO DIA</span>${dayTasks.map(event=>eventCard(event,true)).join('')}${reviews.map(review=>`<button class="agenda-review-task" onclick="planAgendaReview('${review.deckId}','${key}',${review.count})">🧠 Revisar ${escapeHtml(review.name)} · ${review.count}</button>`).join('')}${!dayTasks.length&&!reviews.length?`<span style="font-size:10px; color:var(--text-faint);">Nenhuma tarefa sem hora</span>`:''}</div><div class="agenda-day-hours">${hours.map(time=>`<div class="agenda-slot" ondragover="agendaDragOver(event)" ondragleave="agendaDragLeave(event)" ondrop="dropAgendaEvent(event,'${key}','${time}')" oncontextmenu="openAgendaEventAt(event,'${key}','${time}')"><span class="agenda-slot-time">${time}</span>${scheduled.filter(event=>String(event.time).slice(0,2)===time.slice(0,2)).map(event=>eventCard(event,false)).join('')}</div>`).join('')}</div></div>`;
   };
   return `<div style="max-width:1400px; margin:0 auto;"><button class="ghost-btn mobile-back-btn" onclick="backToHome()">← Menu</button><div class="deck-header" style="margin-bottom:14px;"><div><h2 style="margin:0 0 5px;">🗓️ Agenda</h2><p>Planeje a semana e arraste suas tarefas para o dia e horário desejados.</p></div><button class="primary-btn" onclick="openAgendaEventModal()">＋ Novo evento</button></div><div class="agenda-week-toolbar"><div class="agenda-week-navigation"><button class="icon-btn" aria-label="Semana anterior" title="Semana anterior" onclick="changeAgendaWeek(-1)">‹</button><button class="ghost-btn" style="padding:6px 9px; font-size:12px;" onclick="goToAgendaToday()">Hoje</button><button class="icon-btn" aria-label="Próxima semana" title="Próxima semana" onclick="changeAgendaWeek(1)">›</button></div><strong class="agenda-week-period">${start.toLocaleDateString('pt-BR',{day:'2-digit',month:'short'})} — ${week[6].toLocaleDateString('pt-BR',{day:'2-digit',month:'short',year:'numeric'})}</strong><div class="agenda-week-actions"><button class="ghost-btn" style="padding:6px 9px; font-size:12px;" onclick="openAgendaSuggestions()">✨ Sugerir</button><button class="ghost-btn active-mode" style="padding:6px 9px; font-size:12px;" onclick="setAgendaView('week')">Semana</button><button class="ghost-btn" style="padding:6px 9px; font-size:12px;" onclick="setAgendaView('month')">Mês</button></div></div><div class="agenda-week-layout"><aside class="agenda-todo" ondragover="agendaDragOver(event)" ondragleave="agendaDragLeave(event)" ondrop="dropAgendaEvent(event,null,null)"><div style="display:flex; justify-content:space-between; align-items:center;"><h3 style="margin:0; font-size:15px;">📌 A fazer</h3><span style="font-size:11px; color:var(--text-faint);">${todos.length}</span></div><p style="font-size:11.5px; color:var(--text-faint);">Sem dia definido.</p>${todos.map(event=>eventCard(event,true)).join('') || `<p style="font-size:12px; color:var(--text-faint);">Arraste uma tarefa para um dia ou horário.</p>`}</aside><section class="agenda-week">${week.map(dayColumn).join('')}</section></div></div>`;
 }
@@ -7588,7 +7612,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='routine'?'active':''}" onclick="openRoutine()">🌿 Rotina</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.24.76</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.24.79</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -7611,7 +7635,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.24.76</span>
+        <span class="brand-version">v2026.07.24.79</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -7670,7 +7694,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.76</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.79</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
@@ -9176,6 +9200,7 @@ function renderAppOptionsModal(){
       <button class="ghost-btn" onclick="triggerImportBackup(); closeModal();">⇧ Importar backup</button>
       ${(!hasClaudeStorage() && hasFileSystemAccess()) ? `<button class="ghost-btn" onclick="saveToFileSystem(); closeModal();">💾 ${state.fileHandle?'Sincronizar arquivo local':'Salvar em arquivo local'}</button><button class="ghost-btn" onclick="openFromFileSystem(); closeModal();">📂 Abrir arquivo local</button>` : ''}
       <button class="ghost-btn" onclick="openApiKeyModal()">🔑 ${getApiKey()?'Gerenciar chaves de API':'Configurar chaves de API'}</button>
+      <button class="ghost-btn" onclick="requestPwaInstall()">📲 ${state.pwaInstallAvailable?'Instalar o Letther B':'Como instalar no celular'}</button>
       <button class="ghost-btn" onclick="toggleTheme(); closeModal();">${getTheme()==='light'?'🌙 Usar tema escuro':'☀️ Usar tema claro'}</button>
       ${hasFirebaseUser() ? `<button class="ghost-btn" style="color:var(--error);" onclick="signOutUser(); closeModal();">Sair da conta</button>` : ''}
     </div>
@@ -10142,6 +10167,14 @@ setInterval(()=>{ if(state.view === 'study'){ const t = document.querySelector('
 setInterval(maintainActivityTimers, 60000);
 document.addEventListener('visibilitychange', () => {
   if(document.hidden){ finishReadingActivity(); finishWritingActivity(); }
+  else { syncRoutineTimerDisplay(); }
+});
+window.addEventListener('pageshow', () => { syncRoutineTimerDisplay(); });
+window.addEventListener('beforeinstallprompt', event => {
+  event.preventDefault();
+  deferredPwaInstallPrompt=event;
+  state.pwaInstallAvailable=true;
+  if(state.modal?.type==='app-options') render();
 });
 
 /* Enter avança para a próxima pergunta quando o botão "Próximo →" está visível,
