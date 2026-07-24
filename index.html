@@ -505,6 +505,9 @@
   .agenda-week-day{ min-height:440px; border:1px solid var(--border); border-radius:12px; background:var(--surface); padding:8px; }
   .agenda-week-day.today{ border-color:var(--accent); }
   .agenda-week-title{ font-size:12px; font-weight:700; text-align:center; padding:3px 0 8px; }
+  .agenda-day-tasks{ margin:-2px 0 7px; padding:6px; border-radius:8px; background:var(--bg-2); }
+  .agenda-day-tasks-label{ display:block; margin-bottom:4px; color:var(--text-faint); font-size:9px; font-weight:700; letter-spacing:.05em; }
+  .agenda-review-task{ width:100%; margin:3px 0; padding:5px 6px; border:1px solid var(--accent-dim); border-radius:6px; background:var(--accent-soft); color:var(--text); text-align:left; font:inherit; font-size:10px; line-height:1.25; cursor:pointer; }
   .agenda-slot{ min-height:43px; border-top:1px solid var(--border); padding:4px 2px 3px 25px; position:relative; }
   .agenda-slot:first-of-type{ border-top:0; }
   .agenda-slot-time{ position:absolute; left:1px; top:5px; font-size:9px; color:var(--text-faint); }
@@ -2422,7 +2425,7 @@ function confirmAgendaEvent(){
   const m=state.modal; if(!m || m.type!=='agenda-event') return;
   const title=String(m.title||'').trim(); if(!title){ showToast('Dê um título à tarefa.', 'error'); return; }
   const event=m.eventId ? state.agendaEvents.find(item=>item.id===m.eventId) : null;
-  const value={id:event?event.id:uid(),title,date:m.date||null,time:m.time||null,notes:m.notes||'',createdAt:event?event.createdAt:Date.now(),updatedAt:Date.now()};
+  const value={id:event?event.id:uid(),title,date:m.date||null,time:m.time||null,notes:m.notes||'',deckId:m.deckId||(event&&event.deckId)||null,createdAt:event?event.createdAt:Date.now(),updatedAt:Date.now()};
   if(event) Object.assign(event,value); else state.agendaEvents.unshift(value);
   state.modal=null; saveData(); render();
 }
@@ -2444,6 +2447,38 @@ function getActivityTotals(activities){
     return totals;
   },{reading:0,writing:0,flashcards:0,cards:0});
 }
+function getAgendaReviewGroups(dateKey){
+  const today=agendaDateKey(new Date());
+  return state.decks.map(deck=>{
+    const count=(state.cards[deck.id]||[]).filter(card=>{
+      if(card.learned) return false;
+      const dueKey=agendaDateKey(card.due||Date.now());
+      return dateKey===today ? dueKey<=today : dueKey===dateKey;
+    }).length;
+    return count ? {deckId:deck.id,name:deck.name,count} : null;
+  }).filter(Boolean);
+}
+function planAgendaReview(deckId,date,count){
+  const deck=state.decks.find(item=>item.id===deckId);
+  state.modal={type:'agenda-event',title:`Revisar ${deck?deck.name:'flashcards'} (${count})`,date,time:'',notes:'Planejamento de revisão sugerido pela Agenda.',deckId}; render();
+}
+function openAgendaSuggestions(){
+  const start=agendaDateFromKey(state.agendaWeekStart||agendaDateKey(new Date()));
+  start.setDate(start.getDate()-((start.getDay()+6)%7));
+  const todos=state.agendaEvents.filter(event=>!event.date&&!event.completedAt).slice(0,5);
+  const slots=[];
+  for(let day=0;day<7;day++) for(const time of ['09:00','14:00','19:00']){
+    const date=new Date(start); date.setDate(start.getDate()+day); const key=agendaDateKey(date);
+    if(!state.agendaEvents.some(event=>event.date===key&&event.time===time)) slots.push({date:key,time});
+  }
+  state.modal={type:'agenda-suggestions',suggestions:todos.map((event,index)=>({eventId:event.id,slot:slots[index]||null}))}; render();
+}
+function applyAgendaSuggestion(eventId,date,time){
+  const event=state.agendaEvents.find(item=>item.id===eventId); if(!event||!date||!time) return;
+  event.date=date; event.time=time; event.updatedAt=Date.now(); saveData();
+  if(state.modal?.type==='agenda-suggestions') state.modal.suggestions=state.modal.suggestions.filter(item=>item.eventId!==eventId);
+  render();
+}
 function isToday(timestamp){
   const now = new Date(), date = new Date(timestamp);
   return now.getFullYear()===date.getFullYear() && now.getMonth()===date.getMonth() && now.getDate()===date.getDate();
@@ -2461,11 +2496,17 @@ function renderAgendaWeekView(){
   start.setDate(start.getDate()-((start.getDay()+6)%7));
   const week=Array.from({length:7},(_,index)=>{ const date=new Date(start); date.setDate(start.getDate()+index); return date; });
   const todayKey=agendaDateKey(new Date());
-  const todos=state.agendaEvents.filter(event=>(!event.date || !event.time) && !event.completedAt);
-  const completedToday=state.agendaEvents.filter(event=>event.completedAt && event.date===todayKey);
+  const todos=state.agendaEvents.filter(event=>!event.date && !event.completedAt);
   const hours=Array.from({length:12},(_,i)=>String(i+8).padStart(2,'0')+':00');
   const eventCard=(event, todo)=>`<button class="agenda-event ${todo?'todo':''} ${event.completedAt?'done':''}" draggable="${event.completedAt?'false':'true'}" ${event.completedAt?'':'ondragstart="dragAgendaEvent(event,\''+event.id+'\')"'} onclick="openAgendaEventModal('${event.id}')">${event.completedAt?'✓ ':''}${event.time&&!todo?`<strong>${event.time}</strong> `:''}${escapeHtml(event.title)}${event.autoReview&&!event.completedAt?` · ${event.expectedCount||0}`:''}</button>`;
-  return `<div style="max-width:1400px; margin:0 auto;"><button class="ghost-btn mobile-back-btn" onclick="backToHome()">← Menu</button><div class="deck-header" style="margin-bottom:14px;"><div><h2 style="margin:0 0 5px;">🗓️ Agenda</h2><p>Planeje a semana e arraste suas tarefas para o dia e horário desejados.</p></div><button class="primary-btn" onclick="openAgendaEventModal()">＋ Novo evento</button></div><div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:12px;"><div style="display:flex; gap:6px;"><button class="icon-btn" onclick="changeAgendaWeek(-1)">‹</button><button class="ghost-btn" style="padding:6px 9px; font-size:12px;" onclick="goToAgendaToday()">Hoje</button><button class="icon-btn" onclick="changeAgendaWeek(1)">›</button></div><strong>${start.toLocaleDateString('pt-BR',{day:'2-digit',month:'short'})} — ${week[6].toLocaleDateString('pt-BR',{day:'2-digit',month:'short',year:'numeric'})}</strong><div style="display:flex; gap:4px;"><button class="ghost-btn active-mode" style="padding:6px 9px; font-size:12px;" onclick="setAgendaView('week')">Semana</button><button class="ghost-btn" style="padding:6px 9px; font-size:12px;" onclick="setAgendaView('month')">Mês</button></div></div><div class="agenda-week-layout"><aside class="agenda-todo" ondragover="agendaDragOver(event)" ondragleave="agendaDragLeave(event)" ondrop="dropAgendaEvent(event,null,null)"><div style="display:flex; justify-content:space-between; align-items:center;"><h3 style="margin:0; font-size:15px;">📌 A fazer</h3><span style="font-size:11px; color:var(--text-faint);">${todos.length}</span></div><p style="font-size:11.5px; color:var(--text-faint);">Sem dia ou horário definido.</p>${todos.map(event=>eventCard(event,true)).join('') || `<p style="font-size:12px; color:var(--text-faint);">Arraste uma tarefa aqui para remover seu agendamento.</p>`}</aside><section class="agenda-week">${week.map(date=>{const key=agendaDateKey(date); const scheduled=state.agendaEvents.filter(event=>event.date===key&&event.time); return `<div class="agenda-week-day ${key===todayKey?'today':''}"><div class="agenda-week-title">${date.toLocaleDateString('pt-BR',{weekday:'short'}).replace('.','')}<br><span style="color:var(--text-faint);">${date.getDate()}</span></div>${hours.map(time=>`<div class="agenda-slot" ondragover="agendaDragOver(event)" ondragleave="agendaDragLeave(event)" ondrop="dropAgendaEvent(event,'${key}','${time}')"><span class="agenda-slot-time">${time}</span>${scheduled.filter(event=>event.time===time).map(event=>eventCard(event,false)).join('')}</div>`).join('')}<div class="agenda-slot" ondragover="agendaDragOver(event)" ondragleave="agendaDragLeave(event)" ondrop="dropAgendaEvent(event,'${key}','12:00')"><span class="agenda-slot-time">+</span>${scheduled.filter(event=>!hours.includes(event.time)).map(event=>eventCard(event,false)).join('')}</div></div>`;}).join('')}</section></div></div>`;
+  const dayColumn=date=>{
+    const key=agendaDateKey(date);
+    const dayTasks=state.agendaEvents.filter(event=>event.date===key&&!event.time).filter(event=>!event.autoReview||event.completedAt);
+    const reviews=getAgendaReviewGroups(key).filter(review=>!state.agendaEvents.some(event=>event.date===key&&event.deckId===review.deckId&&!event.autoReview));
+    const scheduled=state.agendaEvents.filter(event=>event.date===key&&event.time);
+    return `<div class="agenda-week-day ${key===todayKey?'today':''}"><div class="agenda-week-title">${date.toLocaleDateString('pt-BR',{weekday:'short'}).replace('.','')}<br><span style="color:var(--text-faint);">${date.getDate()}</span></div><div class="agenda-day-tasks" ondragover="agendaDragOver(event)" ondragleave="agendaDragLeave(event)" ondrop="dropAgendaEvent(event,'${key}',null)"><span class="agenda-day-tasks-label">TAREFAS DO DIA</span>${dayTasks.map(event=>eventCard(event,true)).join('')}${reviews.map(review=>`<button class="agenda-review-task" onclick="planAgendaReview('${review.deckId}','${key}',${review.count})">🧠 Revisar ${escapeHtml(review.name)} · ${review.count}</button>`).join('')}${!dayTasks.length&&!reviews.length?`<span style="font-size:10px; color:var(--text-faint);">Nenhuma tarefa sem hora</span>`:''}</div>${hours.map(time=>`<div class="agenda-slot" ondragover="agendaDragOver(event)" ondragleave="agendaDragLeave(event)" ondrop="dropAgendaEvent(event,'${key}','${time}')"><span class="agenda-slot-time">${time}</span>${scheduled.filter(event=>String(event.time).slice(0,2)===time.slice(0,2)).map(event=>eventCard(event,false)).join('')}</div>`).join('')}</div>`;
+  };
+  return `<div style="max-width:1400px; margin:0 auto;"><button class="ghost-btn mobile-back-btn" onclick="backToHome()">← Menu</button><div class="deck-header" style="margin-bottom:14px;"><div><h2 style="margin:0 0 5px;">🗓️ Agenda</h2><p>Planeje a semana e arraste suas tarefas para o dia e horário desejados.</p></div><button class="primary-btn" onclick="openAgendaEventModal()">＋ Novo evento</button></div><div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:12px;"><div style="display:flex; gap:6px;"><button class="icon-btn" onclick="changeAgendaWeek(-1)">‹</button><button class="ghost-btn" style="padding:6px 9px; font-size:12px;" onclick="goToAgendaToday()">Hoje</button><button class="icon-btn" onclick="changeAgendaWeek(1)">›</button></div><strong>${start.toLocaleDateString('pt-BR',{day:'2-digit',month:'short'})} — ${week[6].toLocaleDateString('pt-BR',{day:'2-digit',month:'short',year:'numeric'})}</strong><div style="display:flex; gap:4px;"><button class="ghost-btn" style="padding:6px 9px; font-size:12px;" onclick="openAgendaSuggestions()">✨ Sugerir</button><button class="ghost-btn active-mode" style="padding:6px 9px; font-size:12px;" onclick="setAgendaView('week')">Semana</button><button class="ghost-btn" style="padding:6px 9px; font-size:12px;" onclick="setAgendaView('month')">Mês</button></div></div><div class="agenda-week-layout"><aside class="agenda-todo" ondragover="agendaDragOver(event)" ondragleave="agendaDragLeave(event)" ondrop="dropAgendaEvent(event,null,null)"><div style="display:flex; justify-content:space-between; align-items:center;"><h3 style="margin:0; font-size:15px;">📌 A fazer</h3><span style="font-size:11px; color:var(--text-faint);">${todos.length}</span></div><p style="font-size:11.5px; color:var(--text-faint);">Sem dia definido.</p>${todos.map(event=>eventCard(event,true)).join('') || `<p style="font-size:12px; color:var(--text-faint);">Arraste uma tarefa para um dia ou horário.</p>`}</aside><section class="agenda-week">${week.map(dayColumn).join('')}</section></div></div>`;
 }
 function renderAgendaView(){
   if((state.agendaView||'week')==='week') return renderAgendaWeekView();
@@ -7395,7 +7436,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='agenda'?'active':''}" onclick="openAgenda()">🗓️ Agenda</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.24.70</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.24.71</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -7418,7 +7459,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.24.70</span>
+        <span class="brand-version">v2026.07.24.71</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -7476,7 +7517,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.70</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.71</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
@@ -8954,6 +8995,10 @@ function closeModal(){
 function renderAgendaEventModal(m){
   return `<div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal" style="width:440px;"><h3>${m.eventId?'Editar evento':'Novo evento'}</h3><div class="field"><label>TÍTULO</label><input type="text" autofocus placeholder="Ex.: Revisar capítulo 2" value="${escapeHtml(m.title||'')}" oninput="state.modal.title=this.value"></div><div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;"><div class="field"><label>DATA (opcional)</label><input type="date" value="${escapeHtml(m.date||'')}" oninput="state.modal.date=this.value"></div><div class="field"><label>HORA (opcional)</label><input type="time" value="${escapeHtml(m.time||'')}" oninput="state.modal.time=this.value"></div></div><div class="field"><label>OBSERVAÇÃO</label><textarea rows="3" placeholder="Detalhes opcionais" oninput="state.modal.notes=this.value">${escapeHtml(m.notes||'')}</textarea></div><p style="font-size:11.5px; color:var(--text-faint); margin:0;">Sem data e hora, o item fica em “A fazer”. Você também pode arrastá-lo depois para um horário da semana.</p><div class="modal-actions">${m.eventId?`<button class="ghost-btn" style="color:var(--error); margin-right:auto;" onclick="deleteAgendaEvent('${m.eventId}'); closeModal();">Excluir</button>`:''}<button class="ghost-btn" onclick="closeModal()">Cancelar</button><button class="primary-btn" onclick="confirmAgendaEvent()">Salvar</button></div></div></div>`;
 }
+function renderAgendaSuggestionsModal(m){
+  const rows=(m.suggestions||[]).map(s=>{ const event=state.agendaEvents.find(item=>item.id===s.eventId); if(!event) return ''; const when=s.slot?`${agendaDateFromKey(s.slot.date).toLocaleDateString('pt-BR',{weekday:'long',day:'numeric',month:'short'})} às ${s.slot.time}`:'Nenhum horário livre nesta semana'; return `<div style="display:flex; gap:8px; align-items:center; padding:9px; border:1px solid var(--border); border-radius:9px;"><div style="flex:1; min-width:0;"><strong style="font-size:13px;">${escapeHtml(event.title)}</strong><div style="font-size:11px; color:var(--text-faint); margin-top:2px;">Sugestão: ${when}</div></div>${s.slot?`<button class="primary-btn" style="padding:6px 9px; font-size:11px;" onclick="applyAgendaSuggestion('${event.id}','${s.slot.date}','${s.slot.time}')">Agendar</button>`:''}</div>`; }).join('');
+  return `<div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal" style="width:480px;"><h3>✨ Sugestões de horário</h3><p style="margin:0; font-size:12px; color:var(--text-faint);">Usei os próximos horários livres (9h, 14h e 19h) desta semana. Você continua no controle: nada é agendado sem tocar em “Agendar”.</p><div style="display:flex; flex-direction:column; gap:7px; max-height:48vh; overflow-y:auto;">${rows||`<p style="color:var(--text-faint); font-size:13px;">Não há tarefas sem dia para sugerir nesta semana.</p>`}</div><div class="modal-actions"><button class="ghost-btn" onclick="closeModal()">Fechar</button></div></div></div>`;
+}
 function renderGlobalAiChatModal(m){
   return `<div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal" style="width:min(560px,calc(100vw - 24px)); max-height:86vh; display:flex; flex-direction:column;"><div style="display:flex; justify-content:space-between; align-items:center;"><h3>✨ Chat IA</h3><button class="icon-btn" onclick="closeModal()">✕</button></div><p style="font-size:12px; color:var(--text-faint); margin:0;">Posso ajudar com notas, agenda, leituras e baralhos.</p><div style="flex:1; min-height:220px; max-height:52vh; overflow-y:auto; display:flex; flex-direction:column; gap:9px; padding:6px 2px;">${m.messages.length?m.messages.map(msg=>`<div style="align-self:${msg.role==='user'?'flex-end':'flex-start'}; max-width:88%; padding:9px 12px; border-radius:11px; background:${msg.role==='user'?'var(--accent-soft)':'var(--surface-2)'}; color:${msg.error?'var(--error)':'var(--text)'}; white-space:pre-wrap; font-size:13px; line-height:1.45;">${escapeHtml(msg.text)}${msg.actions&&msg.actions.length?`<div style="margin-top:6px; font-size:11px; color:var(--text-muted);">${msg.actions.map(a=>`✓ ${escapeHtml(a)}`).join('<br>')}</div>`:''}</div>`).join(''):`<p style="color:var(--text-faint); text-align:center; font-size:13px;">Peça para criar uma nota, organizar sua agenda ou abrir uma área do app.</p>`}</div><div style="display:flex; gap:7px;"><textarea id="global-ai-input" rows="3" style="flex:1; resize:none; min-height:72px;" placeholder="O que você quer fazer?" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendGlobalAiMessage()}" oninput="state.modal.input=this.value">${escapeHtml(m.input||'')}</textarea><button class="primary-btn" onclick="sendGlobalAiMessage()" ${m.sending?'disabled':''}>Enviar</button></div></div></div>`;
 }
@@ -8975,6 +9020,7 @@ function renderAppOptionsModal(){
 function renderModal(){
   const m = state.modal;
   if(m.type === 'agenda-event') return renderAgendaEventModal(m);
+  if(m.type === 'agenda-suggestions') return renderAgendaSuggestionsModal(m);
   if(m.type === 'global-ai-chat') return renderGlobalAiChatModal(m);
   if(m.type === 'api-key') return renderApiKeyModal(m);
   if(m.type === 'app-options') return renderAppOptionsModal();
