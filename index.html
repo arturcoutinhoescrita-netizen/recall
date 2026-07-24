@@ -4417,11 +4417,15 @@ function pageNumberIsHidden(page, hiddenPages){
 function renderPagedNotePreview(note, content){
   const s=getNotePageSettings(note), factor=s.unit==='px'?1:37.795;
   const width=s.width*factor, height=s.height*factor, margin=s.margin*factor;
-  const words=htmlToText(content).trim().split(/\s+/).filter(Boolean);
+  const visibleText=htmlToText(content).trim();
+  const words=visibleText.split(/\s+/).filter(Boolean);
   const perPage=getNoteWordsPerPage(note);
-  const chunks=[]; for(let i=0;i<words.length;i+=perPage) chunks.push(words.slice(i,i+perPage).join(' '));
-  if(!chunks.length) chunks.push('');
-  return `<div class="notes-paged-preview">${chunks.map((chunk,index)=>{ const page=index+1; const position=s.pageNumberPosition==='book' ? (page%2?'right':'left') : s.pageNumberPosition; const number=s.pageNumbers&&!pageNumberIsHidden(page,s.hiddenPages) ? `<div class="note-page-sheet-number" style="text-align:${position}; padding:0 ${margin}px ${Math.max(12,margin*.35)}px;">${page}</div>` : ''; return `<article class="note-page-sheet" style="width:${width}px; height:${height}px; padding:${margin}px;"><div class="note-page-sheet-content">${escapeHtml(chunk)}</div>${number}</article>`; }).join('')}</div>`;
+  // Uma folha inteira mantém o HTML original: parágrafos, negrito, imagens e
+  // todas as formatações do editor continuam idênticas à nota.
+  const chunks = words.length <= perPage ? [{ html:content }] : [];
+  if(!chunks.length) for(let i=0;i<words.length;i+=perPage) chunks.push({ html:escapeHtml(words.slice(i,i+perPage).join(' ')) });
+  if(!chunks.length) chunks.push({ html:'' });
+  return `<div class="notes-paged-preview">${chunks.map((chunk,index)=>{ const page=index+1; const position=s.pageNumberPosition==='book' ? (page%2?'right':'left') : s.pageNumberPosition; const number=s.pageNumbers&&!pageNumberIsHidden(page,s.hiddenPages) ? `<div class="note-page-sheet-number" style="text-align:${position}; padding:0 ${margin}px ${Math.max(12,margin*.35)}px;">${page}</div>` : ''; return `<article class="note-page-sheet" style="width:${width}px; height:${height}px; padding:${margin}px;"><div class="note-page-sheet-content">${chunk.html}</div>${number}</article>`; }).join('')}</div>`;
 }
 function updateNoteWritingStats(content){
   const el = document.getElementById('note-writing-stats');
@@ -6328,7 +6332,7 @@ function renderSidebar(){
       <div>
         <h1>Recall</h1>
         <span>REPETIÇÃO ESPAÇADA</span>
-        <span class="brand-version">v2026.07.24.12</span>
+        <span class="brand-version">v2026.07.24.13</span>
       </div>
     </div>
     <button class="ghost-btn" style="font-size:13px; padding:10px 12px; margin-bottom:6px; ${(state.view==='library'||state.view==='book') ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="openLibrary()">📚 Leituras</button>
