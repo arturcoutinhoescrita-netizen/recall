@@ -2553,6 +2553,15 @@ function stopRoutineActivity(showMessage=true){
   state.routineActive=null; saveData(); render();
   if(showMessage) showToast(`${active.title} registrado na agenda.`);
 }
+function pauseRoutineActivity(showMessage=true){
+  const active=state.routineActive;
+  if(!active) return false;
+  // Pausar encerra o trecho atual e o mantém registrado; retomar depois inicia
+  // um novo trecho, sem contabilizar o intervalo de pausa como atividade.
+  stopRoutineActivity(false);
+  if(showMessage) showToast(`${active.title} pausada e registrada até agora.`);
+  return true;
+}
 function ensureRoutineTimer(){
   if(routineTimer) return;
   routineTimer=setInterval(()=>{
@@ -6933,7 +6942,11 @@ function normalizeNoteAgentAction(rawAction){
     criar_evento:'create_agenda_event', criar_evento_agenda:'create_agenda_event', createevent:'create_agenda_event',
     editar_evento:'update_agenda_event', atualizar_evento:'update_agenda_event', updateevent:'update_agenda_event',
     excluir_evento:'delete_agenda_event', deletar_evento:'delete_agenda_event', deleteevent:'delete_agenda_event',
-    concluir_evento:'complete_agenda_event', completeevent:'complete_agenda_event'
+    concluir_evento:'complete_agenda_event', completeevent:'complete_agenda_event',
+    reagendar_eventos:'reschedule_agenda_events', redistribuir_tarefas:'reschedule_agenda_events',
+    iniciar_rotina:'start_routine', iniciar_atividade:'start_routine', startroutine:'start_routine',
+    pausar_rotina:'pause_routine', pausar_atividade:'pause_routine', pauseroutine:'pause_routine',
+    concluir_rotina:'stop_routine', parar_rotina:'stop_routine', stoproutine:'stop_routine'
   };
   action.type = aliases[type] || type;
   action.name = action.name || action.nome;
@@ -6942,12 +6955,32 @@ function normalizeNoteAgentAction(rawAction){
   action.parentRef = action.parentRef || action.parent || action.folder || action.pasta;
   action.deckName = action.deckName || action.deck || action.baralho;
   action.eventRef = action.eventRef || action.eventId || action.event || action.eventTitle || action.evento;
+  action.routineRef = action.routineRef || action.routineId || action.routine || action.rotina || action.atividade;
   return action;
 }
 function findAgendaEventForAgent(action){
   const ref=String(action.eventRef||action.eventId||'').trim().toLowerCase();
   if(!ref) return null;
   return state.agendaEvents.find(event=>event.id===ref || String(event.title||'').trim().toLowerCase()===ref) || null;
+}
+function getAiWorkspaceContext(){
+  const agenda=state.agendaEvents.slice(0,120).map(event=>`[id:${event.id}] ${event.title}${event.completedAt?' (concluído)':''}${event.date?` | ${event.date}${event.time?` ${event.time}${event.endTime?`–${event.endTime}`:''}`:''}`:' | sem data'}`).join('\n') || '(sem eventos)';
+  const activities=state.activities.slice(0,80).map(activity=>`${new Date(activity.at).toLocaleString('pt-BR')} | ${activity.type} | ${activity.title||''} | ${formatActivityDuration(activity.durationMs||0)}`).join('\n') || '(sem histórico recente)';
+  const actions=getRoutineActions().map(item=>`[id:${item.id}] ${item.icon} ${item.title}`).join(', ');
+  const active=state.routineActive ? `${state.routineActive.icon} ${state.routineActive.title}, iniciada às ${routineTimeLabel(state.routineActive.startedAt)}` : 'nenhuma';
+  return {agenda,activities,routineActions:actions||'(nenhuma)',routineActive:active};
+}
+function applyAgentAgendaUpdate(event, action){
+  const before={...event};
+  if(action.newTitle||action.new_title) event.title=String(action.newTitle||action.new_title).trim().slice(0,140)||event.title;
+  if(action.date!==undefined) event.date=String(action.date||'').match(/^\d{4}-\d{2}-\d{2}$/)?String(action.date):null;
+  if(action.time!==undefined) event.time=String(action.time||'').match(/^\d{2}:\d{2}$/)?String(action.time):null;
+  if(action.endTime!==undefined||action.end_time!==undefined) event.endTime=String(action.endTime||action.end_time||'').match(/^\d{2}:\d{2}$/)?String(action.endTime||action.end_time):null;
+  if(event.time&&!event.endTime) event.endTime=addAgendaHour(event.time);
+  if(event.time&&event.endTime&&event.endTime<=event.time){ Object.assign(event,before); return false; }
+  if(action.notes!==undefined||action.note!==undefined) event.notes=String(action.notes||action.note||'').slice(0,500);
+  event.updatedAt=Date.now();
+  return true;
 }
 function noteAgentRequestNeedsAction(question){
   return /\b(crie|criar|adicione|adicionar|faça|faca|gere|gerar|edite|editar|reescreva|reescrever|resuma|resumir|mova|mover|organize|organizar|inclua|incluir)\b/i.test(String(question||''));
@@ -7152,6 +7185,29 @@ async function executeNoteAgentActions(actions, currentNote){
       event.completedAt=Date.now(); event.updatedAt=Date.now();
       results.push(`Evento concluído: ${event.title}`);
       completedActions++;
+    }else if(action.type === 'reschedule_agenda_events'){
+      const changes=Array.isArray(action.events||action.items||action.changes)?(action.events||action.items||action.changes):[];
+      let changed=0;
+      changes.slice(0,30).forEach(change=>{ const event=findAgendaEventForAgent(change); if(event&&applyAgentAgendaUpdate(event,change)) changed++; });
+      if(!changed){ results.push('Não encontrei eventos válidos para redistribuir.'); continue; }
+      results.push(`${changed} evento(s) redistribuído(s) na Agenda.`);
+      completedActions++;
+    }else if(action.type === 'start_routine'){
+      const wanted=String(action.routineRef||action.routineId||action.name||action.title||'').trim().toLowerCase();
+      const routine=getRoutineActions().find(item=>item.id===wanted||item.title.toLowerCase()===wanted);
+      if(!routine){ results.push('Não encontrei essa atividade de rotina.'); continue; }
+      startRoutineActivity(routine.id);
+      results.push(`Rotina iniciada: ${routine.title}`);
+      completedActions++;
+    }else if(action.type === 'pause_routine'){
+      if(!pauseRoutineActivity(false)){ results.push('Não há uma rotina em andamento para pausar.'); continue; }
+      results.push('Rotina pausada e registrada até este momento.');
+      completedActions++;
+    }else if(action.type === 'stop_routine'){
+      if(!state.routineActive){ results.push('Não há uma rotina em andamento para concluir.'); continue; }
+      const title=state.routineActive.title; stopRoutineActivity(false);
+      results.push(`Rotina concluída: ${title}`);
+      completedActions++;
     }else if(action.type === 'navigate'){
       const view = String(action.view || action.destination || '').toLowerCase();
       const views = { notas:'notes', notes:'notes', agenda:'agenda', leituras:'library', livros:'library', library:'library', inicio:'home', home:'home' };
@@ -7192,9 +7248,10 @@ async function sendGlobalAiMessage(){
   const notes=state.notesItems.filter(item=>item.type==='note').map(item=>item.name).join(', ')||'nenhuma';
   const decks=state.decks.map(deck=>deck.name).join(', ')||'nenhum';
   const books=state.books.map(book=>book.title).join(', ')||'nenhum';
-  const agenda=state.agendaEvents.slice(0,100).map(event=>`[id:${event.id}] ${event.title}${event.completedAt?' (concluído)':''}${event.date?` (${event.date}${event.time?` ${event.time}${event.endTime?`–${event.endTime}`:''}`:''})`:''}`).join(', ')||'nenhuma';
+  const workspaceContext=getAiWorkspaceContext();
+  const agenda=workspaceContext.agenda;
   const history=m.messages.slice(0,-1).map(msg=>`${msg.role==='user'?'Usuário':'IA'}: ${msg.text}`).join('\n');
-  const prompt=`Você é o assistente global do aplicativo Letther B. Você conhece as notas (${notes}), baralhos (${decks}), livros (${books}) e agenda (${agenda}). Pode orientar e executar ações reais. Responda exclusivamente em JSON: {"reply":"texto curto","actions":[...]}. Ações: create_folder, create_note, create_flashcards, create_deck, update_deck, create_book, update_book, create_agenda_event {title,date?:'YYYY-MM-DD',time?:'HH:MM',endTime?:'HH:MM',notes?}, update_agenda_event {eventRef:'id ou título atual',newTitle?,date?,time?,endTime?,notes?}, delete_agenda_event {eventRef}, complete_agenda_event {eventRef}, navigate {view:'notes'|'agenda'|'library'|'home'}. Para alterar ou excluir evento, use de preferência o id exibido na agenda. Só declare uma ação se ela estiver na lista.\n\n${history}\nUsuário: ${question}`;
+  const prompt=`Você é o assistente global do aplicativo Letther B. Você conhece as notas (${notes}), baralhos (${decks}), livros (${books}), agenda, rotina e histórico. Pode orientar e executar ações reais. AGENDA:\n${agenda}\n\nROTINA EM ANDAMENTO: ${workspaceContext.routineActive}\nATALHOS DE ROTINA: ${workspaceContext.routineActions}\nHISTÓRICO RECENTE:\n${workspaceContext.activities}\n\nResponda exclusivamente em JSON: {"reply":"texto curto","actions":[...]}. Ações: create_folder, create_note, create_flashcards, create_deck, update_deck, create_book, update_book, create_agenda_event {title,date?:'YYYY-MM-DD',time?:'HH:MM',endTime?:'HH:MM',notes?}, update_agenda_event {eventRef:'id ou título atual',newTitle?,date?,time?,endTime?,notes?}, delete_agenda_event {eventRef}, complete_agenda_event {eventRef}, reschedule_agenda_events {events:[{eventRef,date,time,endTime?}]}, start_routine {routineRef|name}, pause_routine, stop_routine, navigate {view:'notes'|'agenda'|'library'|'home'}. Para alterar ou excluir evento, use de preferência o id exibido na agenda. Use reschedule_agenda_events para realocar tarefas em massa. Só declare uma ação se ela estiver na lista.\n\n${history}\nUsuário: ${question}`;
   try{ const response=parseNoteAgentReply(await callGemini(prompt,{maxTokens:1600,responseMimeType:'application/json'})); const executed=await executeNoteAgentActions(response.actions,null); m.messages.push({role:'assistant',text:response.reply||'Pronto.',actions:executed}); }
   catch(error){ m.messages.push({role:'assistant',text:friendlyAiErrorMsg(error),error:true}); }
   m.sending=false; state.globalAiMessages=m.messages; saveData(); render();
@@ -7215,8 +7272,9 @@ async function sendNoteChatMessage(){
 
   const history = m.messages.slice(0,-1).map(msg => `${msg.role==='user'?'Usuário':'Assistente'}: ${msg.text}`).join('\n');
   const noteContent = note ? getNoteContent(note.id) : '';
-  const workspace = state.notesItems.map(item => `${item.type==='folder'?'Pasta':'Nota'}: ${item.name}`).join('\n') || '(vazio)';
-  const decks = state.decks.map(deck => deck.name).join(', ') || '(nenhum)';
+  const aiContext=getAiWorkspaceContext();
+  const workspace = (state.notesItems.map(item => `${item.type==='folder'?'Pasta':'Nota'}: ${item.name}`).join('\n') || '(vazio)') + `\n\nAGENDA ATUAL:\n${aiContext.agenda}\n\nROTINA EM ANDAMENTO: ${aiContext.routineActive}\nATALHOS DE ROTINA: ${aiContext.routineActions}\nHISTÓRICO RECENTE:\n${aiContext.activities}`;
+  const decks = (state.decks.map(deck => deck.name).join(', ') || '(nenhum)') + `\n\nAÇÕES ADICIONAIS PERMITIDAS: create_agenda_event {title,date?,time?,endTime?,notes?}; update_agenda_event {eventRef,newTitle?,date?,time?,endTime?,notes?}; delete_agenda_event {eventRef}; complete_agenda_event {eventRef}; reschedule_agenda_events {events:[{eventRef,date,time,endTime?}]}; start_routine {routineRef|name}; pause_routine; stop_routine.`;
   const prompt = `Você é o agente de IA de um aplicativo pessoal de estudos. Você conversa normalmente e pode executar ações dentro do aplicativo quando o usuário pedir explicitamente. A nota aberta pode ser editada por inteiro ou em partes, sem confirmação adicional. Nunca diga que fez uma ação sem incluí-la em actions: o aplicativo só consegue realizar o que estiver nessa lista. Quando o usuário pedir para procurar/buscar uma imagem na internet e adicioná-la, use search_image: o aplicativo fará a busca real em uma fonte pública e inserirá a imagem com crédito.\n\nNOTA ABERTA: "${note ? note.name : ''}"\nCONTEÚDO DA NOTA (preserve o formato ao editar):\n---\n${noteContent || '(nota vazia)'}\n---\n\nITENS DO CADERNO:\n${workspace}\n\nBARALHOS DISPONÍVEIS: ${decks}\n\nAções permitidas: create_folder {type,name,parentRef?,alias?}; create_note {type,title,content,parentRef?,format?}; edit_note {type,noteRef:'current',mode:'replace'|'append'|'prepend'|'replace_text'|'replace_all',content?,find?,replace?}; create_flashcards {type,deckRef:'linked'?,deckName?,cards:[{front,back,note?}]}; create_deck {type,name,deckType?}; update_deck {type,deckRef|deckName,newName?,color?,aiEnabled?}; create_book {type,title,author?,categories?,status?}; update_book {type,bookRef|bookTitle,newTitle?,author?,status?,rating?,pagesRead?,totalPages?}; navigate {type,view:'notes'|'agenda'|'library'|'home'}; search_image {type,query,alt?,noteRef:'current'}. Para criar uma pasta e colocar notas nela, dê um alias à pasta e use o mesmo valor em parentRef. Só inclua ações solicitadas pelo usuário.\n\nResponda EXCLUSIVAMENTE com JSON válido, sem markdown: {"reply":"resposta curta e natural em português","actions":[...]}. Se não houver ação, use actions vazio.\n\n${history ? `Conversa até agora:\n${history}\n\n` : ''}Usuário: ${question}`;
 
   try{
@@ -7718,7 +7776,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='routine'?'active':''}" onclick="openRoutine()">🌿 Rotina</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.24.85</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.24.86</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -7741,7 +7799,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.24.85</span>
+        <span class="brand-version">v2026.07.24.86</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -7802,7 +7860,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.85</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.86</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
