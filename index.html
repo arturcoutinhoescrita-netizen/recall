@@ -383,7 +383,14 @@
   .notes-preview h1:first-child, .notes-preview h2:first-child, .notes-preview h3:first-child{ margin-top:0; }
   .notes-preview p{ margin:0 0 0.8em 0; }
   .notes-preview img{ max-width:100%; border-radius:8px; }
-  .notes-preview img.note-image-selected{ outline:3px solid var(--accent); outline-offset:3px; }
+  #note-editor-plain img, .note-page-sheet-content img{ cursor:pointer; }
+  #note-editor-plain img.note-image-selected, .note-page-sheet-content img.note-image-selected{ outline:3px solid var(--accent); outline-offset:3px; }
+  .note-image-transform-overlay{ position:fixed; z-index:170; pointer-events:none; border:1.5px solid var(--accent); box-sizing:border-box; }
+  .note-image-resize-handle, .note-image-crop-handle{ position:absolute; pointer-events:auto; box-sizing:border-box; background:var(--surface); border:2px solid var(--accent); box-shadow:0 1px 5px rgba(0,0,0,.25); touch-action:none; }
+  .note-image-resize-handle{ width:12px; height:12px; border-radius:50%; }
+  .note-image-crop-handle{ background:var(--accent); border:0; border-radius:4px; }
+  .note-image-crop-handle.n, .note-image-crop-handle.s{ width:28px; height:6px; left:50%; transform:translateX(-50%); cursor:ns-resize; }
+  .note-image-crop-handle.e, .note-image-crop-handle.w{ width:6px; height:28px; top:50%; transform:translateY(-50%); cursor:ew-resize; }
   .notes-preview ul, .notes-preview ol{ padding-left:1.4em; margin:0 0 0.8em 0; }
   .notes-preview code{ background:var(--surface-2); padding:1px 5px; border-radius:5px; font-size:0.9em; }
   .notes-preview pre{ background:var(--surface-2); padding:12px 14px; border-radius:8px; overflow-x:auto; }
@@ -5068,7 +5075,7 @@ function confirmInsertNoteImage(){
     if(el){
       el.focus();
       restoreRichCursorOffset(el, savedOffset);
-      document.execCommand('insertHTML', false, `<img src="${escapeHtml(url)}" alt="${escapeHtml(alt)}">`);
+      document.execCommand('insertHTML', false, `<img data-note-image-id="${uid()}" src="${escapeHtml(url)}" alt="${escapeHtml(alt)}">`);
       onNoteContentInput(state.currentNoteId, el.innerHTML);
     }
   } else {
@@ -5095,7 +5102,7 @@ function openNoteImageUploadPicker(){
         if(el){
           el.focus();
           restoreRichCursorOffset(el, savedOffset);
-          document.execCommand('insertHTML', false, `<img src="${escapeHtml(url)}" alt="${escapeHtml(alt)}">`);
+          document.execCommand('insertHTML', false, `<img data-note-image-id="${uid()}" src="${escapeHtml(url)}" alt="${escapeHtml(alt)}">`);
           onNoteContentInput(noteId, el.innerHTML);
         }
       } else {
@@ -5111,33 +5118,167 @@ function openNoteImageUploadPicker(){
 }
 
 // Imagens inseridas por upload, link ou pela IA são imagens HTML comuns no
-// editor visual. Um clique nelas habilita os controles do toolbar sem precisar
+// editor visual. Um clique mostra alças diretamente na imagem, sem precisar
 // baixar ou reenviar o arquivo original.
 let selectedNoteImageId = null;
+let noteImageTransformOverlay = null;
+let noteImageTransformDrag = null;
 document.addEventListener('click', (event) => {
-  const image = event.target && event.target.closest && event.target.closest('#note-editor-plain img');
-  if(!image) return;
-  document.querySelectorAll('#note-editor-plain img.note-image-selected').forEach(img => img.classList.remove('note-image-selected'));
+  const image = event.target && event.target.closest && event.target.closest('#note-editor-plain img, .note-page-sheet-content img');
+  if(!image){
+    if(!event.target.closest || !event.target.closest('.note-image-transform-overlay')) clearSelectedNoteImage();
+    return;
+  }
+  document.querySelectorAll('#note-editor-plain img.note-image-selected, .note-page-sheet-content img.note-image-selected').forEach(img => img.classList.remove('note-image-selected'));
   image.dataset.noteImageId = image.dataset.noteImageId || uid();
   image.classList.add('note-image-selected');
   selectedNoteImageId = image.dataset.noteImageId;
+  // O painel abre um modal e redesenha a nota. Mantemos o identificador no
+  // HTML em memória para que a imagem continue selecionada depois do redraw.
+  const editor = document.getElementById('note-editor-plain');
+  if(editor && editor.contains(image)){
+    noteContentCache[state.currentNoteId] = editor.innerHTML;
+  }else{
+    const holder=document.createElement('div');
+    holder.innerHTML=getNoteContent(state.currentNoteId);
+    const previewImages=Array.from(document.querySelectorAll('.note-page-sheet-content img'));
+    const index=previewImages.indexOf(image);
+    const sourceImage=Array.from(holder.querySelectorAll('img'))[index];
+    if(sourceImage){
+      sourceImage.dataset.noteImageId=selectedNoteImageId;
+      noteContentCache[state.currentNoteId]=holder.innerHTML;
+    }
+  }
+  setTimeout(syncNoteImageTransformOverlay, 0);
 });
-function getSelectedNoteImage(){
-  return selectedNoteImageId ? document.querySelector(`#note-editor-plain img[data-note-image-id="${selectedNoteImageId}"]`) : null;
+function clearSelectedNoteImage(){
+  document.querySelectorAll('#note-editor-plain img.note-image-selected, .note-page-sheet-content img.note-image-selected').forEach(img => img.classList.remove('note-image-selected'));
+  selectedNoteImageId=null;
+  removeNoteImageTransformOverlay();
 }
-function updateSelectedNoteImage(change){
-  const image = getSelectedNoteImage();
-  if(!image){ showToast('Clique na imagem que deseja ajustar primeiro.', 'error'); return; }
+function getSelectedNoteImage(){
+  return selectedNoteImageId ? document.querySelector(`#note-editor-plain img[data-note-image-id="${selectedNoteImageId}"], .note-page-sheet-content img[data-note-image-id="${selectedNoteImageId}"]`) : null;
+}
+function removeNoteImageTransformOverlay(){
+  if(noteImageTransformOverlay){ noteImageTransformOverlay.remove(); noteImageTransformOverlay=null; }
+}
+function syncNoteImageTransformOverlay(){
+  const image=getSelectedNoteImage();
+  if(!image || !image.isConnected){ removeNoteImageTransformOverlay(); return; }
+  const rect=image.getBoundingClientRect();
+  if(rect.width<4 || rect.height<4){ removeNoteImageTransformOverlay(); return; }
+  if(!noteImageTransformOverlay){
+    noteImageTransformOverlay=document.createElement('div');
+    noteImageTransformOverlay.className='note-image-transform-overlay';
+    noteImageTransformOverlay.innerHTML=`
+      <button type="button" class="note-image-resize-handle" data-note-image-action="resize-nw" aria-label="Redimensionar imagem"></button>
+      <button type="button" class="note-image-resize-handle" data-note-image-action="resize-ne" aria-label="Redimensionar imagem"></button>
+      <button type="button" class="note-image-resize-handle" data-note-image-action="resize-se" aria-label="Redimensionar imagem"></button>
+      <button type="button" class="note-image-resize-handle" data-note-image-action="resize-sw" aria-label="Redimensionar imagem"></button>
+      <button type="button" class="note-image-crop-handle n" data-note-image-action="crop-n" aria-label="Recortar topo"></button>
+      <button type="button" class="note-image-crop-handle e" data-note-image-action="crop-e" aria-label="Recortar direita"></button>
+      <button type="button" class="note-image-crop-handle s" data-note-image-action="crop-s" aria-label="Recortar base"></button>
+      <button type="button" class="note-image-crop-handle w" data-note-image-action="crop-w" aria-label="Recortar esquerda"></button>`;
+    noteImageTransformOverlay.querySelectorAll('[data-note-image-action]').forEach(handle=>handle.addEventListener('pointerdown', beginNoteImageTransform));
+    document.body.appendChild(noteImageTransformOverlay);
+  }
+  Object.assign(noteImageTransformOverlay.style,{left:`${rect.left}px`,top:`${rect.top}px`,width:`${rect.width}px`,height:`${rect.height}px`});
+  const handle=(action)=>noteImageTransformOverlay.querySelector(`[data-note-image-action="${action}"]`);
+  Object.assign(handle('resize-nw').style,{left:'-7px',top:'-7px',cursor:'nwse-resize'});
+  Object.assign(handle('resize-ne').style,{right:'-7px',top:'-7px',cursor:'nesw-resize'});
+  Object.assign(handle('resize-se').style,{right:'-7px',bottom:'-7px',cursor:'nwse-resize'});
+  Object.assign(handle('resize-sw').style,{left:'-7px',bottom:'-7px',cursor:'nesw-resize'});
+  Object.assign(handle('crop-n').style,{top:'-3px'});
+  Object.assign(handle('crop-e').style,{right:'-3px'});
+  Object.assign(handle('crop-s').style,{bottom:'-3px'});
+  Object.assign(handle('crop-w').style,{left:'-3px'});
+}
+function readNoteImageCrop(image){
+  const match=(image.style.clipPath||'').match(/^inset\(([\d.]+)% ([\d.]+)% ([\d.]+)% ([\d.]+)%\)$/);
+  return match ? {top:+match[1],right:+match[2],bottom:+match[3],left:+match[4]} : {top:0,right:0,bottom:0,left:0};
+}
+function beginNoteImageTransform(event){
+  const image=getSelectedNoteImage();
+  if(!image) return;
+  event.preventDefault(); event.stopPropagation();
+  const rect=image.getBoundingClientRect();
+  noteImageTransformDrag={
+    image, action:event.currentTarget.dataset.noteImageAction, startX:event.clientX, startY:event.clientY,
+    rect, crop:readNoteImageCrop(image), containerWidth:Math.max(rect.width, image.parentElement?.getBoundingClientRect().width||rect.width)
+  };
+  event.currentTarget.setPointerCapture?.(event.pointerId);
+  window.addEventListener('pointermove', moveNoteImageTransform);
+  window.addEventListener('pointerup', finishNoteImageTransform, {once:true});
+}
+function moveNoteImageTransform(event){
+  const drag=noteImageTransformDrag;
+  if(!drag) return;
+  const {image,action,rect}=drag;
+  const dx=event.clientX-drag.startX, dy=event.clientY-drag.startY;
+  if(action.startsWith('resize-')){
+    const horizontal=action.endsWith('e') ? dx : -dx;
+    const vertical=action.includes('s') ? dy : -dy;
+    const nextWidth=Math.max(40, rect.width + (Math.abs(horizontal)>Math.abs(vertical)?horizontal:vertical));
+    image.style.width=`${Math.min(100, Math.max(8, nextWidth/drag.containerWidth*100)).toFixed(2)}%`;
+  }else{
+    const crop={...drag.crop};
+    const cap=(value, other)=>Math.max(0,Math.min(92-other,value));
+    if(action==='crop-n') crop.top=cap(drag.crop.top+dy/rect.height*100,crop.bottom);
+    if(action==='crop-s') crop.bottom=cap(drag.crop.bottom-dy/rect.height*100,crop.top);
+    if(action==='crop-w') crop.left=cap(drag.crop.left+dx/rect.width*100,crop.right);
+    if(action==='crop-e') crop.right=cap(drag.crop.right-dx/rect.width*100,crop.left);
+    image.style.clipPath=`inset(${crop.top.toFixed(2)}% ${crop.right.toFixed(2)}% ${crop.bottom.toFixed(2)}% ${crop.left.toFixed(2)}%)`;
+  }
+  syncNoteImageTransformOverlay();
+}
+function finishNoteImageTransform(){
+  window.removeEventListener('pointermove', moveNoteImageTransform);
+  if(!noteImageTransformDrag) return;
+  const image=noteImageTransformDrag.image;
+  noteImageTransformDrag=null;
+  commitSelectedNoteImageStyle(image);
+}
+function commitSelectedNoteImageStyle(image){
+  const editor=document.getElementById('note-editor-plain');
+  if(editor && editor.contains(image)){
+    onNoteContentInput(state.currentNoteId, editor.innerHTML);
+  }else{
+    const holder=document.createElement('div');
+    holder.innerHTML=getNoteContent(state.currentNoteId);
+    const source=holder.querySelector(`img[data-note-image-id="${selectedNoteImageId}"]`);
+    if(source){ source.style.cssText=image.style.cssText; onNoteContentInput(state.currentNoteId,holder.innerHTML); render(); }
+  }
+  setTimeout(syncNoteImageTransformOverlay,0);
+}
+window.addEventListener('resize', syncNoteImageTransformOverlay);
+document.addEventListener('scroll', syncNoteImageTransformOverlay, true);
+function applyNoteImageChange(image, change){
+  if(change.reset){ image.style.width=''; image.style.display=''; image.style.marginLeft=''; image.style.marginRight=''; image.style.aspectRatio=''; image.style.objectFit=''; image.style.clipPath=''; return; }
   if(change.size) image.style.width = `${change.size}%`;
   if(change.align){ image.style.display='block'; image.style.marginLeft=change.align==='left'?'0':'auto'; image.style.marginRight=change.align==='right'?'0':'auto'; }
   if(change.crop === 'square'){ image.style.width='48%'; image.style.aspectRatio='1 / 1'; image.style.objectFit='cover'; }
   if(change.crop === 'wide'){ image.style.width='100%'; image.style.aspectRatio='16 / 9'; image.style.objectFit='cover'; }
   if(change.crop === 'original'){ image.style.aspectRatio=''; image.style.objectFit=''; }
-  onNoteContentInput(state.currentNoteId, document.getElementById('note-editor-plain').innerHTML);
 }
-function openNoteImageAdjustModal(){
-  if(!getSelectedNoteImage()){ showToast('Clique na imagem que deseja ajustar primeiro.', 'error'); return; }
-  state.modal = { type:'note-image-adjust' }; render();
+function updateSelectedNoteImage(change){
+  const image = getSelectedNoteImage();
+  if(!image){ showToast('Clique na imagem que deseja ajustar primeiro.', 'error'); return; }
+  const editor=document.getElementById('note-editor-plain');
+  if(editor){
+    const sourceImage=editor.querySelector(`img[data-note-image-id="${selectedNoteImageId}"]`);
+    if(!sourceImage){ showToast('Não encontrei a imagem selecionada.', 'error'); return; }
+    applyNoteImageChange(sourceImage,change);
+    onNoteContentInput(state.currentNoteId,editor.innerHTML);
+  }else{
+    const holder=document.createElement('div');
+    holder.innerHTML=getNoteContent(state.currentNoteId);
+    const sourceImage=holder.querySelector(`img[data-note-image-id="${selectedNoteImageId}"]`);
+    if(!sourceImage){ showToast('Não encontrei a imagem selecionada.', 'error'); return; }
+    applyNoteImageChange(sourceImage,change);
+    onNoteContentInput(state.currentNoteId,holder.innerHTML);
+    render();
+  }
+  setTimeout(syncNoteImageTransformOverlay,0);
 }
 
 /* --- seleção de texto na nota: criar cartão a partir do trecho, ou pedir
@@ -5898,7 +6039,7 @@ function insertAgentImageInNote(note, image, alt){
   const before = getNoteContent(note.id);
   let addition;
   if(note.format === 'plain'){
-    addition = `<figure><img src="${escapeHtml(image.url)}" alt="${escapeHtml(label)}"><figcaption>Fonte: <a href="${escapeHtml(image.pageUrl)}" target="_blank" rel="noopener">Wikimedia Commons</a></figcaption></figure>`;
+    addition = `<figure><img data-note-image-id="${uid()}" src="${escapeHtml(image.url)}" alt="${escapeHtml(label)}"><figcaption>Fonte: <a href="${escapeHtml(image.pageUrl)}" target="_blank" rel="noopener">Wikimedia Commons</a></figcaption></figure>`;
   }else{
     const markdownAlt = label.replace(/[\[\]]/g, '');
     addition = `![${markdownAlt}](${image.url})\n\n*Fonte: [Wikimedia Commons](${image.pageUrl})*`;
@@ -6529,7 +6670,7 @@ function renderSidebar(){
       <div>
         <h1>Recall</h1>
         <span>REPETIÇÃO ESPAÇADA</span>
-        <span class="brand-version">v2026.07.24.25</span>
+        <span class="brand-version">v2026.07.24.27</span>
       </div>
     </div>
     <button class="ghost-btn" style="font-size:13px; padding:10px 12px; margin-bottom:6px; ${(state.view==='library'||state.view==='book') ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="openLibrary()">📚 Leituras</button>
@@ -6893,7 +7034,6 @@ function renderNotesToolbar(format){
     <button class="icon-btn" ${noSteal}title="Link pra outra nota (${noteShortcutLabel('l')})" onclick="${wikiLink}">🔀</button>
     <button class="icon-btn" ${noSteal}title="Imagem por link" onclick="openInsertImageModal()">🖼️</button>
     <button class="icon-btn" ${noSteal}title="Enviar imagem do aparelho" onclick="openNoteImageUploadPicker()">📤</button>
-    ${!isMarkdown ? `<button class="icon-btn" ${noSteal}title="Ajustar imagem selecionada" onclick="openNoteImageAdjustModal()">🖼️⚙</button>` : ''}
     <span style="width:1px; background:var(--border); margin:2px 2px;"></span>
     <button class="icon-btn" title="Criar cartão colando um texto (útil no celular)" onclick="openNotePasteCardModal()">📌</button>
     <button class="icon-btn" title="Corrigir um texto colado (útil no celular)" onclick="openNotePasteCorrectionModal()">✏️</button>
@@ -8040,7 +8180,6 @@ function renderModal(){
   if(m.type === 'new-note-item') return renderNewNoteItemModal(m);
   if(m.type === 'note-page-settings') return renderNotePageSettingsModal(m);
   if(m.type === 'quick-command') return renderQuickCommandModal(m);
-  if(m.type === 'note-image-adjust') return renderNoteImageAdjustModal();
   if(m.type === 'rename-note-item') return renderRenameNoteItemModal(m);
   if(m.type === 'insert-note-image') return renderInsertNoteImageModal(m);
   if(m.type === 'note-passage-card') return renderNotePassageCardModal(m);
@@ -8138,9 +8277,6 @@ function renderQuickCommandModal(m){
   ${!q ? `<div style="display:flex; gap:7px;"><button class="ghost-btn" onclick="runQuickCommand('chat')">💬 Chat</button><button class="ghost-btn" onclick="runQuickCommand('nota')">📄 Nova nota</button></div>` : ''}
   ${matches.map(n=>`<button class="ghost-btn" style="display:block; width:100%; text-align:left; margin-top:5px;" onclick="runQuickCommand('${escapeHtml(n.name).replace(/'/g,'&#39;')}')"><span class="note-color-dot" style="display:inline-block; background:${escapeHtml(n.iconColor||'#F5A623')};"></span> ${escapeHtml(n.name)}</button>`).join('')}
   ${q && !matches.length && q!=='chat' && q!=='nota' ? `<div style="font-size:12px; color:var(--text-faint); padding:8px 4px;">Nenhuma nota encontrada.</div>`:''}</div></div>`;
-}
-function renderNoteImageAdjustModal(){
-  return `<div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal" style="width:350px;"><h3>Ajustar imagem</h3><p style="font-size:12px; color:var(--text-faint);">Tamanho, corte e alinhamento da imagem selecionada.</p><div style="display:flex; gap:7px; flex-wrap:wrap;"><button class="ghost-btn" onclick="updateSelectedNoteImage({size:50})">Pequena</button><button class="ghost-btn" onclick="updateSelectedNoteImage({size:75})">Média</button><button class="ghost-btn" onclick="updateSelectedNoteImage({size:100})">Inteira</button><button class="ghost-btn" onclick="updateSelectedNoteImage({crop:'square'})">Corte quadrado</button><button class="ghost-btn" onclick="updateSelectedNoteImage({crop:'wide'})">Paisagem</button><button class="ghost-btn" onclick="updateSelectedNoteImage({crop:'original'})">Sem corte</button><button class="ghost-btn" onclick="updateSelectedNoteImage({align:'left'})">Esquerda</button><button class="ghost-btn" onclick="updateSelectedNoteImage({align:'center'})">Centro</button><button class="ghost-btn" onclick="updateSelectedNoteImage({align:'right'})">Direita</button></div><div class="modal-actions"><button class="primary-btn" onclick="closeModal()">Concluído</button></div></div></div>`;
 }
 function renderRenameNoteItemModal(m){
   const item = state.notesItems.find(n=>n.id===m.id);
