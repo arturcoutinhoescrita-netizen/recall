@@ -7542,6 +7542,11 @@ function render(){
   // mesmo livro/baralho/aba) — trocar de tela deve mesmo começar do topo.
   const prevMain = document.querySelector('.main');
   const prevScrollTop = prevMain ? prevMain.scrollTop : 0;
+  // Cada coluna da agenda possui rolagem própria. Ao abrir/editar um evento,
+  // preservamos o horário que estava sendo observado em vez de voltar para 6h.
+  const prevAgendaHourScrolls = state.view==='agenda'
+    ? Array.from(document.querySelectorAll('.agenda-day-hours')).map(el=>el.scrollTop)
+    : [];
   const renderKey = `${state.view}|${state.currentBookId||''}|${state.currentDeckId||''}|${state.tab||''}`;
   const restoreScroll = renderKey === __lastRenderKey;
   __lastRenderKey = renderKey;
@@ -7570,6 +7575,9 @@ function render(){
   if(restoreScroll){
     const newMain = document.querySelector('.main');
     if(newMain) newMain.scrollTop = prevScrollTop;
+  }
+  if(prevAgendaHourScrolls.length){
+    document.querySelectorAll('.agenda-day-hours').forEach((el,index)=>{ el.scrollTop=prevAgendaHourScrolls[index]||0; });
   }
 
   if(savedId){
@@ -7642,7 +7650,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='routine'?'active':''}" onclick="openRoutine()">🌿 Rotina</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.24.81</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.24.82</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -7665,7 +7673,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.24.81</span>
+        <span class="brand-version">v2026.07.24.82</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -7724,7 +7732,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.81</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.82</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
