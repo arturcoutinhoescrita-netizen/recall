@@ -3,15 +3,16 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>Recall — Flashcards com repetição espaçada</title>
-<meta name="description" content="Flashcards com repetição espaçada (SM-2), múltipla escolha, pergunta aberta e modo idioma.">
+<title>Letther B — Let it be</title>
+<meta name="description" content="Letther B — seu espaço para escrever, estudar e deixar ser.">
 <meta name="theme-color" content="#14162B" id="theme-color-meta">
 <link rel="manifest" href="manifest.json">
-<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
-<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="32x32" href="assets/letther-b-icon-32.png">
+<link rel="icon" type="image/png" sizes="512x512" href="assets/letther-b-icon-512.png">
+<link rel="apple-touch-icon" sizes="180x180" href="assets/letther-b-icon-180.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" id="status-bar-style-meta">
-<meta name="apple-mobile-web-app-title" content="Recall">
+<meta name="apple-mobile-web-app-title" content="Letther B">
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
@@ -88,6 +89,25 @@
      sempre escondida) o topo fixo do app podia ficar parcialmente atrás dela.
      Mantém 100vh como fallback pra navegadores sem suporte a dvh. */
   #app{ display:flex; height:100vh; height:100dvh; }
+  .app-workspace{ flex:1; min-width:0; min-height:0; display:flex; flex-direction:column; }
+  .desktop-top-nav, .desktop-deck-explorer, .desktop-note-chat{ display:none; }
+
+  @media (min-width:821px){
+    #app > .sidebar, #app > .sidebar-edge-trigger{ display:none; }
+    .desktop-top-nav{ display:flex; align-items:center; gap:5px; align-self:flex-start; margin:16px 32px 0; padding:5px; border:1px solid var(--border); border-radius:12px; background:var(--surface); box-shadow:0 5px 18px rgba(0,0,0,.08); }
+    .desktop-top-nav button{ padding:8px 12px; font-size:12.5px; }
+    .desktop-top-nav button.active{ color:var(--accent); border-color:var(--accent-dim); background:var(--accent-soft); }
+    .desktop-content{ flex:1; min-height:0; display:flex; }
+    .desktop-deck-explorer{ display:flex; flex-direction:column; width:260px; flex-shrink:0; margin:16px 0 16px 32px; padding:12px; gap:8px; border:1px solid var(--border); border-radius:14px; background:var(--bg-2); overflow-y:auto; }
+    .desktop-deck-actions{ display:grid; grid-template-columns:repeat(3,1fr); gap:6px; }
+    .desktop-deck-actions .icon-btn{ width:100%; }
+    .desktop-deck-explorer .deck-item{ background:var(--surface); border:1px solid var(--border); }
+    .desktop-content > .main{ min-width:0; }
+    .notes-desktop-shell{ display:flex; height:100%; min-height:0; gap:14px; }
+    .notes-desktop-shell .notes-layout{ flex:1; min-width:0; }
+    .desktop-note-chat{ display:flex; flex-direction:column; width:340px; flex-shrink:0; padding:14px; border:1px solid var(--border); border-radius:14px; background:var(--surface); overflow:hidden; }
+    .desktop-note-chat .note-chat-messages{ max-height:none !important; min-height:0 !important; }
+  }
 
   /* ---------- Sidebar ---------- */
   .sidebar{
@@ -101,10 +121,9 @@
   .brand{ display:flex; align-items:center; gap:10px; padding:0 2px; }
   .brand-mark{
     width:34px; height:34px; border-radius:9px;
-    background:linear-gradient(155deg, var(--accent), var(--accent-dark));
+    background:url('assets/letther-b-icon-512.png') center/cover no-repeat;
     display:flex; align-items:center; justify-content:center;
-    font-family:Georgia,'Iowan Old Style','Palatino Linotype','Book Antiqua',Palatino,serif; font-weight:700; color:var(--brand-text); font-size:18px;
-    box-shadow:0 0 22px var(--accent-soft);
+    font-size:0; box-shadow:0 3px 12px rgba(74,53,37,.16);
   }
   .brand h1{ font-size:20px; margin:0; font-weight:600; }
   .brand span{ display:block; font-size:11px; color:var(--text-faint); margin-top:1px; letter-spacing:0.04em; }
@@ -446,6 +465,7 @@
 
 
   @media (max-width:820px){
+    .app-workspace{ display:contents; }
     #app{ flex-direction:column; }
     .sidebar{ width:100%; flex-direction:column; padding:18px 16px; gap:16px; }
     .desktop-sidebar-content{ display:none; }
@@ -640,7 +660,7 @@ let state = {
   notesEditorMode: 'split', // 'source' | 'split' | 'preview'
   notesPageView: false,
   sidebarAutoHide: false,
-  mobileHomeSection: 'decks'
+  mobileHomeSection: null
 };
 
 function uid(){ return Math.random().toString(36).slice(2,10); }
@@ -1005,8 +1025,8 @@ function renderAuthGate(){
   const standalone = isStandaloneApp();
   return `
   <div style="width:100%; min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; text-align:center; padding:20px;">
-    <div class="brand-mark" style="width:56px; height:56px; font-size:28px; border-radius:14px;">R</div>
-    <h1 style="margin:0;">Recall</h1>
+    <div class="brand-mark" style="width:56px; height:56px; border-radius:14px;"></div>
+    <h1 style="margin:0;">Letther B</h1>
     ${standalone ? `
       <p style="color:var(--text-muted); max-width:320px; font-size:14px;">Como o app está instalado, o login do Google funciona melhor abrindo pelo navegador na primeira vez.</p>
       <button class="primary-btn" onclick="openInBrowserForLogin()">Abrir no navegador pra entrar</button>
@@ -4203,6 +4223,7 @@ function openNotes(){
     .filter(item => item.type === 'folder')
     .map(item => item.id);
   state.view = 'notes';
+  if(isDesktopLayout() && state.currentNoteId) ensureNoteChatFor(state.currentNoteId);
   render();
 }
 function startNotesExplorerResize(event){
@@ -4288,6 +4309,7 @@ function closeCurrentNote(){
 function openNote(id){
   state.currentNoteId = id;
   state.noteFindReplace = null; // trocar de nota fecha qualquer busca/substituição aberta na anterior
+  if(isDesktopLayout()) ensureNoteChatFor(id);
   if(noteContentCache[id] === undefined && !noteContentLoading[id]){
     noteContentLoading[id] = true;
     delete noteContentError[id];
@@ -6118,6 +6140,13 @@ function diffTextParts(oldText, newText){
 /* --- chat com a IA sobre a nota aberta: manda o conteúdo da nota como
    contexto em todo turno (a API do Gemini usada aqui não mantém sessão),
    junto do histórico da conversa formatado como texto. --- */
+function ensureNoteChatFor(noteId){
+  const note=state.notesItems.find(n=>n.id===noteId && n.type==='note');
+  if(!note) return;
+  if(state.modal?.type==='note-chat' && state.modal.noteId===noteId) return;
+  const conversation=getNoteConversations(note).find(c=>c.type==='chat') || createNoteConversation(note,'chat',{});
+  state.modal={ type:'note-chat', noteId, conversationId:conversation.id, messages:conversation.messages||[], input:'', sending:false, conversationSearch:'' };
+}
 function openNoteChat(initialInput){
   const noteId = state.currentNoteId;
   const note = state.notesItems.find(n=>n.id===noteId);
@@ -6880,8 +6909,14 @@ function render(){
   app.className = `${state.view === 'home' ? 'step-home' : 'step-detail'}${state.sidebarAutoHide ? ' sidebar-auto-hide' : ''}`;
   app.innerHTML = `
     ${renderSidebar()}
-    <div class="main">${renderMain()}</div>
-    ${state.modal ? renderModal() : ''}
+    <div class="app-workspace">
+      ${renderDesktopTopNav()}
+      <div class="desktop-content">
+        ${renderDesktopDeckExplorer()}
+        <div class="main">${renderMain()}</div>
+      </div>
+    </div>
+    ${state.modal && !(state.modal.type==='note-chat' && isDesktopLayout()) ? renderModal() : ''}
     ${state.toast ? renderToast() : ''}
   `;
   if(restoreScroll){
@@ -6938,6 +6973,29 @@ function focusStudyInput(){
   const el = document.getElementById(id);
   if(el){ el.focus(); }
 }
+function isDesktopLayout(){ return typeof window!=='undefined' && window.matchMedia('(min-width:821px)').matches; }
+function openDesktopDecks(){
+  finishReadingActivity(); finishWritingActivity();
+  state.view='home'; state.currentDeckId=null; state.tab='cards'; render();
+}
+function renderDesktopTopNav(){
+  const deckActive=state.view==='home'||state.view==='deck'||state.view==='study';
+  return `<nav class="desktop-top-nav" aria-label="Navegação principal">
+    <button class="ghost-btn ${deckActive?'active':''}" onclick="openDesktopDecks()">🗂️ Baralhos</button>
+    <button class="ghost-btn ${state.view==='notes'?'active':''}" onclick="openNotes()">📓 Notas</button>
+    <button class="ghost-btn ${state.view==='agenda'?'active':''}" onclick="openAgenda()">🗓️ Agenda</button>
+    <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
+  </nav>`;
+}
+function renderDesktopDeckExplorer(){
+  const show=state.view==='home'||state.view==='deck'||state.view==='study';
+  if(!show) return '';
+  return `<aside class="desktop-deck-explorer">
+    <div style="display:flex; justify-content:space-between; align-items:center;"><strong style="font-size:13px;">Baralhos</strong><span style="font-size:11px; color:var(--text-faint);">${state.decks.length}</span></div>
+    <div class="desktop-deck-actions"><button class="icon-btn" title="Novo baralho" onclick="openNewDeckModal()">＋</button><button class="icon-btn" title="Tirar foto" onclick="openPhotoImportPicker(true)">📷</button><button class="icon-btn" title="Carregar imagem" onclick="openPhotoImportPicker(false)">🖼️</button></div>
+    ${getOrderedDecks().map(d=>{ const due=getDueCards(d.id).length; const active=state.currentDeckId===d.id&&state.view==='deck'; return `<div class="deck-item ${active?'active':''}" onclick="selectDeck('${d.id}')"><span class="deck-dot" style="background:${d.color}"></span><span class="deck-item-name">${escapeHtml(d.name)}</span>${due?`<span class="due-badge">${due}</span>`:''}<button class="deck-favorite-toggle ${d.favorite?'active':''}" onclick="event.stopPropagation(); toggleDeckFavorite('${d.id}')">${d.favorite?'★':'☆'}</button></div>`; }).join('') || `<p style="font-size:12px; color:var(--text-faint);">Nenhum baralho.</p>`}
+  </aside>`;
+}
 
 function renderSidebar(){
   return `
@@ -6945,11 +7003,11 @@ function renderSidebar(){
   <div class="sidebar">
     <div class="desktop-sidebar-content">
     <div class="brand">
-      <div class="brand-mark">R</div>
+      <div class="brand-mark"></div>
       <div>
-        <h1>Recall</h1>
-        <span>REPETIÇÃO ESPAÇADA</span>
-        <span class="brand-version">v2026.07.24.41</span>
+        <h1>Letther B</h1>
+        <span>LET IT BE</span>
+        <span class="brand-version">v2026.07.24.44</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -6997,17 +7055,17 @@ function getOrderedDecks(){
   return [...state.decks].sort((a,b)=>(Number(!!b.favorite)-Number(!!a.favorite)) || a.name.localeCompare(b.name,'pt-BR'));
 }
 function selectMobileHomeSection(section){
-  if(section==='decks'){ state.mobileHomeSection='decks'; state.view='home'; render(); return; }
+  if(section==='decks'){ state.mobileHomeSection=state.mobileHomeSection==='decks' ? null : 'decks'; state.view='home'; render(); return; }
   state.mobileHomeSection=section;
   if(section==='library') openLibrary();
   else if(section==='notes') openNotes();
   else if(section==='agenda') openAgenda();
 }
 function renderMobileSidebar(){
-  const section=state.mobileHomeSection||'decks';
+  const section=state.mobileHomeSection||null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark">R</div><div><h1>Recall</h1><span>SEU ESPAÇO DE ESTUDO</span><span class="brand-version">v2026.07.24.41</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.44</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${section==='decks' ? `<div class="mobile-deck-actions"><button class="icon-btn" title="Novo baralho" onclick="openNewDeckModal()">＋</button><button class="icon-btn" title="Tirar foto para criar cartões" onclick="openPhotoImportPicker(true)">📷</button><button class="icon-btn" title="Carregar imagem para criar cartões" onclick="openPhotoImportPicker(false)">🖼️</button></div><div class="mobile-deck-list">${getOrderedDecks().length ? getOrderedDecks().map(d=>{ const due=getDueCards(d.id).length; return `<div class="mobile-deck-card" onclick="selectDeck('${d.id}')"><span class="deck-dot" style="background:${d.color}"></span><span class="deck-item-name">${escapeHtml(d.name)}</span>${due?`<span class="due-badge">${due}</span>`:''}<button class="mobile-deck-star ${d.favorite?'active':''}" title="Favoritar" onclick="event.stopPropagation(); toggleDeckFavorite('${d.id}')">${d.favorite?'★':'☆'}</button></div>`; }).join('') : `<p style="font-size:12px; color:var(--text-faint); text-align:center;">Crie seu primeiro baralho.</p>`}</div>`:''}
@@ -7033,7 +7091,7 @@ function selectDeck(id){
 function backToHome(){
   finishReadingActivity();
   finishWritingActivity();
-  state.mobileHomeSection='decks';
+  state.mobileHomeSection=null;
   state.view = 'home';
   render();
 }
@@ -7079,6 +7137,7 @@ function renderNotesView(){
   const hasRootItems = state.notesItems.some(n=>n.parentId===null);
   const searchQuery = (state.notesSearch && state.notesSearch.query) || '';
   return `
+  <div class="notes-desktop-shell">
   ${!currentNote ? `<button class="ghost-btn mobile-back-btn" onclick="backToHome()">← Início</button>` : ''}
   <div class="notes-layout ${currentNote ? 'note-open' : ''}">
     <div class="notes-explorer">
@@ -7110,6 +7169,8 @@ function renderNotesView(){
       </div>
       `}
     </div>
+  </div>
+  ${isDesktopLayout() && state.modal && state.modal.type==='note-chat' ? renderNoteChatModal(state.modal, true) : ''}
   </div>
   `;
 }
@@ -8773,11 +8834,10 @@ function renderNoteTocModal(m){
     </div>
   </div>`;
 }
-function renderNoteChatModal(m){
+function renderNoteChatModal(m, embedded){
   const note = state.notesItems.find(n=>n.id===m.noteId);
   return `
-  <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
-    <div class="modal" style="width:520px; max-height:80vh; display:flex; flex-direction:column;">
+  ${embedded ? `<aside class="desktop-note-chat">` : `<div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal" style="width:520px; max-height:80vh; display:flex; flex-direction:column;">`}
       <h3>✨ Agente da nota — "${escapeHtml(note ? note.name : '')}"</h3>
       <p style="font-size:11.5px; color:var(--text-faint); margin:-4px 0 9px;">Pode criar notas, pastas e flashcards, além de editar livremente esta nota. Toda edição pode ser desfeita no editor.</p>
       ${renderNoteConversationLibrary(m, 'chat')}
@@ -8793,10 +8853,9 @@ function renderNoteChatModal(m){
         <button class="primary-btn" onclick="sendNoteChatMessage()" ${m.sending?'disabled':''}>Enviar</button>
       </div>
       <div class="modal-actions">
-        <button class="ghost-btn" onclick="closeModal()">Fechar</button>
+        <button class="ghost-btn" onclick="closeModal()">${embedded?'Ocultar chat':'Fechar'}</button>
       </div>
-    </div>
-  </div>`;
+  ${embedded ? `</aside>` : `</div></div>`}`;
 }
 function renderNotePasteCardModal(m){
   return `
