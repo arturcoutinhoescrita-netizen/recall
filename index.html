@@ -523,6 +523,14 @@
   .agenda-event.todo{ border-color:var(--border); background:var(--bg-2); cursor:grab; }
   .agenda-event.done{ border-color:var(--success); background:var(--success-soft); color:var(--success); text-decoration:line-through; cursor:default; }
   .agenda-drop-target{ outline:2px dashed var(--accent); outline-offset:-3px; background:var(--accent-soft); }
+  .routine-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(118px,1fr)); gap:10px; }
+  .routine-action{ min-height:112px; padding:12px 8px; border:1px solid var(--border); border-radius:14px; background:var(--surface); color:var(--text); font:inherit; cursor:pointer; transition:transform .15s,border-color .15s,background .15s; }
+  .routine-action:hover{ transform:translateY(-2px); border-color:var(--accent-dim); }
+  .routine-action.active{ border-color:var(--accent); background:var(--accent-soft); box-shadow:0 0 0 1px var(--accent-dim); }
+  .routine-action-icon{ display:block; font-size:28px; margin-bottom:7px; }
+  .routine-action-name{ display:block; font-size:12px; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .routine-action-time{ display:block; margin-top:5px; font-size:10px; color:var(--text-faint); }
+  .routine-active-banner{ display:flex; align-items:center; justify-content:space-between; gap:12px; padding:13px 15px; border:1px solid var(--accent-dim); border-radius:13px; background:var(--accent-soft); margin-bottom:14px; }
 
 
   @media (max-width:820px){
@@ -555,6 +563,8 @@
     .agenda-summary-grid{ gap:6px; }
     .agenda-calendar{ grid-column:auto !important; }
     .agenda-week-layout{ grid-template-columns:1fr; }
+    .routine-grid{ grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
+    .routine-action{ min-height:100px; padding:10px 5px; }
     .agenda-week-toolbar{ grid-template-columns:auto minmax(0,1fr); gap:8px; }
     .agenda-week-navigation{ gap:5px; }
     .agenda-week-period{ min-width:0; font-size:12px; text-align:right; }
@@ -722,6 +732,9 @@ let state = {
   stats: { totalPoints: 0 },
   activities: [],
   agendaEvents: [],
+  routineActivities: [],
+  routineActive: null,
+  routineLastCheckInAt: null,
   globalAiMessages: [],
   fileHandle: null,
   pendingFileHandle: null,
@@ -800,6 +813,9 @@ async function loadData(){
           state.stats = d.stats || { totalPoints: 0 };
           state.activities = Array.isArray(d.activities) ? d.activities : [];
           state.agendaEvents = Array.isArray(d.agendaEvents) ? d.agendaEvents : [];
+          state.routineActivities = Array.isArray(d.routineActivities) ? d.routineActivities : [];
+          state.routineActive = d.routineActive || null;
+          state.routineLastCheckInAt = Number(d.routineLastCheckInAt) || null;
           state.globalAiMessages = Array.isArray(d.globalAiMessages) ? d.globalAiMessages : [];
           state.books = (d.books || []).map(normalizeBook);
           state.notesItems = (d.notesItems || []).map(normalizeNoteItem);
@@ -821,6 +837,9 @@ async function loadData(){
           state.stats = d.stats || { totalPoints: 0 };
           state.activities = Array.isArray(d.activities) ? d.activities : [];
           state.agendaEvents = Array.isArray(d.agendaEvents) ? d.agendaEvents : [];
+          state.routineActivities = Array.isArray(d.routineActivities) ? d.routineActivities : [];
+          state.routineActive = d.routineActive || null;
+          state.routineLastCheckInAt = Number(d.routineLastCheckInAt) || null;
           state.globalAiMessages = Array.isArray(d.globalAiMessages) ? d.globalAiMessages : [];
           state.books = (d.books || []).map(normalizeBook);
           state.notesItems = (d.notesItems || []).map(normalizeNoteItem);
@@ -849,7 +868,7 @@ async function loadData(){
 // antigo termine depois e sobrescreva uma criação mais nova no armazenamento.
 let dataSaveQueue = Promise.resolve();
 function saveData(){
-  const payload = JSON.parse(JSON.stringify({decks: state.decks, cards: state.cards, stats: state.stats, activities: state.activities, agendaEvents: state.agendaEvents, globalAiMessages: state.globalAiMessages, books: state.books, notesItems: state.notesItems, sidebarAutoHide: state.sidebarAutoHide, notesChatWidth: state.notesChatWidth, lastDeckId: state.lastDeckId, lastNoteId: state.lastNoteId, geminiApiKey: getApiKey(), geminiApiKey2: getApiKey2(), booksApiKey: getBooksApiKey()}));
+  const payload = JSON.parse(JSON.stringify({decks: state.decks, cards: state.cards, stats: state.stats, activities: state.activities, agendaEvents: state.agendaEvents, routineActivities: state.routineActivities, routineActive: state.routineActive, routineLastCheckInAt: state.routineLastCheckInAt, globalAiMessages: state.globalAiMessages, books: state.books, notesItems: state.notesItems, sidebarAutoHide: state.sidebarAutoHide, notesChatWidth: state.notesChatWidth, lastDeckId: state.lastDeckId, lastNoteId: state.lastNoteId, geminiApiKey: getApiKey(), geminiApiKey2: getApiKey2(), booksApiKey: getBooksApiKey()}));
   const persist = async () => {
     for(let attempt=0; attempt<2; attempt++){
       try{
@@ -2461,6 +2480,94 @@ function changeAgendaWeek(delta){
   render();
 }
 function setAgendaView(view){ state.agendaView=view; render(); }
+/* ============ ROTINA ============ */
+const ROUTINE_CHECKIN_MS = 2 * 60 * 60 * 1000;
+const ROUTINE_DEFAULT_ACTIONS = [
+  {id:'shower',icon:'🚿',title:'Banho'}, {id:'breakfast',icon:'🥣',title:'Café da manhã'},
+  {id:'lunch',icon:'🍽️',title:'Almoço'}, {id:'dinner',icon:'🍲',title:'Jantar'},
+  {id:'work',icon:'💼',title:'Trabalho'}, {id:'study',icon:'📚',title:'Estudo'},
+  {id:'exercise',icon:'🏃',title:'Exercício'}, {id:'walk',icon:'🚶',title:'Caminhada'},
+  {id:'transport',icon:'🚌',title:'Deslocamento'}, {id:'cooking',icon:'👩‍🍳',title:'Cozinhar'},
+  {id:'cleaning',icon:'🧹',title:'Limpeza'}, {id:'meditation',icon:'🧘',title:'Meditação'},
+  {id:'rest',icon:'🛋️',title:'Descanso'}, {id:'leisure',icon:'🎮',title:'Lazer'},
+  {id:'medicine',icon:'💊',title:'Medicamentos'}, {id:'sleep',icon:'😴',title:'Sono'}
+];
+let routineTimer = null;
+function getRoutineActions(){ return [...ROUTINE_DEFAULT_ACTIONS,...(state.routineActivities||[])]; }
+function formatRoutineElapsed(startedAt){
+  const total=Math.max(0,Math.floor((Date.now()-startedAt)/1000));
+  const hours=Math.floor(total/3600), minutes=Math.floor((total%3600)/60), seconds=total%60;
+  return `${hours?`${String(hours).padStart(2,'0')}:`:''}${String(minutes).padStart(2,'0')}:${String(seconds).padStart(2,'0')}`;
+}
+function routineTimeLabel(timestamp){ return new Date(timestamp).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}); }
+function recordRoutineActivity(activity, startedAt, endedAt, source){
+  const start=Math.max(0,Number(startedAt)||Date.now()), end=Math.max(start,Number(endedAt)||Date.now());
+  const durationMs=Math.max(1000,end-start);
+  state.activities.unshift({id:uid(),type:'routine',at:start,durationMs,title:activity.title,icon:activity.icon||'✅',routineId:activity.id,startedAt:start,endedAt:end,source:source||'timer'});
+  state.activities=state.activities.slice(0,ACTIVITY_HISTORY_LIMIT);
+  state.agendaEvents.unshift({id:uid(),title:`${activity.icon||'✅'} ${activity.title}`,date:agendaDateKey(start),time:new Date(start).toTimeString().slice(0,5),notes:`Rotina concluída · ${routineTimeLabel(start)}–${routineTimeLabel(end)} · ${formatActivityDuration(durationMs)}`,completedAt:end,source:'routine',routineId:activity.id,createdAt:end,updatedAt:end});
+}
+function startRoutineActivity(id){
+  const activity=getRoutineActions().find(item=>item.id===id); if(!activity) return;
+  if(state.routineActive && state.routineActive.id===id){ stopRoutineActivity(); return; }
+  if(state.routineActive) stopRoutineActivity(false);
+  state.routineActive={id:activity.id,title:activity.title,icon:activity.icon||'✅',startedAt:Date.now()};
+  saveData(); ensureRoutineTimer(); render();
+}
+function stopRoutineActivity(showMessage=true){
+  const active=state.routineActive; if(!active) return;
+  const endedAt=Date.now();
+  recordRoutineActivity(active,active.startedAt,endedAt,'timer');
+  state.routineActive=null; saveData(); render();
+  if(showMessage) showToast(`${active.title} registrado na agenda.`);
+}
+function ensureRoutineTimer(){
+  if(routineTimer) return;
+  routineTimer=setInterval(()=>{ if(state.view==='routine'&&state.routineActive) render(); },1000);
+}
+function openRoutine(){
+  finishReadingActivity(); finishWritingActivity();
+  state.view='routine'; ensureRoutineTimer();
+  const now=Date.now();
+  if(!state.routineLastCheckInAt){ state.routineLastCheckInAt=now; saveData(); render(); return; }
+  if(now-state.routineLastCheckInAt>=ROUTINE_CHECKIN_MS){
+    state.modal={type:'routine-catchup',input:'',sending:false,from:state.routineLastCheckInAt,to:now}; render(); return;
+  }
+  render();
+}
+function openRoutineActionModal(){ state.modal={type:'routine-action',title:'',icon:'✨'}; render(); }
+function confirmRoutineAction(){
+  const m=state.modal, title=String(m?.title||'').trim(); if(!title){ showToast('Dê um nome para a atividade.', 'error'); return; }
+  state.routineActivities.push({id:uid(),title:title.slice(0,60),icon:String(m.icon||'✅').trim().slice(0,4)||'✅'});
+  state.modal=null; saveData(); render();
+}
+function skipRoutineCatchup(){ state.routineLastCheckInAt=Date.now(); state.modal=null; saveData(); render(); }
+function extractRoutineJson(text){
+  const clean=String(text||'').replace(/```json|```/g,'').trim();
+  const match=clean.match(/\{[\s\S]*\}/); return JSON.parse(match?match[0]:clean);
+}
+async function submitRoutineCatchup(){
+  const m=state.modal, report=String(m?.input||'').trim(); if(!report){ showToast('Conte brevemente o que você fez.', 'error'); return; }
+  if(!getApiKey()){ showToast('Configure a chave da IA para registrar o relato.', 'error'); return; }
+  m.sending=true; render();
+  try{
+    const prompt=`Você organiza rotina pessoal. Converta o relato em atividades concluídas. Janela: de ${new Date(m.from).toLocaleString('pt-BR')} até ${new Date(m.to).toLocaleString('pt-BR')}. Relato: "${report}". Responda APENAS JSON: {"activities":[{"title":"atividade curta","icon":"emoji","startedAt":"ISO 8601 dentro da janela","endedAt":"ISO 8601 dentro da janela"}]}. Se horários não foram ditos, distribua estimativas razoáveis dentro da janela; no máximo 6 atividades.`;
+    const parsed=extractRoutineJson(await callGemini(prompt,{maxTokens:700,responseMimeType:'application/json'}));
+    const items=Array.isArray(parsed.activities)?parsed.activities.slice(0,6):[];
+    items.forEach((item,index)=>{
+      const fallbackStart=m.from+index*Math.max(60000,Math.floor((m.to-m.from)/Math.max(1,items.length)));
+      const start=Date.parse(item.startedAt); const end=Date.parse(item.endedAt);
+      recordRoutineActivity({id:uid(),title:String(item.title||'Atividade').slice(0,60),icon:String(item.icon||'✅').slice(0,4)},Number.isFinite(start)?start:fallbackStart,Number.isFinite(end)?end:Math.min(m.to,fallbackStart+30*60000),'ai-checkin');
+    });
+    state.routineLastCheckInAt=Date.now(); state.modal=null; saveData(); render();
+    showToast(items.length?`${items.length} atividade(s) registrada(s) na agenda.`:'Não encontrei atividades para registrar.');
+  }catch(err){ console.error(err); m.sending=false; render(); showToast('Não consegui interpretar o relato agora.', 'error'); }
+}
+function renderRoutineView(){
+  const active=state.routineActive;
+  const history=state.activities.filter(item=>item.type==='routine').slice(0,8);
+  return `<div style="max-width:980px; margin:0 auto;"><button class="ghost-btn mobile-back-btn" onclick="backToHome()">← Menu</button><div class="deck-header" style="margin-bottom:14px;"><div><h2 style="margin:0 0 5px;">🌿 Rotina</h2><p>Toque em uma atividade para iniciar; toque novamente para encerrar e registrar na Agenda.</p></div><button class="primary-btn" onclick="openRoutineActionModal()">＋ Criar atividade</button></div>${active?`<div class="routine-active-banner"><div><strong>${escapeHtml(active.icon)} ${escapeHtml(active.title)}</strong><div style="font-size:12px; color:var(--text-muted); margin-top:3px;">Em andamento desde ${routineTimeLabel(active.startedAt)} · <span class="mono">${formatRoutineElapsed(active.startedAt)}</span></div></div><button class="primary-btn" onclick="stopRoutineActivity()">✓ Concluir</button></div>`:''}<div class="routine-grid">${getRoutineActions().map(item=>`<button class="routine-action ${active?.id===item.id?'active':''}" onclick="startRoutineActivity('${item.id}')"><span class="routine-action-icon">${escapeHtml(item.icon)}</span><span class="routine-action-name">${escapeHtml(item.title)}</span><span class="routine-action-time">${active?.id===item.id?formatRoutineElapsed(active.startedAt):'Iniciar'}</span></button>`).join('')}</div><div style="margin-top:22px;"><h3 style="font-size:15px; margin:0 0 8px;">Últimos registros</h3>${history.length?`<div style="display:flex; flex-direction:column; gap:6px;">${history.map(item=>`<div class="agenda-card" style="margin:0; display:flex; justify-content:space-between; gap:10px;"><span>${escapeHtml(item.icon||'✅')} <strong>${escapeHtml(item.title||'Atividade')}</strong></span><span class="agenda-meta">${new Date(item.at).toLocaleDateString('pt-BR',{day:'2-digit',month:'short'})} · ${routineTimeLabel(item.startedAt||item.at)}–${routineTimeLabel(item.endedAt||(item.at+(item.durationMs||0)))} · ${formatActivityDuration(item.durationMs)}</span></div>`).join('')}</div>`:`<p style="color:var(--text-faint); font-size:13px;">Seus registros de rotina aparecerão aqui e na Agenda.</p>`}</div></div>`;
+}
 function openAgendaEventModal(eventId){
   const event=eventId && state.agendaEvents.find(item=>item.id===eventId);
   state.modal={type:'agenda-event',eventId:event?event.id:null,title:event?event.title:'',date:event?event.date:'',time:event?event.time:'',notes:event?event.notes:''}; render();
@@ -2528,8 +2635,8 @@ function isToday(timestamp){
   return now.getFullYear()===date.getFullYear() && now.getMonth()===date.getMonth() && now.getDate()===date.getDate();
 }
 function renderAgendaActivity(activity){
-  const icon = activity.type === 'reading' ? '📖' : activity.type === 'writing' ? '✍️' : '🧠';
-  const label = activity.type === 'reading' ? 'Leitura' : activity.type === 'writing' ? 'Escrita' : 'Flashcards';
+  const icon = activity.type === 'reading' ? '📖' : activity.type === 'writing' ? '✍️' : activity.type === 'routine' ? (activity.icon||'✅') : '🧠';
+  const label = activity.type === 'reading' ? 'Leitura' : activity.type === 'writing' ? 'Escrita' : activity.type === 'routine' ? (activity.title||'Rotina') : 'Flashcards';
   const detail = activity.type === 'flashcards'
     ? `${activity.count||0} cartão(ões) · ${formatActivityDuration(activity.durationMs)}`
     : formatActivityDuration(activity.durationMs);
@@ -7478,9 +7585,10 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${deckActive?'active':''}" onclick="openDesktopDecks()">🗂️ Baralhos</button>
     <button class="ghost-btn ${state.view==='notes'?'active':''}" onclick="openNotes()">📓 Notas</button>
     <button class="ghost-btn ${state.view==='agenda'?'active':''}" onclick="openAgenda()">🗓️ Agenda</button>
+    <button class="ghost-btn ${state.view==='routine'?'active':''}" onclick="openRoutine()">🌿 Rotina</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.24.75</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.24.76</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -7503,7 +7611,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.24.75</span>
+        <span class="brand-version">v2026.07.24.76</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -7556,17 +7664,19 @@ function selectMobileHomeSection(section){
   if(section==='library') openLibrary();
   else if(section==='notes') openNotes();
   else if(section==='agenda') openAgenda();
+  else if(section==='routine') openRoutine();
 }
 function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.75</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.76</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
       ${nav('notes','Notas','📓')}
       ${nav('agenda','Agenda','🗓️')}
+      ${nav('routine','Rotina','🌿')}
       <button class="ghost-btn mobile-nav-button" onclick="openAppOptionsModal()"><span style="font-size:20px;">⚙️</span>Opções</button>
       <div style="display:flex; gap:7px;"><button class="ghost-btn mobile-nav-button" style="flex:1; margin:0;" onclick="openGlobalAiChat()"><span style="font-size:20px;">💬</span>Chat IA</button><button class="ghost-btn" style="width:58px; padding:0; font-size:21px;" title="Tirar foto para criar cartões" onclick="openPhotoImportPicker(true)">📷</button></div>
     </div>
@@ -7600,6 +7710,7 @@ function renderMain(){
   if(state.view === 'epub-reader') return renderEpubReaderView();
   if(state.view === 'notes') return renderNotesView();
   if(state.view === 'agenda') return renderAgendaView();
+  if(state.view === 'routine') return renderRoutineView();
   if(state.view === 'home' || !state.currentDeckId){
     return `
     <div class="empty-state">
@@ -9046,6 +9157,13 @@ function renderAgendaSuggestionsModal(m){
   const rows=(m.suggestions||[]).map(s=>{ const event=state.agendaEvents.find(item=>item.id===s.eventId); if(!event) return ''; const when=s.slot?`${agendaDateFromKey(s.slot.date).toLocaleDateString('pt-BR',{weekday:'long',day:'numeric',month:'short'})} às ${s.slot.time}`:'Nenhum horário livre nesta semana'; return `<div style="display:flex; gap:8px; align-items:center; padding:9px; border:1px solid var(--border); border-radius:9px;"><div style="flex:1; min-width:0;"><strong style="font-size:13px;">${escapeHtml(event.title)}</strong><div style="font-size:11px; color:var(--text-faint); margin-top:2px;">Sugestão: ${when}</div></div>${s.slot?`<button class="primary-btn" style="padding:6px 9px; font-size:11px;" onclick="applyAgendaSuggestion('${event.id}','${s.slot.date}','${s.slot.time}')">Agendar</button>`:''}</div>`; }).join('');
   return `<div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal" style="width:480px;"><h3>✨ Sugestões de horário</h3><p style="margin:0; font-size:12px; color:var(--text-faint);">Usei os próximos horários livres (9h, 14h e 19h) desta semana. Você continua no controle: nada é agendado sem tocar em “Agendar”.</p><div style="display:flex; flex-direction:column; gap:7px; max-height:48vh; overflow-y:auto;">${rows||`<p style="color:var(--text-faint); font-size:13px;">Não há tarefas sem dia para sugerir nesta semana.</p>`}</div><div class="modal-actions"><button class="ghost-btn" onclick="closeModal()">Fechar</button></div></div></div>`;
 }
+function renderRoutineActionModal(m){
+  return `<div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal" style="width:390px;"><h3>Nova atividade de rotina</h3><p style="margin:0; color:var(--text-faint); font-size:12px;">Ela aparecerá como um atalho para iniciar e concluir com um toque.</p><div class="field"><label>NOME</label><input type="text" autofocus placeholder="Ex.: Passear com o cachorro" value="${escapeHtml(m.title||'')}" oninput="state.modal.title=this.value"></div><div class="field"><label>ÍCONE</label><input type="text" maxlength="4" placeholder="🐶" value="${escapeHtml(m.icon||'')}" oninput="state.modal.icon=this.value"></div><div class="modal-actions"><button class="ghost-btn" onclick="closeModal()">Cancelar</button><button class="primary-btn" onclick="confirmRoutineAction()">Criar</button></div></div></div>`;
+}
+function renderRoutineCatchupModal(m){
+  const from=new Date(m.from).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}), to=new Date(m.to).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
+  return `<div class="modal-overlay"><div class="modal" style="width:min(520px,calc(100vw - 24px));"><h3>✨ Como foi seu tempo?</h3><p style="margin:0; color:var(--text-faint); font-size:12.5px; line-height:1.5;">Faz mais de duas horas desde o último registro. Conte o que fez entre ${from} e ${to}; a IA organizará isso como atividades concluídas na Agenda.</p><textarea rows="6" autofocus placeholder="Ex.: trabalhei até 12h, almocei e fiz uma caminhada de 20 minutos." oninput="state.modal.input=this.value">${escapeHtml(m.input||'')}</textarea><div class="modal-actions"><button class="ghost-btn" onclick="skipRoutineCatchup()">Pular por agora</button><button class="primary-btn" onclick="submitRoutineCatchup()" ${m.sending?'disabled':''}>${m.sending?'Organizando...':'Registrar com IA'}</button></div></div></div>`;
+}
 function renderGlobalAiChatModal(m){
   return `<div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal" style="width:min(560px,calc(100vw - 24px)); max-height:86vh; display:flex; flex-direction:column;"><div style="display:flex; justify-content:space-between; align-items:center;"><h3>✨ Chat IA</h3><button class="icon-btn" onclick="closeModal()">✕</button></div><p style="font-size:12px; color:var(--text-faint); margin:0;">Posso ajudar com notas, agenda, leituras e baralhos.</p><div style="flex:1; min-height:220px; max-height:52vh; overflow-y:auto; display:flex; flex-direction:column; gap:9px; padding:6px 2px;">${m.messages.length?m.messages.map(msg=>`<div style="align-self:${msg.role==='user'?'flex-end':'flex-start'}; max-width:88%; padding:9px 12px; border-radius:11px; background:${msg.role==='user'?'var(--accent-soft)':'var(--surface-2)'}; color:${msg.error?'var(--error)':'var(--text)'}; white-space:pre-wrap; font-size:13px; line-height:1.45;">${escapeHtml(msg.text)}${msg.actions&&msg.actions.length?`<div style="margin-top:6px; font-size:11px; color:var(--text-muted);">${msg.actions.map(a=>`✓ ${escapeHtml(a)}`).join('<br>')}</div>`:''}</div>`).join(''):`<p style="color:var(--text-faint); text-align:center; font-size:13px;">Peça para criar uma nota, organizar sua agenda ou abrir uma área do app.</p>`}</div><div style="display:flex; gap:7px;"><textarea id="global-ai-input" rows="3" style="flex:1; resize:none; min-height:72px;" placeholder="O que você quer fazer?" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendGlobalAiMessage()}" oninput="state.modal.input=this.value">${escapeHtml(m.input||'')}</textarea><button class="primary-btn" onclick="sendGlobalAiMessage()" ${m.sending?'disabled':''}>Enviar</button></div></div></div>`;
 }
@@ -9068,6 +9186,8 @@ function renderModal(){
   const m = state.modal;
   if(m.type === 'agenda-event') return renderAgendaEventModal(m);
   if(m.type === 'agenda-suggestions') return renderAgendaSuggestionsModal(m);
+  if(m.type === 'routine-action') return renderRoutineActionModal(m);
+  if(m.type === 'routine-catchup') return renderRoutineCatchupModal(m);
   if(m.type === 'global-ai-chat') return renderGlobalAiChatModal(m);
   if(m.type === 'api-key') return renderApiKeyModal(m);
   if(m.type === 'app-options') return renderAppOptionsModal();
