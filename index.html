@@ -95,11 +95,10 @@
   @media (min-width:821px){
     #app > .sidebar, #app > .sidebar-edge-trigger{ display:none; }
     .desktop-top-nav{ display:flex; align-items:center; gap:3px; align-self:center; margin:6px 0 0; padding:3px; border:1px solid var(--border); border-radius:10px; background:color-mix(in srgb,var(--surface) 92%,transparent); box-shadow:0 3px 12px rgba(0,0,0,.05); }
-    .desktop-top-brand{ display:flex; align-items:center; gap:5px; padding:2px 9px 2px 2px; margin-right:2px; border:0; border-right:1px solid var(--border); border-radius:0; background:transparent; color:var(--text); text-align:left; box-shadow:none; }
+    .desktop-top-brand{ display:flex; align-items:center; padding:2px 9px; margin-right:2px; border:0; border-right:1px solid var(--border); border-radius:0; background:transparent; color:var(--text); text-align:left; box-shadow:none; }
     .desktop-top-brand:hover{ background:transparent; filter:none; transform:none; }
     .desktop-top-brand:focus{ outline:none; }
     .desktop-top-brand:focus-visible{ outline:2px solid var(--accent-dim); outline-offset:3px; border-radius:8px; }
-    .desktop-top-brand .brand-mark{ width:24px; height:24px; border-radius:7px; }
     .desktop-top-brand strong{ display:block; font-size:11px; line-height:1; }
     .desktop-top-brand small{ display:block; color:var(--text-faint); font-size:8px; letter-spacing:.05em; text-transform:uppercase; margin-top:1px; }
     .desktop-top-nav button{ padding:6px 9px; font-size:11.5px; }
@@ -307,7 +306,9 @@
   .feedback-banner{
     padding:14px 18px; border-radius:11px; font-size:14px; font-weight:600;
     animation:pop .25s ease; line-height:1.55; text-align:left; white-space:pre-wrap; word-break:break-word;
-    max-height:360px; overflow-y:auto;
+    /* A explicação da IA é curta na maior parte dos casos, mas não deve
+       desaparecer quando vier maior. A página inteira já tem rolagem. */
+    max-height:none; overflow:visible; overflow-wrap:anywhere;
   }
   .feedback-banner.ok{ background:var(--success-soft); color:var(--success); }
   .feedback-banner.no{ background:var(--error-soft); color:var(--error); }
@@ -677,7 +678,11 @@ let state = {
   notesPageView: false,
   sidebarAutoHide: false,
   mobileHomeSection: null,
-  notesChatWidth: 340
+  notesChatWidth: 340,
+  // A tela inicial permanece neutra. Estes ids só servem para retomar o
+  // último conteúdo quando a pessoa escolher Baralhos ou Notas novamente.
+  lastDeckId: null,
+  lastNoteId: null
 };
 
 function uid(){ return Math.random().toString(36).slice(2,10); }
@@ -738,6 +743,8 @@ async function loadData(){
           state.notesItems = (d.notesItems || []).map(normalizeNoteItem);
           state.sidebarAutoHide = !!d.sidebarAutoHide;
           state.notesChatWidth = Math.max(280,Math.min(560,Number(d.notesChatWidth)||340));
+          state.lastDeckId = d.lastDeckId || null;
+          state.lastNoteId = d.lastNoteId || null;
           migrateLegacyInlineNoteContent(d.notesItems);
           if(d.geminiApiKey) setApiKey(d.geminiApiKey);
           if(d.geminiApiKey2) setApiKey2(d.geminiApiKey2);
@@ -755,6 +762,8 @@ async function loadData(){
           state.notesItems = (d.notesItems || []).map(normalizeNoteItem);
           state.sidebarAutoHide = !!d.sidebarAutoHide;
           state.notesChatWidth = Math.max(280,Math.min(560,Number(d.notesChatWidth)||340));
+          state.lastDeckId = d.lastDeckId || null;
+          state.lastNoteId = d.lastNoteId || null;
           migrateLegacyInlineNoteContent(d.notesItems);
           // sincroniza a chave do Gemini entre aparelhos logados na mesma conta —
           // assim não precisa configurar de novo em cada navegador/celular.
@@ -776,7 +785,7 @@ async function loadData(){
 // antigo termine depois e sobrescreva uma criação mais nova no armazenamento.
 let dataSaveQueue = Promise.resolve();
 function saveData(){
-  const payload = JSON.parse(JSON.stringify({decks: state.decks, cards: state.cards, stats: state.stats, activities: state.activities, books: state.books, notesItems: state.notesItems, sidebarAutoHide: state.sidebarAutoHide, notesChatWidth: state.notesChatWidth, geminiApiKey: getApiKey(), geminiApiKey2: getApiKey2(), booksApiKey: getBooksApiKey()}));
+  const payload = JSON.parse(JSON.stringify({decks: state.decks, cards: state.cards, stats: state.stats, activities: state.activities, books: state.books, notesItems: state.notesItems, sidebarAutoHide: state.sidebarAutoHide, notesChatWidth: state.notesChatWidth, lastDeckId: state.lastDeckId, lastNoteId: state.lastNoteId, geminiApiKey: getApiKey(), geminiApiKey2: getApiKey2(), booksApiKey: getBooksApiKey()}));
   const persist = async () => {
     for(let attempt=0; attempt<2; attempt++){
       try{
@@ -1206,6 +1215,7 @@ function createDeck(name, color, type){
   state.decks.push(d);
   state.cards[d.id] = [];
   state.currentDeckId = d.id;
+  state.lastDeckId = d.id;
   state.view = 'deck'; state.tab = 'cards';
   saveData(); render();
 }
@@ -2437,8 +2447,7 @@ function confirmCreateDeckForBook(){
 }
 function goToLinkedDeck(deckId){
   if(!state.decks.some(d=>d.id===deckId)) return;
-  state.currentDeckId = deckId; state.view = 'deck'; state.tab = 'cards';
-  render();
+  selectDeck(deckId);
 }
 function deleteQuote(bookId, quoteId){
   const book = state.books.find(b=>b.id===bookId);
@@ -4242,6 +4251,10 @@ function openNotes(){
     .filter(item => item.type === 'folder')
     .map(item => item.id);
   state.view = 'notes';
+  // Ao entrar em Notas, retoma a última nota válida em vez de deixar uma
+  // seleção antiga ou aleatória aberta.
+  const lastNote = state.notesItems.find(item => item.type==='note' && item.id===state.lastNoteId);
+  if(lastNote) state.currentNoteId = lastNote.id;
   if(isDesktopLayout() && state.currentNoteId) ensureNoteChatFor(state.currentNoteId);
   render();
 }
@@ -4308,7 +4321,7 @@ function confirmCreateNoteItem(){
   const item = makeNoteItem(m.kind, name, m.parentId);
   state.notesItems.push(item);
   state.modal = null;
-  if(m.kind === 'note'){ state.currentNoteId = item.id; state.notesEditorMode = state.notesEditorMode || 'split'; }
+  if(m.kind === 'note'){ state.currentNoteId = item.id; state.lastNoteId = item.id; state.notesEditorMode = state.notesEditorMode || 'split'; }
   else {
     // Pastas novas seguem o mesmo padrão do explorador: começam fechadas.
     const collapsed = state.notesCollapsedFolders || (state.notesCollapsedFolders=[]);
@@ -4339,7 +4352,9 @@ function closeCurrentNote(){
 }
 function openNote(id){
   state.currentNoteId = id;
+  state.lastNoteId = id;
   state.noteFindReplace = null; // trocar de nota fecha qualquer busca/substituição aberta na anterior
+  saveData();
   if(isDesktopLayout()) ensureNoteChatFor(id);
   if(noteContentCache[id] === undefined && !noteContentLoading[id]){
     noteContentLoading[id] = true;
@@ -7007,12 +7022,18 @@ function focusStudyInput(){
 function isDesktopLayout(){ return typeof window!=='undefined' && window.matchMedia('(min-width:821px)').matches; }
 function openDesktopDecks(){
   finishReadingActivity(); finishWritingActivity();
-  state.view='home'; state.currentDeckId=null; state.tab='cards'; render();
+  // A primeira tela do app é neutra; só abrimos um baralho depois do clique.
+  // Daí em diante, Baralhos sempre retoma o último baralho realmente usado.
+  const lastDeck = state.decks.find(deck => deck.id===state.lastDeckId);
+  const fallbackDeck = getOrderedDecks()[0];
+  const deck = lastDeck || fallbackDeck;
+  if(!deck){ state.view='home'; state.currentDeckId=null; state.tab='cards'; render(); return; }
+  selectDeck(deck.id);
 }
 function renderDesktopTopNav(){
-  const deckActive=state.view==='home'||state.view==='deck'||state.view==='study';
+  const deckActive=state.view==='deck'||state.view==='study';
   return `<nav class="desktop-top-nav" aria-label="Navegação principal">
-    <button class="desktop-top-brand" title="Baralhos" onclick="openDesktopDecks()"><span class="brand-mark"></span><span><strong>Letther B</strong><small>let it be</small></span></button>
+    <button class="desktop-top-brand" title="Baralhos" onclick="openDesktopDecks()"><span><strong>Letther B</strong><small>let it be</small></span></button>
     <button class="ghost-btn ${deckActive?'active':''}" onclick="openDesktopDecks()">🗂️ Baralhos</button>
     <button class="ghost-btn ${state.view==='notes'?'active':''}" onclick="openNotes()">📓 Notas</button>
     <button class="ghost-btn ${state.view==='agenda'?'active':''}" onclick="openAgenda()">🗓️ Agenda</button>
@@ -7021,7 +7042,7 @@ function renderDesktopTopNav(){
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
-  const show=state.view==='home'||state.view==='deck'||state.view==='study';
+  const show=state.view==='deck'||state.view==='study';
   if(!show) return '';
   return `<aside class="desktop-deck-explorer">
     <div style="display:flex; justify-content:space-between; align-items:center;"><strong style="font-size:13px;">Baralhos</strong><span style="font-size:11px; color:var(--text-faint);">${state.decks.length}</span></div>
@@ -7040,7 +7061,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.24.51</span>
+        <span class="brand-version">v2026.07.24.54</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -7098,7 +7119,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.51</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.54</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
@@ -7116,10 +7137,10 @@ function toggleSidebarAutoHide(){
 }
 
 function selectDeck(id){
-  state.currentDeckId = id; state.view = 'deck'; state.tab = 'cards'; state.editingCardId = null;
+  state.currentDeckId = id; state.lastDeckId = id; state.view = 'deck'; state.tab = 'cards'; state.editingCardId = null;
   state.cardSearch = ''; state.cardFilterFlagged = false; state.cardFilterLearned = false; state.cardFilterPriority = false;
   state.cardFormMode = 'text'; state.imageEditorUrl = ''; state.newPinPos = null;
-  render();
+  saveData(); render();
 }
 function backToHome(){
   finishReadingActivity();
