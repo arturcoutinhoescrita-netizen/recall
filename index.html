@@ -4442,6 +4442,27 @@ function splitNoteHtmlIntoPages(content, wordsPerPage){
   push();
   return pages.length ? pages : [''];
 }
+function splitNoteHtmlByRenderedHeight(content, width, height, margin){
+  const holder=document.createElement('div'); holder.innerHTML=content||'';
+  const units=[];
+  const collect=node=>{
+    if(node.nodeType===1 && /^(DIV|P|SECTION)$/i.test(node.tagName) && node.children.length>1) Array.from(node.childNodes).forEach(collect);
+    else units.push(node);
+  };
+  Array.from(holder.childNodes).forEach(collect);
+  const test=document.createElement('div');
+  test.style.cssText=`position:fixed;left:-10000px;top:0;visibility:hidden;width:${Math.max(40,width-margin*2)}px;height:${Math.max(40,height-margin*2-28)}px;overflow:hidden;line-height:1.7;font-size:14.5px;box-sizing:border-box;`;
+  document.body.appendChild(test);
+  const pages=[], current=[];
+  units.forEach(node=>{
+    const html=node.outerHTML||escapeHtml(node.textContent||'');
+    test.innerHTML=current.join('')+html;
+    if(current.length && test.scrollHeight>test.clientHeight){ pages.push(current.join('')); current.length=0; test.innerHTML=html; }
+    current.push(html);
+  });
+  if(current.length) pages.push(current.join(''));
+  test.remove(); return pages.length?pages:[''];
+}
 function renderPagedNotePreview(note, content){
   const s=getNotePageSettings(note), factor=s.unit==='px'?1:37.795;
   const width=s.width*factor, height=s.height*factor, margin=s.margin*factor;
@@ -4450,7 +4471,7 @@ function renderPagedNotePreview(note, content){
   const perPage=window.innerWidth <= 820 ? Math.min(getNoteWordsPerPage(note), 35) : getNoteWordsPerPage(note);
   // Uma folha inteira mantém o HTML original: parágrafos, negrito, imagens e
   // todas as formatações do editor continuam idênticas à nota.
-  const chunks = words.length <= perPage ? [{ html:content }] : splitNoteHtmlIntoPages(content, perPage).map(html=>({html}));
+  const chunks = splitNoteHtmlByRenderedHeight(content, width, height, margin).map(html=>({html}));
   if(!chunks.length) chunks.push({ html:'' });
   return `<div class="notes-paged-preview">${chunks.map((chunk,index)=>{ const page=index+1; const position=s.pageNumberPosition==='book' ? (page%2?'right':'left') : s.pageNumberPosition; const number=s.pageNumbers&&!pageNumberIsHidden(page,s.hiddenPages) ? `<div class="note-page-sheet-number" style="text-align:${position}; padding:0 ${margin}px ${Math.max(12,margin*.35)}px;">${page}</div>` : ''; return `<article class="note-page-sheet" style="width:${width}px; height:${height}px; padding:${margin}px;"><div class="note-page-sheet-content">${chunk.html}</div>${number}</article>`; }).join('')}</div>`;
 }
@@ -6359,7 +6380,7 @@ function renderSidebar(){
       <div>
         <h1>Recall</h1>
         <span>REPETIÇÃO ESPAÇADA</span>
-        <span class="brand-version">v2026.07.24.16</span>
+        <span class="brand-version">v2026.07.24.17</span>
       </div>
     </div>
     <button class="ghost-btn" style="font-size:13px; padding:10px 12px; margin-bottom:6px; ${(state.view==='library'||state.view==='book') ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="openLibrary()">📚 Leituras</button>
