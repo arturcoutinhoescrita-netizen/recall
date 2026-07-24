@@ -102,6 +102,7 @@
     .desktop-top-brand strong{ display:block; font-size:11px; line-height:1; }
     .desktop-top-brand small{ display:block; color:var(--text-faint); font-size:8px; letter-spacing:.05em; text-transform:uppercase; margin-top:1px; }
     .desktop-top-nav button{ padding:6px 9px; font-size:11.5px; }
+    .desktop-app-version{ padding:0 6px 0 3px; color:var(--text-faint); font-size:9px; white-space:nowrap; font-variant-numeric:tabular-nums; }
     .desktop-top-nav button.active{ color:var(--accent); border-color:var(--accent-dim); background:var(--accent-soft); }
     .desktop-content{ flex:1; min-height:0; display:flex; }
     .desktop-deck-explorer{ display:flex; flex-direction:column; width:260px; flex-shrink:0; margin:16px 0 16px 32px; padding:12px; gap:8px; border:1px solid var(--border); border-radius:14px; background:var(--bg-2); overflow-y:auto; }
@@ -509,6 +510,7 @@
   .agenda-slot-time{ position:absolute; left:1px; top:5px; font-size:9px; color:var(--text-faint); }
   .agenda-event{ width:100%; margin-bottom:3px; padding:5px 6px; border:1px solid var(--accent-dim); border-radius:6px; background:var(--accent-soft); color:var(--text); text-align:left; font:inherit; font-size:10.5px; line-height:1.25; cursor:grab; overflow:hidden; text-overflow:ellipsis; }
   .agenda-event.todo{ border-color:var(--border); background:var(--bg-2); cursor:grab; }
+  .agenda-event.done{ border-color:var(--success); background:var(--success-soft); color:var(--success); text-decoration:line-through; cursor:default; }
   .agenda-drop-target{ outline:2px dashed var(--accent); outline-offset:-3px; background:var(--accent-soft); }
 
 
@@ -914,6 +916,33 @@ function recordStudyActivity(session){
   session.activityRecorded = true;
   const deck = state.decks.find(d=>d.id===session.deckId);
   addActivity('flashcards', { durationMs:Date.now() - session.startTime, count, deckId:session.deckId, title:deck ? deck.name : 'Flashcards' });
+  updateAgendaReviewTask(session.deckId);
+}
+function ensureAgendaReviewTasks(){
+  const today=agendaDateKey(new Date());
+  let changed=false;
+  state.decks.forEach(deck=>{
+    const due=getDueCards(deck.id).length;
+    const task=state.agendaEvents.find(event=>event.autoReview && event.deckId===deck.id && event.date===today);
+    if(due>0 && !task){
+      state.agendaEvents.unshift({id:uid(),title:`Revisar ${deck.name}`,date:today,time:null,notes:'Criada automaticamente a partir dos cartões vencidos.',deckId:deck.id,autoReview:true,expectedCount:due,createdAt:Date.now(),updatedAt:Date.now()}); changed=true;
+    }else if(task && !task.completedAt){ task.expectedCount=due; task.title=`Revisar ${deck.name}`; task.updatedAt=Date.now(); changed=true; }
+  });
+  if(changed) saveData();
+}
+function updateAgendaReviewTask(deckId){
+  const today=agendaDateKey(new Date());
+  let task=state.agendaEvents.find(event=>event.autoReview && event.deckId===deckId && event.date===today && !event.completedAt);
+  const remaining=getDueCards(deckId).length;
+  if(!task && remaining===0){
+    const deck=state.decks.find(item=>item.id===deckId);
+    task={id:uid(),title:`Revisar ${deck?deck.name:'baralho'}`,date:today,time:null,notes:'Concluída automaticamente após a sessão de flashcards.',deckId,autoReview:true,expectedCount:0,completedAt:Date.now(),createdAt:Date.now(),updatedAt:Date.now()};
+    state.agendaEvents.unshift(task); saveData(); return;
+  }
+  if(!task) return;
+  task.expectedCount=remaining;
+  if(remaining===0) task.completedAt=Date.now();
+  task.updatedAt=Date.now(); saveData();
 }
 function maintainActivityTimers(){
   const now = Date.now();
@@ -2328,6 +2357,7 @@ function openLibrary(){
 function openAgenda(){
   finishReadingActivity();
   finishWritingActivity();
+  ensureAgendaReviewTasks();
   const now=new Date();
   if(!state.agendaCursor) state.agendaCursor={year:now.getFullYear(),month:now.getMonth()};
   if(!state.agendaSelectedDate) state.agendaSelectedDate=agendaDateKey(now);
@@ -2428,9 +2458,10 @@ function renderAgendaWeekView(){
   start.setDate(start.getDate()-((start.getDay()+6)%7));
   const week=Array.from({length:7},(_,index)=>{ const date=new Date(start); date.setDate(start.getDate()+index); return date; });
   const todayKey=agendaDateKey(new Date());
-  const todos=state.agendaEvents.filter(event=>!event.date || !event.time);
+  const todos=state.agendaEvents.filter(event=>(!event.date || !event.time) && !event.completedAt);
+  const completedToday=state.agendaEvents.filter(event=>event.completedAt && event.date===todayKey);
   const hours=Array.from({length:12},(_,i)=>String(i+8).padStart(2,'0')+':00');
-  const eventCard=(event, todo)=>`<button class="agenda-event ${todo?'todo':''}" draggable="true" ondragstart="dragAgendaEvent(event,'${event.id}')" onclick="openAgendaEventModal('${event.id}')">${event.time&&!todo?`<strong>${event.time}</strong> `:''}${escapeHtml(event.title)}</button>`;
+  const eventCard=(event, todo)=>`<button class="agenda-event ${todo?'todo':''} ${event.completedAt?'done':''}" draggable="${event.completedAt?'false':'true'}" ${event.completedAt?'':'ondragstart="dragAgendaEvent(event,\''+event.id+'\')"'} onclick="openAgendaEventModal('${event.id}')">${event.completedAt?'✓ ':''}${event.time&&!todo?`<strong>${event.time}</strong> `:''}${escapeHtml(event.title)}${event.autoReview&&!event.completedAt?` · ${event.expectedCount||0}`:''}</button>`;
   return `<div style="max-width:1400px; margin:0 auto;"><button class="ghost-btn mobile-back-btn" onclick="backToHome()">← Menu</button><div class="deck-header" style="margin-bottom:14px;"><div><h2 style="margin:0 0 5px;">🗓️ Agenda</h2><p>Planeje a semana e arraste suas tarefas para o dia e horário desejados.</p></div><button class="primary-btn" onclick="openAgendaEventModal()">＋ Novo evento</button></div><div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:12px;"><div style="display:flex; gap:6px;"><button class="icon-btn" onclick="changeAgendaWeek(-1)">‹</button><button class="ghost-btn" style="padding:6px 9px; font-size:12px;" onclick="goToAgendaToday()">Hoje</button><button class="icon-btn" onclick="changeAgendaWeek(1)">›</button></div><strong>${start.toLocaleDateString('pt-BR',{day:'2-digit',month:'short'})} — ${week[6].toLocaleDateString('pt-BR',{day:'2-digit',month:'short',year:'numeric'})}</strong><div style="display:flex; gap:4px;"><button class="ghost-btn active-mode" style="padding:6px 9px; font-size:12px;" onclick="setAgendaView('week')">Semana</button><button class="ghost-btn" style="padding:6px 9px; font-size:12px;" onclick="setAgendaView('month')">Mês</button></div></div><div class="agenda-week-layout"><aside class="agenda-todo" ondragover="agendaDragOver(event)" ondragleave="agendaDragLeave(event)" ondrop="dropAgendaEvent(event,null,null)"><div style="display:flex; justify-content:space-between; align-items:center;"><h3 style="margin:0; font-size:15px;">📌 A fazer</h3><span style="font-size:11px; color:var(--text-faint);">${todos.length}</span></div><p style="font-size:11.5px; color:var(--text-faint);">Sem dia ou horário definido.</p>${todos.map(event=>eventCard(event,true)).join('') || `<p style="font-size:12px; color:var(--text-faint);">Arraste uma tarefa aqui para remover seu agendamento.</p>`}</aside><section class="agenda-week">${week.map(date=>{const key=agendaDateKey(date); const scheduled=state.agendaEvents.filter(event=>event.date===key&&event.time); return `<div class="agenda-week-day ${key===todayKey?'today':''}"><div class="agenda-week-title">${date.toLocaleDateString('pt-BR',{weekday:'short'}).replace('.','')}<br><span style="color:var(--text-faint);">${date.getDate()}</span></div>${hours.map(time=>`<div class="agenda-slot" ondragover="agendaDragOver(event)" ondragleave="agendaDragLeave(event)" ondrop="dropAgendaEvent(event,'${key}','${time}')"><span class="agenda-slot-time">${time}</span>${scheduled.filter(event=>event.time===time).map(event=>eventCard(event,false)).join('')}</div>`).join('')}<div class="agenda-slot" ondragover="agendaDragOver(event)" ondragleave="agendaDragLeave(event)" ondrop="dropAgendaEvent(event,'${key}','12:00')"><span class="agenda-slot-time">+</span>${scheduled.filter(event=>!hours.includes(event.time)).map(event=>eventCard(event,false)).join('')}</div></div>`;}).join('')}</section></div></div>`;
 }
 function renderAgendaView(){
@@ -4400,11 +4431,10 @@ function openNotes(){
     .filter(item => item.type === 'folder')
     .map(item => item.id);
   state.view = 'notes';
-  // Ao entrar em Notas, retoma a última nota válida em vez de deixar uma
-  // seleção antiga ou aleatória aberta.
-  const lastNote = state.notesItems.find(item => item.type==='note' && item.id===state.lastNoteId);
-  if(lastNote) state.currentNoteId = lastNote.id;
-  if(isDesktopLayout() && state.currentNoteId) ensureNoteChatFor(state.currentNoteId);
+  // O caderno abre sempre no explorador. Assim uma nota remota que falhou ao
+  // carregar não bloqueia a aba inteira antes de a pessoa escolher o que abrir.
+  state.currentNoteId = null;
+  if(state.modal?.type==='note-chat') state.modal=null;
   render();
 }
 function startNotesExplorerResize(event){
@@ -7347,6 +7377,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='agenda'?'active':''}" onclick="openAgenda()">🗓️ Agenda</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.24.68</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -7369,7 +7400,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.24.65</span>
+        <span class="brand-version">v2026.07.24.68</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -7427,7 +7458,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.65</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.68</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
