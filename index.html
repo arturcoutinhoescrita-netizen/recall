@@ -491,6 +491,7 @@
     .mobile-deck-actions{ display:grid; grid-template-columns:repeat(3,1fr); gap:8px; padding:2px 0 8px; }
     .mobile-deck-actions .icon-btn{ width:100%; height:42px; font-size:18px; }
     .mobile-deck-list{ display:flex; flex-direction:column; gap:7px; overflow-y:auto; padding-bottom:8px; }
+    .mobile-deck-selection{ display:flex; flex-direction:column; gap:10px; min-height:calc(100dvh - 32px); }
     .mobile-deck-card{ display:flex; align-items:center; gap:10px; padding:13px 14px; border:1px solid var(--border); border-radius:12px; background:var(--surface); }
     .mobile-deck-card .deck-item-name{ font-size:15px; }
     .mobile-deck-star{ margin-left:auto; color:var(--text-faint); font-size:19px; background:transparent; border:0; padding:4px; }
@@ -7039,7 +7040,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.24.50</span>
+        <span class="brand-version">v2026.07.24.51</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -7087,20 +7088,19 @@ function getOrderedDecks(){
   return [...state.decks].sort((a,b)=>(Number(!!b.favorite)-Number(!!a.favorite)) || a.name.localeCompare(b.name,'pt-BR'));
 }
 function selectMobileHomeSection(section){
-  if(section==='decks'){ state.mobileHomeSection=state.mobileHomeSection==='decks' ? null : 'decks'; state.view='home'; render(); return; }
+  if(section==='decks'){ state.mobileHomeSection='decks'; state.view='deck-list'; render(); return; }
   state.mobileHomeSection=section;
   if(section==='library') openLibrary();
   else if(section==='notes') openNotes();
   else if(section==='agenda') openAgenda();
 }
 function renderMobileSidebar(){
-  const section=state.mobileHomeSection||null;
+  const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.50</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.51</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
-      ${section==='decks' ? `<div class="mobile-deck-actions"><button class="icon-btn" title="Novo baralho" onclick="openNewDeckModal()">＋</button><button class="icon-btn" title="Tirar foto para criar cartões" onclick="openPhotoImportPicker(true)">📷</button><button class="icon-btn" title="Carregar imagem para criar cartões" onclick="openPhotoImportPicker(false)">🖼️</button></div><div class="mobile-deck-list">${getOrderedDecks().length ? getOrderedDecks().map(d=>{ const due=getDueCards(d.id).length; return `<div class="mobile-deck-card" onclick="selectDeck('${d.id}')"><span class="deck-dot" style="background:${d.color}"></span><span class="deck-item-name">${escapeHtml(d.name)}</span>${due?`<span class="due-badge">${due}</span>`:''}<button class="mobile-deck-star ${d.favorite?'active':''}" title="Favoritar" onclick="event.stopPropagation(); toggleDeckFavorite('${d.id}')">${d.favorite?'★':'☆'}</button></div>`; }).join('') : `<p style="font-size:12px; color:var(--text-faint); text-align:center;">Crie seu primeiro baralho.</p>`}</div>`:''}
       ${nav('library','Leituras','📚')}
       ${nav('notes','Notas','📓')}
       ${nav('agenda','Agenda','🗓️')}
@@ -7130,6 +7130,7 @@ function backToHome(){
 }
 
 function renderMain(){
+  if(state.view === 'deck-list') return renderMobileDeckListView();
   if(state.view === 'library') return renderLibraryView();
   if(state.view === 'book') return renderBookDetailView();
   if(state.view === 'epub-reader') return renderEpubReaderView();
@@ -7148,6 +7149,14 @@ function renderMain(){
   if(state.view === 'study') return renderStudyView();
   if(state.view === 'results') return renderResultsView();
   return '';
+}
+function renderMobileDeckListView(){
+  return `<div class="mobile-deck-selection">
+    <button class="ghost-btn mobile-back-btn" onclick="backToHome()">← Menu</button>
+    <div style="display:flex; justify-content:space-between; align-items:center;"><div><h2 style="margin:0; font-size:24px;">Baralhos</h2><p style="margin:3px 0 0; font-size:12px; color:var(--text-faint);">Seus favoritos aparecem primeiro.</p></div><span style="font-size:12px; color:var(--text-faint);">${state.decks.length}</span></div>
+    <div class="mobile-deck-actions"><button class="icon-btn" title="Novo baralho" onclick="openNewDeckModal()">＋</button><button class="icon-btn" title="Tirar foto para criar cartões" onclick="openPhotoImportPicker(true)">📷</button><button class="icon-btn" title="Carregar imagem para criar cartões" onclick="openPhotoImportPicker(false)">🖼️</button></div>
+    <div class="mobile-deck-list">${getOrderedDecks().length ? getOrderedDecks().map(d=>{ const due=getDueCards(d.id).length; return `<div class="mobile-deck-card" onclick="selectDeck('${d.id}')"><span class="deck-dot" style="background:${d.color}"></span><span class="deck-item-name">${escapeHtml(d.name)}</span>${due?`<span class="due-badge">${due}</span>`:''}<button class="mobile-deck-star ${d.favorite?'active':''}" title="Favoritar" onclick="event.stopPropagation(); toggleDeckFavorite('${d.id}')">${d.favorite?'★':'☆'}</button></div>`; }).join('') : `<p style="font-size:12px; color:var(--text-faint); text-align:center;">Crie seu primeiro baralho.</p>`}</div>
+  </div>`;
 }
 
 function getReadingStats(){
