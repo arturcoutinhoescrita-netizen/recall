@@ -706,6 +706,7 @@ let state = {
   stats: { totalPoints: 0 },
   activities: [],
   agendaEvents: [],
+  globalAiMessages: [],
   fileHandle: null,
   pendingFileHandle: null,
   firebaseUser: null,
@@ -783,6 +784,7 @@ async function loadData(){
           state.stats = d.stats || { totalPoints: 0 };
           state.activities = Array.isArray(d.activities) ? d.activities : [];
           state.agendaEvents = Array.isArray(d.agendaEvents) ? d.agendaEvents : [];
+          state.globalAiMessages = Array.isArray(d.globalAiMessages) ? d.globalAiMessages : [];
           state.books = (d.books || []).map(normalizeBook);
           state.notesItems = (d.notesItems || []).map(normalizeNoteItem);
           state.sidebarAutoHide = !!d.sidebarAutoHide;
@@ -803,6 +805,7 @@ async function loadData(){
           state.stats = d.stats || { totalPoints: 0 };
           state.activities = Array.isArray(d.activities) ? d.activities : [];
           state.agendaEvents = Array.isArray(d.agendaEvents) ? d.agendaEvents : [];
+          state.globalAiMessages = Array.isArray(d.globalAiMessages) ? d.globalAiMessages : [];
           state.books = (d.books || []).map(normalizeBook);
           state.notesItems = (d.notesItems || []).map(normalizeNoteItem);
           state.sidebarAutoHide = !!d.sidebarAutoHide;
@@ -830,7 +833,7 @@ async function loadData(){
 // antigo termine depois e sobrescreva uma criação mais nova no armazenamento.
 let dataSaveQueue = Promise.resolve();
 function saveData(){
-  const payload = JSON.parse(JSON.stringify({decks: state.decks, cards: state.cards, stats: state.stats, activities: state.activities, agendaEvents: state.agendaEvents, books: state.books, notesItems: state.notesItems, sidebarAutoHide: state.sidebarAutoHide, notesChatWidth: state.notesChatWidth, lastDeckId: state.lastDeckId, lastNoteId: state.lastNoteId, geminiApiKey: getApiKey(), geminiApiKey2: getApiKey2(), booksApiKey: getBooksApiKey()}));
+  const payload = JSON.parse(JSON.stringify({decks: state.decks, cards: state.cards, stats: state.stats, activities: state.activities, agendaEvents: state.agendaEvents, globalAiMessages: state.globalAiMessages, books: state.books, notesItems: state.notesItems, sidebarAutoHide: state.sidebarAutoHide, notesChatWidth: state.notesChatWidth, lastDeckId: state.lastDeckId, lastNoteId: state.lastNoteId, geminiApiKey: getApiKey(), geminiApiKey2: getApiKey2(), booksApiKey: getBooksApiKey()}));
   const persist = async () => {
     for(let attempt=0; attempt<2; attempt++){
       try{
@@ -6872,6 +6875,21 @@ async function executeNoteAgentActions(actions, currentNote){
   results.completedActions = completedActions;
   return results;
 }
+function openGlobalAiChat(){ state.modal={type:'global-ai-chat',messages:state.globalAiMessages||[],input:'',sending:false}; render(); }
+async function sendGlobalAiMessage(){
+  const m=state.modal; const question=String(m&&m.input||'').trim();
+  if(!m || m.type!=='global-ai-chat' || !question || m.sending) return;
+  m.messages.push({role:'user',text:question}); m.input=''; m.sending=true; state.globalAiMessages=m.messages; render();
+  const notes=state.notesItems.filter(item=>item.type==='note').map(item=>item.name).join(', ')||'nenhuma';
+  const decks=state.decks.map(deck=>deck.name).join(', ')||'nenhum';
+  const books=state.books.map(book=>book.title).join(', ')||'nenhum';
+  const agenda=state.agendaEvents.filter(event=>!event.completedAt).map(event=>`${event.title}${event.date?` (${event.date}${event.time?' '+event.time:''})`:''}`).join(', ')||'nenhuma';
+  const history=m.messages.slice(0,-1).map(msg=>`${msg.role==='user'?'Usuário':'IA'}: ${msg.text}`).join('\n');
+  const prompt=`Você é o assistente global do aplicativo Letther B. Você conhece as notas (${notes}), baralhos (${decks}), livros (${books}) e agenda (${agenda}). Pode orientar e executar ações reais. Responda exclusivamente em JSON: {"reply":"texto curto","actions":[...]}. Ações: create_folder, create_note, create_flashcards, create_deck, update_deck, create_book, update_book, navigate {view:'notes'|'agenda'|'library'|'home'}. Só declare uma ação se ela estiver na lista.\n\n${history}\nUsuário: ${question}`;
+  try{ const response=parseNoteAgentReply(await callGemini(prompt,{maxTokens:1600,responseMimeType:'application/json'})); const executed=await executeNoteAgentActions(response.actions,null); m.messages.push({role:'assistant',text:response.reply||'Pronto.',actions:executed}); }
+  catch(error){ m.messages.push({role:'assistant',text:friendlyAiErrorMsg(error),error:true}); }
+  m.sending=false; state.globalAiMessages=m.messages; saveData(); render();
+}
 async function sendNoteChatMessage(){
   const m = state.modal;
   if(!m || m.type !== 'note-chat') return;
@@ -7377,7 +7395,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='agenda'?'active':''}" onclick="openAgenda()">🗓️ Agenda</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.24.68</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.24.70</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -7400,7 +7418,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.24.68</span>
+        <span class="brand-version">v2026.07.24.70</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -7458,13 +7476,14 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.68</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.70</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
       ${nav('notes','Notas','📓')}
       ${nav('agenda','Agenda','🗓️')}
       <button class="ghost-btn mobile-nav-button" onclick="openAppOptionsModal()"><span style="font-size:20px;">⚙️</span>Opções</button>
+      <div style="display:flex; gap:7px;"><button class="ghost-btn mobile-nav-button" style="flex:1; margin:0;" onclick="openGlobalAiChat()"><span style="font-size:20px;">💬</span>Chat IA</button><button class="ghost-btn" style="width:58px; padding:0; font-size:21px;" title="Tirar foto para criar cartões" onclick="openPhotoImportPicker(true)">📷</button></div>
     </div>
   </div>`;
 }
@@ -8935,6 +8954,9 @@ function closeModal(){
 function renderAgendaEventModal(m){
   return `<div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal" style="width:440px;"><h3>${m.eventId?'Editar evento':'Novo evento'}</h3><div class="field"><label>TÍTULO</label><input type="text" autofocus placeholder="Ex.: Revisar capítulo 2" value="${escapeHtml(m.title||'')}" oninput="state.modal.title=this.value"></div><div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;"><div class="field"><label>DATA (opcional)</label><input type="date" value="${escapeHtml(m.date||'')}" oninput="state.modal.date=this.value"></div><div class="field"><label>HORA (opcional)</label><input type="time" value="${escapeHtml(m.time||'')}" oninput="state.modal.time=this.value"></div></div><div class="field"><label>OBSERVAÇÃO</label><textarea rows="3" placeholder="Detalhes opcionais" oninput="state.modal.notes=this.value">${escapeHtml(m.notes||'')}</textarea></div><p style="font-size:11.5px; color:var(--text-faint); margin:0;">Sem data e hora, o item fica em “A fazer”. Você também pode arrastá-lo depois para um horário da semana.</p><div class="modal-actions">${m.eventId?`<button class="ghost-btn" style="color:var(--error); margin-right:auto;" onclick="deleteAgendaEvent('${m.eventId}'); closeModal();">Excluir</button>`:''}<button class="ghost-btn" onclick="closeModal()">Cancelar</button><button class="primary-btn" onclick="confirmAgendaEvent()">Salvar</button></div></div></div>`;
 }
+function renderGlobalAiChatModal(m){
+  return `<div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal" style="width:min(560px,calc(100vw - 24px)); max-height:86vh; display:flex; flex-direction:column;"><div style="display:flex; justify-content:space-between; align-items:center;"><h3>✨ Chat IA</h3><button class="icon-btn" onclick="closeModal()">✕</button></div><p style="font-size:12px; color:var(--text-faint); margin:0;">Posso ajudar com notas, agenda, leituras e baralhos.</p><div style="flex:1; min-height:220px; max-height:52vh; overflow-y:auto; display:flex; flex-direction:column; gap:9px; padding:6px 2px;">${m.messages.length?m.messages.map(msg=>`<div style="align-self:${msg.role==='user'?'flex-end':'flex-start'}; max-width:88%; padding:9px 12px; border-radius:11px; background:${msg.role==='user'?'var(--accent-soft)':'var(--surface-2)'}; color:${msg.error?'var(--error)':'var(--text)'}; white-space:pre-wrap; font-size:13px; line-height:1.45;">${escapeHtml(msg.text)}${msg.actions&&msg.actions.length?`<div style="margin-top:6px; font-size:11px; color:var(--text-muted);">${msg.actions.map(a=>`✓ ${escapeHtml(a)}`).join('<br>')}</div>`:''}</div>`).join(''):`<p style="color:var(--text-faint); text-align:center; font-size:13px;">Peça para criar uma nota, organizar sua agenda ou abrir uma área do app.</p>`}</div><div style="display:flex; gap:7px;"><textarea id="global-ai-input" rows="3" style="flex:1; resize:none; min-height:72px;" placeholder="O que você quer fazer?" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendGlobalAiMessage()}" oninput="state.modal.input=this.value">${escapeHtml(m.input||'')}</textarea><button class="primary-btn" onclick="sendGlobalAiMessage()" ${m.sending?'disabled':''}>Enviar</button></div></div></div>`;
+}
 function renderAppOptionsModal(){
   return `<div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal" style="width:420px;">
     <h3>Opções do Letther B</h3>
@@ -8953,6 +8975,7 @@ function renderAppOptionsModal(){
 function renderModal(){
   const m = state.modal;
   if(m.type === 'agenda-event') return renderAgendaEventModal(m);
+  if(m.type === 'global-ai-chat') return renderGlobalAiChatModal(m);
   if(m.type === 'api-key') return renderApiKeyModal(m);
   if(m.type === 'app-options') return renderAppOptionsModal();
   if(m.type === 'photo-crop') return renderPhotoCropModal(m);
