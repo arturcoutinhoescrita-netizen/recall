@@ -442,8 +442,8 @@
 /* ============ STATE ============ */
 const STORAGE_KEY = 'flashcards_app_data';
 const DECK_COLORS = ['#F5A623','#6EE7B7','#7DA9FA','#FB7185','#C99CF7','#F5D76E'];
-const EXERCISE_TYPES = ['translate','reverseTranslate','write','mc','translateOther'];
-const EXERCISE_LABELS = { translate:'Tradução direta', reverseTranslate:'Tradução invertida', write:'Tradução de frase', mc:'Múltipla escolha', translateOther:'Tradução alternativa', 'copy-translation':'Copiar tradução' };
+const EXERCISE_TYPES = ['translate','translateAI','reverseTranslate','write','mc','translateOther'];
+const EXERCISE_LABELS = { translate:'Tradução direta', translateAI:'Tradução direta com IA', reverseTranslate:'Tradução invertida', write:'Tradução de frase', mc:'Múltipla escolha', translateOther:'Tradução alternativa', 'copy-translation':'Copiar tradução' };
 const STANDARD_STUDY_TYPES = ['mc', 'open', 'image'];
 const STD_TYPE_LABELS = { mc:'Múltipla escolha', open:'Aberta', 'image-answer':'Com imagem' };
 function getCardTranslations(card){
@@ -1618,6 +1618,18 @@ async function verifyTranslation(term, sentence, userTranslation){
   if(!explanation) explanation = text.trim().slice(-280);
   return { correct: isCorrect, explanation };
 }
+// Avalia tradução direta sem consultar as respostas salvas no cartão. Assim,
+// respostas corretas que ainda não foram cadastradas também podem ser aceitas.
+async function verifyDirectTranslationWithAI(term, category, userTranslation){
+  const categoryLine = category ? `Categoria gramatical informada: "${category}".` : 'A categoria gramatical não foi informada; considere o uso mais comum do termo isolado.';
+  const prompt = `Termo em inglês: "${term}"\n${categoryLine}\nResposta do usuário em português: "${userTranslation}"\n\nAvalie se a resposta é uma tradução direta válida e comum para esse termo, respeitando a categoria gramatical quando ela for informada. Aceite sinônimos naturais e variações de número, gênero, artigo ou flexão que preservem o sentido. Não use, não mencione e não presuma nenhuma lista de respostas cadastrada. Rejeite respostas vagas, de outra classe gramatical ou com sentido claramente diferente.\n\nTermine com uma linha exatamente neste formato: "VEREDITO: CORRETO" ou "VEREDITO: INCORRETO". Depois, escreva uma explicação curta em português (no máximo 2 frases); se estiver incorreta, indique uma tradução direta adequada.`;
+  const text = await callGemini(prompt, { maxTokens: 350 });
+  const isIncorrect = /VEREDITO:\s*INCORRETO/i.test(text);
+  const isCorrect = !isIncorrect && /VEREDITO:\s*CORRETO/i.test(text);
+  let explanation = text.split(/VEREDITO:\s*(CORRETO|INCORRETO)/i).pop().trim();
+  if(!explanation) explanation = text.trim().slice(-280);
+  return { correct: isCorrect, explanation };
+}
 
 async function aiVerify(prompt, maxTokens){
   const text = await callGemini(prompt, { maxTokens: maxTokens||400 });
@@ -2379,7 +2391,9 @@ function getCurrentQueueItem(){
 /* ============ SESSÃO DE IDIOMA (5 exercícios por termo, misturados) ============ */
 function getEnabledExercises(deck){
   if(deck.enabledExercises && deck.enabledExercises.length) return deck.enabledExercises;
-  return [...EXERCISE_TYPES]; // padrão: todos ativos
+  // Exercícios existentes continuam ativos por padrão; o novo modo com IA fica
+  // opt-in para não aumentar chamadas/custo em baralhos já criados.
+  return EXERCISE_TYPES.filter(type => type !== 'translateAI');
 }
 function toggleExerciseType(deckId, exType){
   const deck = state.decks.find(d=>d.id===deckId);
@@ -2476,7 +2490,7 @@ function startLanguageSession(deckId){
   });
   if(fullQueue.length === 0){ showToast('Adicione a tradução de pelo menos um termo (ou ative outro tipo de exercício) antes de estudar.', 'error'); return; }
 
-  const usesAI = enabledTypes.includes('write'); // mc agora é local, só 'write' usa IA
+  const usesAI = enabledTypes.includes('write') || enabledTypes.includes('translateAI');
   let queue;
   if(usesAI){
     const fullKeys = new Set(fullQueue.map(i => `${i.cardId}:${i.exType}`));
@@ -2518,6 +2532,9 @@ async function loadContentForCurrent(){
     const options = getCardTranslations(card);
     const hintIndex = Math.floor(Math.random()*options.length);
     s.loadingContent = false; s.content = { hintIndex }; render(); return; // local, sem IA
+  }
+  if(exType === 'translateAI'){
+    s.loadingContent = false; s.content = {}; render(); return;
   }
   if(exType === 'reverseTranslate'){
     const options = String(card.back||'').split('/').map(o=>o.trim()).filter(Boolean);
@@ -2878,6 +2895,24 @@ async function submitLanguageAnswer(){
     awardPoints(card, correct, 'translate');
     s.lastFeedback = correct;
     s.revealed = true;
+    saveData();
+    render();
+    return;
+  }
+  if(exType === 'translateAI'){
+    s.verifying = true; render();
+    try{
+      const result = await verifyDirectTranslationWithAI(card.front, card.category || '', s.userInput.trim());
+      s.verifyResult = result;
+      scheduleCard(card, result.correct);
+      if(result.correct){ s.correct++; } else { requeueOnWrong(); }
+      awardPoints(card, result.correct, 'translateAI');
+      s.lastFeedback = result.correct;
+    }catch(e){
+      console.error(e);
+      s.verifyResult = { correct:false, explanation: friendlyAiErrorMsg(e) };
+    }
+    s.verifying = false; s.revealed = true;
     saveData();
     render();
     return;
@@ -4026,7 +4061,10 @@ async function duplicateNoteItem(id){
   showToast('Nota duplicada.');
 }
 let notesSaveTimer = null;
-const NOTE_WORDS_PER_PAGE = 500;
+// Página 15 × 21 cm com margens de 1,5 cm deixa uma área útil de 12 × 18 cm.
+// Em fonte de leitura comum (aprox. 12 pt, entrelinha 1,5), isso equivale a
+// cerca de 230 palavras por página — ainda é uma estimativa, não paginação real.
+const NOTE_WORDS_PER_PAGE = 230;
 function getNoteWritingStats(content){
   const text = htmlToText(String(content || ''))
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
@@ -5797,7 +5835,7 @@ function renderNoteEditor(note){
   <div class="notes-editor-header">
     <div>
       <h3 style="margin:0;">${escapeHtml(note.name)}</h3>
-      <div id="note-writing-stats" class="note-writing-stats" title="Estimativa baseada em ${NOTE_WORDS_PER_PAGE} palavras por página">${getNoteWritingStats(content)}</div>
+      <div id="note-writing-stats" class="note-writing-stats" title="Estimativa: página de 15 × 21 cm, margens de 1,5 cm e cerca de ${NOTE_WORDS_PER_PAGE} palavras por página">${getNoteWritingStats(content)}</div>
     </div>
     <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
       <button class="icon-btn" title="Sumário (títulos H1/H2/H3)" onclick="openNoteTocModal()">📑</button>
@@ -6310,7 +6348,7 @@ function renderStudyPicker(deck){
   </p>`;
   if(deck.type === 'language'){
     const enabled = getEnabledExercises(deck);
-    const usesAI = enabled.includes('write'); // mc agora é local, só 'write' usa IA
+    const usesAI = enabled.includes('write') || enabled.includes('translateAI');
     const carryCount = (deck.carryOverLang || []).length;
     return `
     ${dueLine}
@@ -6449,6 +6487,7 @@ function renderStudyView(){
   } else if(s.mode === 'lang-mixed'){
     const exType = getCurrentExType();
     if(exType === 'translate') body = renderTranslateExercise(s, card);
+    else if(exType === 'translateAI') body = renderTranslateAIExercise(s, card);
     else if(exType === 'reverseTranslate') body = renderReverseTranslateExercise(s, card);
     else if(exType === 'write') body = renderWriteExercise(s, card);
     else if(exType === 'mc') body = renderLangMCExercise(s, card);
@@ -6897,6 +6936,30 @@ function renderTranslateExercise(s, card){
     <div class="reveal-zone">
       <div class="feedback-banner ${r.correct?'ok':'no'}">${r.correct? `✓ Correto${r.explanation ? ` — ${escapeHtml(r.explanation)}` : ''}` : `✕ ${escapeHtml(r.explanation)}`}</div>
       ${renderHintBox(hint)}
+      ${renderPointsBadge(s)}
+      <div class="action-row"><button class="primary-btn" onclick="nextCard()">Próximo →</button></div>
+    </div>
+  </div>`;
+}
+
+function renderTranslateAIExercise(s, card){
+  if(!s.revealed){
+    return `
+    <div class="answer-zone">
+      <p style="color:var(--text-muted); font-size:13.5px; text-align:center;">Digite a tradução direta do termo. A IA aceita respostas válidas mesmo que não estejam cadastradas.</p>
+      <input type="text" id="lang-input" placeholder="Tradução..." value="${escapeHtml(s.userInput||'')}" autofocus autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" ${s.verifying?'disabled':''} onkeyup="if(event.key==='Enter' && !${s.verifying}) submitFromInput('lang-input'); else state.session.userInput=this.value">
+      <div class="action-row">
+        <button class="primary-btn" ${s.verifying?'disabled':''} onclick="submitFromInput('lang-input')">${s.verifying ? 'Verificando...' : 'Verificar com IA'}</button>
+      </div>
+      ${s.verifying ? `<div class="loading-line" style="justify-content:center;"><div class="spinner"></div> Avaliando o sentido da resposta...</div>` : ''}
+      ${renderDontKnowLangLink()}
+    </div>`;
+  }
+  const r = s.verifyResult;
+  return `
+  <div class="answer-zone">
+    <div class="reveal-zone">
+      <div class="feedback-banner ${r.correct?'ok':'no'}">${r.correct ? `✓ Correto${r.explanation ? ` — ${escapeHtml(r.explanation)}` : ''}` : `✕ ${escapeHtml(r.explanation)}`}</div>
       ${renderPointsBadge(s)}
       <div class="action-row"><button class="primary-btn" onclick="nextCard()">Próximo →</button></div>
     </div>
