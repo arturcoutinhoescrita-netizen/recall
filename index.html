@@ -383,7 +383,13 @@
   .notes-preview h1:first-child, .notes-preview h2:first-child, .notes-preview h3:first-child{ margin-top:0; }
   .notes-preview p{ margin:0 0 0.8em 0; }
   .notes-preview img{ max-width:100%; border-radius:8px; }
+  #note-editor-plain, .note-page-sheet-content{ position:relative; isolation:isolate; }
   #note-editor-plain img, .note-page-sheet-content img{ cursor:pointer; }
+  .notes-preview img[data-note-image-layout="wrap-left"], .note-page-sheet-content img[data-note-image-layout="wrap-left"], .notes-preview figure[data-note-image-layout="wrap-left"], .note-page-sheet-content figure[data-note-image-layout="wrap-left"]{ float:left; margin:0 16px 10px 0; }
+  .notes-preview img[data-note-image-layout="wrap-right"], .note-page-sheet-content img[data-note-image-layout="wrap-right"], .notes-preview figure[data-note-image-layout="wrap-right"], .note-page-sheet-content figure[data-note-image-layout="wrap-right"]{ float:right; margin:0 0 10px 16px; }
+  .notes-preview img[data-note-image-layout="block"], .note-page-sheet-content img[data-note-image-layout="block"], .notes-preview figure[data-note-image-layout="block"], .note-page-sheet-content figure[data-note-image-layout="block"]{ display:block; float:none; clear:both; margin:12px auto; }
+  .notes-preview img[data-note-image-layout="behind"], .note-page-sheet-content img[data-note-image-layout="behind"], .notes-preview figure[data-note-image-layout="behind"], .note-page-sheet-content figure[data-note-image-layout="behind"]{ position:absolute !important; z-index:-1; opacity:.48; pointer-events:auto; }
+  .notes-preview img[data-note-image-layout="free"], .note-page-sheet-content img[data-note-image-layout="free"], .notes-preview figure[data-note-image-layout="free"], .note-page-sheet-content figure[data-note-image-layout="free"]{ position:absolute !important; z-index:4; }
   #note-editor-plain img.note-image-selected, .note-page-sheet-content img.note-image-selected{ outline:3px solid var(--accent); outline-offset:3px; }
   .note-image-transform-overlay{ position:fixed; z-index:170; pointer-events:none; border:1.5px solid var(--accent); box-sizing:border-box; }
   .note-image-resize-handle, .note-image-crop-handle{ position:absolute; pointer-events:auto; box-sizing:border-box; background:var(--surface); border:2px solid var(--accent); box-shadow:0 1px 5px rgba(0,0,0,.25); touch-action:none; }
@@ -391,6 +397,11 @@
   .note-image-crop-handle{ background:var(--accent); border:0; border-radius:4px; }
   .note-image-crop-handle.n, .note-image-crop-handle.s{ width:28px; height:6px; left:50%; transform:translateX(-50%); cursor:ns-resize; }
   .note-image-crop-handle.e, .note-image-crop-handle.w{ width:6px; height:28px; top:50%; transform:translateY(-50%); cursor:ew-resize; }
+  .note-image-layout-menu{ position:fixed; z-index:190; width:246px; padding:7px; background:var(--surface); border:1px solid var(--border); border-radius:12px; box-shadow:0 12px 32px rgba(0,0,0,.22); }
+  .note-image-layout-menu-label{ padding:7px 9px 5px; color:var(--text-faint); font-size:10px; font-weight:700; letter-spacing:.06em; }
+  .note-image-layout-menu-grid{ display:grid; grid-template-columns:1fr 1fr; gap:4px; }
+  .note-image-layout-menu button{ width:100%; padding:8px 9px; border:1px solid transparent; border-radius:8px; background:transparent; color:var(--text); text-align:left; font:inherit; font-size:12px; cursor:pointer; }
+  .note-image-layout-menu button:hover, .note-image-layout-menu button.active{ background:var(--accent-soft); border-color:var(--accent-dim); color:var(--accent); }
   .notes-preview ul, .notes-preview ol{ padding-left:1.4em; margin:0 0 0.8em 0; }
   .notes-preview code{ background:var(--surface-2); padding:1px 5px; border-radius:5px; font-size:0.9em; }
   .notes-preview pre{ background:var(--surface-2); padding:12px 14px; border-radius:8px; overflow-x:auto; }
@@ -5123,12 +5134,18 @@ function openNoteImageUploadPicker(){
 let selectedNoteImageId = null;
 let noteImageTransformOverlay = null;
 let noteImageTransformDrag = null;
+let noteImageLayoutMenu = null;
 document.addEventListener('click', (event) => {
   const image = event.target && event.target.closest && event.target.closest('#note-editor-plain img, .note-page-sheet-content img');
+  if(event.target && event.target.closest && event.target.closest('.note-image-layout-menu')) return;
+  closeNoteImageLayoutMenu();
   if(!image){
     if(!event.target.closest || !event.target.closest('.note-image-transform-overlay')) clearSelectedNoteImage();
     return;
   }
+  selectNoteImage(image);
+});
+function selectNoteImage(image){
   document.querySelectorAll('#note-editor-plain img.note-image-selected, .note-page-sheet-content img.note-image-selected').forEach(img => img.classList.remove('note-image-selected'));
   image.dataset.noteImageId = image.dataset.noteImageId || uid();
   image.classList.add('note-image-selected');
@@ -5150,11 +5167,63 @@ document.addEventListener('click', (event) => {
     }
   }
   setTimeout(syncNoteImageTransformOverlay, 0);
-});
+}
 function clearSelectedNoteImage(){
   document.querySelectorAll('#note-editor-plain img.note-image-selected, .note-page-sheet-content img.note-image-selected').forEach(img => img.classList.remove('note-image-selected'));
   selectedNoteImageId=null;
   removeNoteImageTransformOverlay();
+  closeNoteImageLayoutMenu();
+}
+document.addEventListener('contextmenu', (event) => {
+  const image=event.target && event.target.closest && event.target.closest('#note-editor-plain img, .note-page-sheet-content img');
+  if(!image) return;
+  event.preventDefault();
+  selectNoteImage(image);
+  openNoteImageLayoutMenu(event.clientX,event.clientY);
+});
+function closeNoteImageLayoutMenu(){
+  if(noteImageLayoutMenu){ noteImageLayoutMenu.remove(); noteImageLayoutMenu=null; }
+}
+function openNoteImageLayoutMenu(x,y){
+  closeNoteImageLayoutMenu();
+  const image=getSelectedNoteImage();
+  if(!image) return;
+  const active=image.dataset.noteImageLayout||'inline';
+  const choices=[
+    ['inline','↔ Em linha com o texto'], ['block','↕ Acima e abaixo'],
+    ['wrap-left','◧ Texto à direita'], ['wrap-right','◨ Texto à esquerda'],
+    ['behind','▤ Atrás do texto'], ['free','▣ Livre, sobre o texto']
+  ];
+  noteImageLayoutMenu=document.createElement('div');
+  noteImageLayoutMenu.className='note-image-layout-menu';
+  noteImageLayoutMenu.innerHTML=`<div class="note-image-layout-menu-label">COMPORTAMENTO NO TEXTO</div><div class="note-image-layout-menu-grid">${choices.map(([value,label])=>`<button type="button" data-note-image-layout-choice="${value}" class="${active===value?'active':''}">${label}</button>`).join('')}</div><div class="note-image-layout-menu-label">Clique fora para fechar</div>`;
+  noteImageLayoutMenu.querySelectorAll('[data-note-image-layout-choice]').forEach(button=>button.addEventListener('click',(event)=>{ event.stopPropagation(); setNoteImageLayout(button.dataset.noteImageLayoutChoice); closeNoteImageLayoutMenu(); }));
+  document.body.appendChild(noteImageLayoutMenu);
+  const menuRect=noteImageLayoutMenu.getBoundingClientRect();
+  noteImageLayoutMenu.style.left=`${Math.max(8,Math.min(x,window.innerWidth-menuRect.width-8))}px`;
+  noteImageLayoutMenu.style.top=`${Math.max(8,Math.min(y,window.innerHeight-menuRect.height-8))}px`;
+}
+function setNoteImageLayout(layout){
+  const image=getSelectedNoteImage();
+  if(!image) return;
+  const host=image.closest('figure')||image;
+  const rect=host.getBoundingClientRect();
+  const parentRect=host.parentElement?.getBoundingClientRect();
+  image.dataset.noteImageLayout=layout;
+  host.dataset.noteImageLayout=layout;
+  host.style.float=''; host.style.clear=''; host.style.position=''; host.style.left=''; host.style.top=''; host.style.zIndex=''; host.style.opacity='';
+  if(layout==='inline'){
+    host.style.display='inline'; host.style.margin='0 4px';
+  }else if(layout==='block'){
+    host.style.display='block'; host.style.margin='12px auto';
+  }else if(layout==='wrap-left' || layout==='wrap-right'){
+    host.style.display='block';
+  }else{
+    host.style.display='block';
+    host.style.left=`${Math.max(0,rect.left-(parentRect?.left||rect.left))}px`;
+    host.style.top=`${Math.max(0,rect.top-(parentRect?.top||rect.top))}px`;
+  }
+  commitSelectedNoteImageStyle(image);
 }
 function getSelectedNoteImage(){
   return selectedNoteImageId ? document.querySelector(`#note-editor-plain img[data-note-image-id="${selectedNoteImageId}"], .note-page-sheet-content img[data-note-image-id="${selectedNoteImageId}"]`) : null;
@@ -5261,7 +5330,19 @@ function commitSelectedNoteImageStyle(image){
     const holder=document.createElement('div');
     holder.innerHTML=getNoteContent(state.currentNoteId);
     const source=holder.querySelector(`img[data-note-image-id="${selectedNoteImageId}"]`);
-    if(source){ source.style.cssText=image.style.cssText; onNoteContentInput(state.currentNoteId,holder.innerHTML); render(); }
+    if(source){
+      source.style.cssText=image.style.cssText;
+      if(image.dataset.noteImageLayout) source.dataset.noteImageLayout=image.dataset.noteImageLayout;
+      else delete source.dataset.noteImageLayout;
+      const sourceHost=source.closest('figure');
+      const imageHost=image.closest('figure');
+      if(sourceHost && imageHost){
+        sourceHost.style.cssText=imageHost.style.cssText;
+        if(imageHost.dataset.noteImageLayout) sourceHost.dataset.noteImageLayout=imageHost.dataset.noteImageLayout;
+        else delete sourceHost.dataset.noteImageLayout;
+      }
+      onNoteContentInput(state.currentNoteId,holder.innerHTML); render();
+    }
   }
   setTimeout(syncNoteImageTransformOverlay,0);
 }
@@ -6685,7 +6766,7 @@ function renderSidebar(){
       <div>
         <h1>Recall</h1>
         <span>REPETIÇÃO ESPAÇADA</span>
-        <span class="brand-version">v2026.07.24.28</span>
+        <span class="brand-version">v2026.07.24.29</span>
       </div>
     </div>
     <button class="ghost-btn" style="font-size:13px; padding:10px 12px; margin-bottom:6px; ${(state.view==='library'||state.view==='book') ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="openLibrary()">📚 Leituras</button>
