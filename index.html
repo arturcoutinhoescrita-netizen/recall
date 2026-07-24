@@ -139,6 +139,9 @@
     padding:2px 7px; border-radius:20px; font-family:ui-monospace,'SF Mono','Cascadia Code','Roboto Mono',Consolas,'Courier New',monospace;
   }
   .sidebar-foot{ font-size:11px; color:var(--text-faint); padding:0 2px; line-height:1.5; }
+  .deck-favorite-toggle{ margin-left:auto; color:var(--text-faint); font-size:16px; background:transparent; border:0; padding:3px; }
+  .deck-favorite-toggle.active{ color:#F5A623; }
+  .mobile-sidebar-content{ display:none; }
   .sidebar-edge-trigger, .sidebar-focus-toggle{ display:none; }
 
   @media (min-width:821px){
@@ -445,6 +448,22 @@
   @media (max-width:820px){
     #app{ flex-direction:column; }
     .sidebar{ width:100%; flex-direction:column; padding:18px 16px; gap:16px; }
+    .desktop-sidebar-content{ display:none; }
+    .mobile-sidebar-content{ display:flex; flex:1; min-height:0; flex-direction:column; gap:10px; }
+    .mobile-home-nav{ display:flex; flex-direction:column; gap:8px; }
+    .mobile-nav-button{ width:100%; display:flex; align-items:center; gap:11px; padding:14px 15px; text-align:left; font-size:15px; }
+    .mobile-nav-button.active{ color:var(--accent); border-color:var(--accent-dim); background:var(--accent-soft); }
+    .mobile-deck-actions{ display:grid; grid-template-columns:repeat(3,1fr); gap:8px; padding:2px 0 8px; }
+    .mobile-deck-actions .icon-btn{ width:100%; height:42px; font-size:18px; }
+    .mobile-deck-list{ display:flex; flex-direction:column; gap:7px; overflow-y:auto; padding-bottom:8px; }
+    .mobile-deck-card{ display:flex; align-items:center; gap:10px; padding:13px 14px; border:1px solid var(--border); border-radius:12px; background:var(--surface); }
+    .mobile-deck-card .deck-item-name{ font-size:15px; }
+    .mobile-deck-star{ margin-left:auto; color:var(--text-faint); font-size:19px; background:transparent; border:0; padding:4px; }
+    .mobile-deck-star.active{ color:#F5A623; }
+    #app.step-home .sidebar{ animation:mobileMenuIn .24s ease both; }
+    #app.step-detail .main{ animation:mobilePageIn .24s ease both; }
+    @keyframes mobileMenuIn{ from{ opacity:.25; transform:translateX(-28px); } to{ opacity:1; transform:translateX(0); } }
+    @keyframes mobilePageIn{ from{ opacity:.25; transform:translateX(28px); } to{ opacity:1; transform:translateX(0); } }
     .agenda-board{ grid-template-columns:1fr; }
     .new-deck-btn, .sidebar > .ghost-btn{ width:100%; justify-content:center; }
     .deck-list{ flex-direction:column; overflow-x:visible; gap:8px; }
@@ -484,6 +503,7 @@
     .notes-editor-panes.split{ flex-direction:column; }
     .notes-paged-preview{ align-items:flex-start; overflow-x:auto; }
   }
+  @media (prefers-reduced-motion:reduce){ #app.step-home .sidebar, #app.step-detail .main{ animation:none; } }
 </style>
 <script>
 // aplica o tema salvo o quanto antes, antes do resto da página desenhar,
@@ -619,7 +639,8 @@ let state = {
   notesCollapsedFolders: [], // ids de pastas fechadas no explorer (só estado de UI)
   notesEditorMode: 'split', // 'source' | 'split' | 'preview'
   notesPageView: false,
-  sidebarAutoHide: false
+  sidebarAutoHide: false,
+  mobileHomeSection: 'decks'
 };
 
 function uid(){ return Math.random().toString(36).slice(2,10); }
@@ -1142,7 +1163,7 @@ function awardPoints(card, correct, exType, grade){
 
 /* ============ DECK / CARD CRUD ============ */
 function createDeck(name, color, type){
-  const d = { id: uid(), name: name.trim(), color: color || DECK_COLORS[state.decks.length % DECK_COLORS.length], type: type || 'standard', aiEnabled: true, sentenceDifficulty: 'intermediate' };
+  const d = { id: uid(), name: name.trim(), color: color || DECK_COLORS[state.decks.length % DECK_COLORS.length], type: type || 'standard', aiEnabled: true, sentenceDifficulty: 'intermediate', favorite:false };
   state.decks.push(d);
   state.cards[d.id] = [];
   state.currentDeckId = d.id;
@@ -1156,6 +1177,12 @@ function toggleDeckAi(deckId){
   const deck = state.decks.find(d=>d.id===deckId);
   if(!deck) return;
   deck.aiEnabled = !isAiEnabled(deck);
+  saveData(); render();
+}
+function toggleDeckFavorite(deckId){
+  const deck=state.decks.find(d=>d.id===deckId);
+  if(!deck) return;
+  deck.favorite=!deck.favorite;
   saveData(); render();
 }
 function deleteDeck(id){
@@ -6916,12 +6943,13 @@ function renderSidebar(){
   return `
   <div class="sidebar-edge-trigger" aria-hidden="true"></div>
   <div class="sidebar">
+    <div class="desktop-sidebar-content">
     <div class="brand">
       <div class="brand-mark">R</div>
       <div>
         <h1>Recall</h1>
         <span>REPETIÇÃO ESPAÇADA</span>
-        <span class="brand-version">v2026.07.24.40</span>
+        <span class="brand-version">v2026.07.24.41</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -6933,7 +6961,7 @@ function renderSidebar(){
     <button class="ghost-btn" style="font-size:12.5px; padding:9px 12px;" onclick="openPhotoImportPicker(false)">🖼️ Carregar imagem (cartões)</button>
     <div class="deck-list">
       ${state.decks.length === 0 ? `<div style="color:var(--text-faint); font-size:12.5px; padding:8px 4px;">Nenhum baralho ainda.</div>` : ''}
-      ${state.decks.map(d => {
+      ${getOrderedDecks().map(d => {
         const due = getDueCards(d.id).length;
         const active = state.currentDeckId === d.id && state.view !== 'home' && state.view !== 'library' && state.view !== 'book' && state.view !== 'notes';
         return `
@@ -6941,6 +6969,7 @@ function renderSidebar(){
           <div class="deck-dot" style="background:${d.color}"></div>
           <div class="deck-item-name">${escapeHtml(d.name)}</div>
           ${due>0 ? `<div class="due-badge">${due}</div>` : ''}
+          <button class="deck-favorite-toggle ${d.favorite?'active':''}" title="${d.favorite?'Remover dos favoritos':'Adicionar aos favoritos'}" onclick="event.stopPropagation(); toggleDeckFavorite('${d.id}')">${d.favorite?'★':'☆'}</button>
         </div>`;
       }).join('')}
     </div>
@@ -6960,6 +6989,32 @@ function renderSidebar(){
       <br><a href="#" style="color:var(--text-muted); text-decoration:underline;" onclick="event.preventDefault(); openApiKeyModal();">${getApiKey() ? 'Chave de API do Gemini configurada ✓' : '⚠ Configurar chave de API do Gemini'}</a>
       <br><a href="#" style="color:var(--text-muted); text-decoration:underline;" onclick="event.preventDefault(); toggleTheme();">${getTheme()==='light' ? '🌙 Usar tema escuro' : '☀️ Usar tema claro'}</a>
     </div>
+    </div>
+    ${renderMobileSidebar()}
+  </div>`;
+}
+function getOrderedDecks(){
+  return [...state.decks].sort((a,b)=>(Number(!!b.favorite)-Number(!!a.favorite)) || a.name.localeCompare(b.name,'pt-BR'));
+}
+function selectMobileHomeSection(section){
+  if(section==='decks'){ state.mobileHomeSection='decks'; state.view='home'; render(); return; }
+  state.mobileHomeSection=section;
+  if(section==='library') openLibrary();
+  else if(section==='notes') openNotes();
+  else if(section==='agenda') openAgenda();
+}
+function renderMobileSidebar(){
+  const section=state.mobileHomeSection||'decks';
+  const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
+  return `<div class="mobile-sidebar-content">
+    <div class="brand"><div class="brand-mark">R</div><div><h1>Recall</h1><span>SEU ESPAÇO DE ESTUDO</span><span class="brand-version">v2026.07.24.41</span></div></div>
+    <div class="mobile-home-nav">
+      ${nav('decks','Baralhos','🗂️')}
+      ${section==='decks' ? `<div class="mobile-deck-actions"><button class="icon-btn" title="Novo baralho" onclick="openNewDeckModal()">＋</button><button class="icon-btn" title="Tirar foto para criar cartões" onclick="openPhotoImportPicker(true)">📷</button><button class="icon-btn" title="Carregar imagem para criar cartões" onclick="openPhotoImportPicker(false)">🖼️</button></div><div class="mobile-deck-list">${getOrderedDecks().length ? getOrderedDecks().map(d=>{ const due=getDueCards(d.id).length; return `<div class="mobile-deck-card" onclick="selectDeck('${d.id}')"><span class="deck-dot" style="background:${d.color}"></span><span class="deck-item-name">${escapeHtml(d.name)}</span>${due?`<span class="due-badge">${due}</span>`:''}<button class="mobile-deck-star ${d.favorite?'active':''}" title="Favoritar" onclick="event.stopPropagation(); toggleDeckFavorite('${d.id}')">${d.favorite?'★':'☆'}</button></div>`; }).join('') : `<p style="font-size:12px; color:var(--text-faint); text-align:center;">Crie seu primeiro baralho.</p>`}</div>`:''}
+      ${nav('library','Leituras','📚')}
+      ${nav('notes','Notas','📓')}
+      ${nav('agenda','Agenda','🗓️')}
+    </div>
   </div>`;
 }
 function toggleSidebarAutoHide(){
@@ -6978,6 +7033,7 @@ function selectDeck(id){
 function backToHome(){
   finishReadingActivity();
   finishWritingActivity();
+  state.mobileHomeSection='decks';
   state.view = 'home';
   render();
 }
