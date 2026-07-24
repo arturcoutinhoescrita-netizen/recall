@@ -363,6 +363,8 @@
   .notes-editor-panes.preview .notes-preview{ width:100%; height:100%; }
   .notes-editor-panes.plain{ display:block; overflow-y:auto; }
   .notes-plain-editor{ width:100%; height:100%; outline:none; cursor:text; }
+  .notes-editor-panes.page-view{ padding:24px; background:var(--bg-2); }
+  .notes-editor-panes.page-view .notes-plain-editor{ width:min(100%, 794px); min-height:1123px; height:auto; margin:0 auto; padding:72px 76px; background:var(--surface); border:1px solid var(--border); border-radius:2px; box-shadow:0 8px 30px rgba(0,0,0,.18); }
   .notes-plain-editor:empty:before{ content:attr(data-placeholder); color:var(--text-faint); pointer-events:none; }
   .notes-preview h1, .notes-preview h2, .notes-preview h3{ margin:0.8em 0 0.4em 0; line-height:1.3; }
   .notes-preview h1:first-child, .notes-preview h2:first-child, .notes-preview h3:first-child{ margin-top:0; }
@@ -418,7 +420,9 @@
     .mobile-back-btn{ display:inline-flex; }
 
     .notes-layout{ flex-direction:column; height:calc(100dvh - 160px); }
-    .notes-explorer{ width:100%; max-height:220px; flex-shrink:0; }
+    .notes-explorer{ width:100%; max-height:none; flex-shrink:0; }
+    .notes-layout:not(.note-open) .notes-explorer{ flex:1; min-height:0; }
+    .notes-layout:not(.note-open) .notes-tree{ flex:1; }
     /* no celular, a nota aberta ocupa a tela inteira (a área de digitação era
        pequena demais dividindo espaço com o explorador) — um botão "← Notas"
        dentro do editor volta pro explorador, mantendo qual nota estava aberta. */
@@ -560,7 +564,8 @@ let state = {
   notesItems: [],      // caderno de notas: lista achatada de pastas/notas, ligadas por parentId
   currentNoteId: null,
   notesCollapsedFolders: [], // ids de pastas fechadas no explorer (só estado de UI)
-  notesEditorMode: 'split' // 'source' | 'split' | 'preview'
+  notesEditorMode: 'split', // 'source' | 'split' | 'preview'
+  notesPageView: false
 };
 
 function uid(){ return Math.random().toString(36).slice(2,10); }
@@ -4040,6 +4045,7 @@ function makeNoteItem(type, name, parentId){
     // Todas as notas novas usam o editor visual de texto normal.
     format: type === 'note' ? 'plain' : undefined,
     linkedDeckId: type === 'note' ? null : undefined,
+    icon: type === 'folder' ? '📁' : '📄',
     createdAt: Date.now(), updatedAt: Date.now()
   };
   if(type === 'note') noteContentCache[item.id] = ''; // nota nova nasce vazia — não precisa buscar nada no R2
@@ -4056,6 +4062,7 @@ function normalizeNoteItem(n){
     // a abrir no editor de texto normal.
     format: type === 'folder' ? undefined : 'plain',
     linkedDeckId: type === 'folder' ? undefined : (n.linkedDeckId || null),
+    icon: n.icon || (type === 'folder' ? '📁' : '📄'),
     aiConversations: type === 'folder' ? undefined : (Array.isArray(n.aiConversations) ? n.aiConversations : []),
     createdAt: n.createdAt || Date.now(),
     updatedAt: n.updatedAt || Date.now()
@@ -4131,7 +4138,17 @@ function confirmCreateNoteItem(){
 function toggleNotesFolder(id){
   const list = state.notesCollapsedFolders || (state.notesCollapsedFolders=[]);
   const idx = list.indexOf(id);
-  if(idx===-1) list.push(id); else list.splice(idx,1);
+  if(idx===-1){
+    // Ao abrir uma pasta, suas subpastas continuam fechadas até receberem um
+    // clique próprio. Evita que uma árvore inteira se expanda de uma vez.
+    list.push(id);
+  }else{
+    list.splice(idx,1);
+    getNoteDescendantIds(id).forEach(childId => {
+      const child = state.notesItems.find(item=>item.id===childId);
+      if(child && child.type==='folder' && !list.includes(childId)) list.push(childId);
+    });
+  }
   render();
 }
 function closeCurrentNote(){
@@ -4240,6 +4257,13 @@ function confirmRenameNoteItem(){
   item.name = name;
   item.updatedAt = Date.now();
   state.modal = null;
+  saveData(); render();
+}
+function setNoteItemIcon(id, icon){
+  const item = state.notesItems.find(n=>n.id===id);
+  if(!item) return;
+  item.icon = icon;
+  item.updatedAt = Date.now();
   saveData(); render();
 }
 function getNoteDescendantIds(id){
@@ -4535,6 +4559,13 @@ function applyRichCommand(cmd, value){
   document.execCommand(cmd, false, value != null ? value : null);
   const el = document.getElementById('note-editor-plain');
   if(el) onNoteContentInput(state.currentNoteId, el.innerHTML);
+}
+function setRichTextColor(color){ applyRichCommand('foreColor', color); }
+function setRichHighlight(color){ applyRichCommand('hiliteColor', color); }
+function setRichFont(font){ applyRichCommand('fontName', font); }
+function toggleNotePageView(){
+  state.notesPageView = !state.notesPageView;
+  render();
 }
 function insertRichIndent(){
   focusRichEditor();
@@ -6139,7 +6170,7 @@ function renderSidebar(){
       <div>
         <h1>Recall</h1>
         <span>REPETIÇÃO ESPAÇADA</span>
-        <span class="brand-version">v2026.07.24</span>
+        <span class="brand-version">v2026.07.24.1</span>
       </div>
     </div>
     <button class="ghost-btn" style="font-size:13px; padding:10px 12px; margin-bottom:6px; ${(state.view==='library'||state.view==='book') ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="openLibrary()">📚 Leituras</button>
@@ -6299,7 +6330,7 @@ function renderNotesTreeLevel(parentId, depth){
       return `
       <div class="notes-tree-row" style="padding-left:${depth*16}px;" draggable="true" ondragstart="onNoteDragStart(event,'${item.id}')" ondragover="onNoteDragOverFolder(event,'${item.id}')" ondragleave="onNoteDragLeaveFolder(event)" ondrop="onNoteDropOnFolder(event,'${item.id}')">
         <div class="notes-tree-label" onclick="toggleNotesFolder('${item.id}')">
-          <span>${collapsed?'📁':'📂'}</span> <span>${escapeHtml(item.name)}</span>
+          <span>${escapeHtml(collapsed ? (item.icon || '📁') : ((item.icon || '📁')==='📁' ? '📂' : item.icon))}</span> <span>${escapeHtml(item.name)}</span>
         </div>
         <div class="notes-tree-actions">
           <button class="icon-btn" style="width:22px;height:22px;font-size:11px;" title="Novo item aqui dentro" onclick="event.stopPropagation(); openNotesCreateModal('${item.id}','note')">➕</button>
@@ -6312,7 +6343,7 @@ function renderNotesTreeLevel(parentId, depth){
     }
     return `
     <div class="notes-tree-row ${state.currentNoteId===item.id?'active':''}" style="padding-left:${depth*16+16}px;" draggable="true" ondragstart="onNoteDragStart(event,'${item.id}')">
-      <div class="notes-tree-label" onclick="openNote('${item.id}')">📄 ${escapeHtml(item.name)}</div>
+      <div class="notes-tree-label" onclick="openNote('${item.id}')">${escapeHtml(item.icon || '📄')} ${escapeHtml(item.name)}</div>
       <div class="notes-tree-actions">
         <button class="icon-btn" style="width:22px;height:22px;font-size:11px;" title="Renomear" onclick="event.stopPropagation(); openNotesRenameModal('${item.id}')">✏️</button>
         <button class="icon-btn" style="width:22px;height:22px;font-size:11px;" title="Duplicar" onclick="event.stopPropagation(); duplicateNoteItem('${item.id}')">⧉</button>
@@ -6398,6 +6429,7 @@ function renderNoteEditor(note){
       ${pendingComments.length ? `<button class="icon-btn" style="width:auto; padding:0 10px; font-size:12px; color:var(--success);" title="Revisar comentários pendentes" onclick="openNoteCommentsPanel()">📝 ${pendingComments.length}</button>` : ''}
       <button class="icon-btn" title="Buscar e substituir nesta nota" onclick="openNoteFind()">🔍</button>
       <button class="icon-btn" title="Conversar com a IA sobre esta nota" onclick="openNoteChat()">💬</button>
+      ${isPlain ? `<button class="icon-btn" title="${state.notesPageView?'Usar visualização contínua':'Visualização de página'}" onclick="toggleNotePageView()">${state.notesPageView?'↕️':'📄'}</button>` : ''}
       ${!isPlain ? `
       <div class="notes-mode-toggle">
         <button class="ghost-btn ${mode==='source'?'active-mode':''}" onclick="setNotesEditorMode('source')">Editar</button>
@@ -6411,7 +6443,7 @@ function renderNoteEditor(note){
   ${state.noteFindReplace && state.noteFindReplace.active ? renderNoteFindBar(state.noteFindReplace) : ''}
   ${(isPlain || mode !== 'preview') ? renderNotesToolbar(note.format) : ''}
   ${isPlain ? `
-  <div class="notes-editor-panes plain">
+  <div class="notes-editor-panes plain ${state.notesPageView ? 'page-view' : ''}">
     <div id="note-editor-plain" class="notes-plain-editor notes-preview" contenteditable="true" data-placeholder="Escreva à vontade, sem se preocupar com formatação..." oninput="onNoteContentInput('${note.id}', this.innerHTML)" onkeydown="if(event.key==='Tab'){ event.preventDefault(); insertRichIndent(); }">${content}</div>
   </div>
   ` : `
@@ -6459,6 +6491,9 @@ function renderNotesToolbar(format){
     <span style="width:1px; background:var(--border); margin:2px 2px;"></span>
     <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Negrito" onclick="${bold}"><strong>B</strong></button>
     <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Itálico" onclick="${italic}"><em>I</em></button>
+    ${!isMarkdown ? `<label class="icon-btn" title="Cor do texto" style="position:relative; overflow:hidden; font-size:13px;">A<input type="color" value="#f4f1ea" style="position:absolute; inset:0; opacity:0; cursor:pointer;" onchange="setRichTextColor(this.value)"></label>
+    <label class="icon-btn" title="Destacar como marca-texto" style="position:relative; overflow:hidden; font-size:14px;">🖍<input type="color" value="#f5d76e" style="position:absolute; inset:0; opacity:0; cursor:pointer;" onchange="setRichHighlight(this.value)"></label>
+    <select title="Fonte" style="width:auto; max-width:108px; padding:5px 7px; font-size:11px;" onchange="setRichFont(this.value)"><option value="inherit">Fonte</option><option value="Arial">Arial</option><option value="Georgia">Georgia</option><option value="Verdana">Verdana</option><option value="Courier New">Monoespaçada</option></select>` : ''}
     <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Título 1" onclick="${h1}">H1</button>
     <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Título 2" onclick="${h2}">H2</button>
     <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Título 3" onclick="${h3}">H3</button>
@@ -7694,6 +7729,8 @@ function renderNewNoteItemModal(m){
   </div>`;
 }
 function renderRenameNoteItemModal(m){
+  const item = state.notesItems.find(n=>n.id===m.id);
+  const icons = item && item.type==='folder' ? ['📁','📚','🗂️','💼','⭐','🏷️'] : ['📄','📝','📌','💡','📚','⭐'];
   return `
   <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
     <div class="modal">
@@ -7701,6 +7738,12 @@ function renderRenameNoteItemModal(m){
       <div class="field">
         <label>NOME</label>
         <input type="text" autofocus value="${escapeHtml(m.name)}" onkeyup="state.modal.name=this.value; if(event.key==='Enter') confirmRenameNoteItem();">
+      </div>
+      <div class="field" style="margin-top:10px;">
+        <label>ÍCONE</label>
+        <div style="display:flex; gap:7px; flex-wrap:wrap;">
+          ${icons.map(icon=>`<button type="button" class="ghost-btn" style="padding:6px 9px; font-size:17px; ${item&&item.icon===icon?'border-color:var(--accent); background:var(--accent-soft);':''}" onclick="setNoteItemIcon('${m.id}','${icon}')">${icon}</button>`).join('')}
+        </div>
       </div>
       <div class="modal-actions">
         <button class="ghost-btn" onclick="closeModal()">Cancelar</button>
