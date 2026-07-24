@@ -5441,12 +5441,37 @@ function parseNoteAgentReply(rawReply){
     try{
       const data = JSON.parse(json);
       if(data && typeof data === 'object' && !Array.isArray(data)){
-        const actions = Array.isArray(data.actions) ? data.actions : (data.action && typeof data.action === 'object' ? [data.action] : []);
+        const actions = Array.isArray(data.actions) ? data.actions : ((data.actions && typeof data.actions === 'object') ? [data.actions] : (data.action && typeof data.action === 'object' ? [data.action] : []));
         return { reply: String(data.reply || data.message || '').trim(), actions };
       }
     }catch(e){}
   }
   return { reply: raw, actions: [] };
+}
+function normalizeNoteAgentAction(rawAction){
+  if(!rawAction || typeof rawAction !== 'object') return null;
+  const action = { ...rawAction };
+  const type = String(action.type || action.action || action.command || '').trim()
+    .replace(/([a-z])([A-Z])/g, '$1_$2').replace(/[\s-]+/g, '_').toLowerCase();
+  const aliases = {
+    criar_pasta:'create_folder', createfolder:'create_folder', folder:'create_folder',
+    criar_nota:'create_note', createnote:'create_note', note:'create_note',
+    editar_nota:'edit_note', editnote:'edit_note',
+    criar_flashcards:'create_flashcards', criar_cartoes:'create_flashcards', create_cards:'create_flashcards', createflashcards:'create_flashcards',
+    criar_baralho:'create_deck', createdeck:'create_deck', deck:'create_deck',
+    editar_baralho:'update_deck', updatedeck:'update_deck',
+    criar_livro:'create_book', createbook:'create_book', book:'create_book',
+    editar_livro:'update_book', updatebook:'update_book',
+    navegar:'navigate', open_view:'navigate',
+    buscar_imagem:'search_image', searchimage:'search_image'
+  };
+  action.type = aliases[type] || type;
+  action.name = action.name || action.nome;
+  action.title = action.title || action.titulo;
+  action.content = action.content ?? action.conteudo;
+  action.parentRef = action.parentRef || action.parent || action.folder || action.pasta;
+  action.deckName = action.deckName || action.deck || action.baralho;
+  return action;
 }
 function noteAgentRequestNeedsAction(question){
   return /\b(crie|criar|adicione|adicionar|faça|faca|gere|gerar|edite|editar|reescreva|reescrever|resuma|resumir|mova|mover|organize|organizar|inclua|incluir)\b/i.test(String(question||''));
@@ -5521,10 +5546,12 @@ function revealAgentCreatedItem(itemId){
 }
 async function executeNoteAgentActions(actions, currentNote){
   const results = [];
+  let completedActions = 0;
   const aliases = {};
   const createdItemIds = [];
-  for(const action of (actions||[])){
-    if(!action || typeof action !== 'object') continue;
+  for(const rawAction of (actions||[])){
+    const action = normalizeNoteAgentAction(rawAction);
+    if(!action) continue;
     if(action.type === 'create_folder'){
       const name = String(action.name||'').trim().slice(0,120);
       if(!name) continue;
@@ -5533,6 +5560,7 @@ async function executeNoteAgentActions(actions, currentNote){
       if(action.alias) aliases[String(action.alias)] = folder.id;
       createdItemIds.push(folder.id);
       results.push(`Pasta criada: ${folder.name}`);
+      completedActions++;
     }else if(action.type === 'create_note'){
       const name = String(action.title||action.name||'').trim().slice(0,120) || 'Nova nota';
       const newNote = makeNoteItem('note', name, resolveNoteAgentParent(action.parentRef, currentNote, aliases), action.format);
@@ -5541,6 +5569,7 @@ async function executeNoteAgentActions(actions, currentNote){
       createdItemIds.push(newNote.id);
       await saveNoteContentToR2(newNote.id, noteContentCache[newNote.id]);
       results.push(`Nota criada: ${newNote.name}`);
+      completedActions++;
     }else if(action.type === 'edit_note'){
       // Por design, o agente pode editar toda a nota aberta sem pedir uma
       // confirmação extra; a alteração entra no histórico de desfazer/refazer.
@@ -5560,6 +5589,7 @@ async function executeNoteAgentActions(actions, currentNote){
       if(updated === before){ results.push(`A nota ${target.name} já estava assim.`); continue; }
       saveNoteContentUpdate(target, updated);
       results.push(`Nota editada: ${target.name}`);
+      completedActions++;
     }else if(action.type === 'create_flashcards'){
       const cards = Array.isArray(action.cards) ? action.cards : [];
       const validCards = cards.filter(card => card && String(card.front||'').trim() && String(card.back||'').trim());
@@ -5571,12 +5601,58 @@ async function executeNoteAgentActions(actions, currentNote){
         state.cards[deck.id].push(card);
       });
       results.push(`${validCards.length} flashcard${validCards.length===1?'':'s'} criado${validCards.length===1?'':'s'} em ${deck.name}`);
+      completedActions++;
+    }else if(action.type === 'create_deck'){
+      const name = String(action.name || action.title || '').trim().slice(0,100);
+      if(!name) continue;
+      const deck = { id:uid(), name, color:action.color || DECK_COLORS[state.decks.length % DECK_COLORS.length], type:action.deckType === 'language' ? 'language' : 'standard', aiEnabled:true, sentenceDifficulty:'intermediate' };
+      state.decks.push(deck);
+      state.cards[deck.id] = [];
+      results.push(`Baralho criado: ${deck.name}`);
+      completedActions++;
+    }else if(action.type === 'update_deck'){
+      const wanted = String(action.deckRef || action.deckName || action.name || '').trim().toLowerCase();
+      const deck = state.decks.find(d=>d.id===action.deckRef || String(d.name||'').trim().toLowerCase()===wanted);
+      if(!deck){ results.push('Não encontrei o baralho para alterar.'); continue; }
+      if(action.newName || action.new_name) deck.name = String(action.newName || action.new_name).trim().slice(0,100) || deck.name;
+      if(action.color) deck.color = String(action.color);
+      if(typeof action.aiEnabled === 'boolean') deck.aiEnabled = action.aiEnabled;
+      results.push(`Baralho atualizado: ${deck.name}`);
+      completedActions++;
+    }else if(action.type === 'create_book'){
+      const title = String(action.title || action.name || '').trim().slice(0,180);
+      if(!title) continue;
+      const book = makeBook(title, String(action.author || action.autor || '').trim());
+      if(Array.isArray(action.categories || action.categorias)) book.categories = (action.categories || action.categorias).map(String).filter(Boolean).slice(0,12);
+      if(action.status) book.status = String(action.status);
+      state.books.push(book);
+      results.push(`Livro adicionado: ${book.title}`);
+      completedActions++;
+    }else if(action.type === 'update_book'){
+      const wanted = String(action.bookRef || action.bookTitle || action.title || action.name || '').trim().toLowerCase();
+      const book = state.books.find(b=>b.id===action.bookRef || String(b.title||'').trim().toLowerCase()===wanted);
+      if(!book){ results.push('Não encontrei o livro para alterar.'); continue; }
+      if(action.newTitle || action.new_title) book.title = String(action.newTitle || action.new_title).trim().slice(0,180) || book.title;
+      if(action.author || action.autor) book.author = String(action.author || action.autor).trim();
+      if(action.status) book.status = String(action.status);
+      if(action.rating != null) book.rating = Math.max(0, Math.min(5, Number(action.rating)||0));
+      if(action.pagesRead != null) book.pagesRead = Math.max(0, Number(action.pagesRead)||0);
+      if(action.totalPages != null) book.totalPages = Math.max(0, Number(action.totalPages)||0);
+      results.push(`Livro atualizado: ${book.title}`);
+      completedActions++;
+    }else if(action.type === 'navigate'){
+      const view = String(action.view || action.destination || '').toLowerCase();
+      const views = { notas:'notes', notes:'notes', agenda:'agenda', leituras:'library', livros:'library', library:'library', inicio:'home', home:'home' };
+      if(!views[view]){ results.push('Não reconheci a tela solicitada.'); continue; }
+      state.view = views[view];
+      results.push(`Aberta a tela: ${view}`);
+      completedActions++;
     }else if(action.type === 'search_image'){
       const target = action.noteRef === 'current' || !action.noteRef ? currentNote : state.notesItems.find(n=>n.id===action.noteRef && n.type==='note');
       if(!target) continue;
       try{
         const image = await searchCommonsImage(action.query);
-        if(insertAgentImageInNote(target, image, action.alt || action.query)) results.push(`Imagem encontrada e inserida em ${target.name}: ${image.title}`);
+        if(insertAgentImageInNote(target, image, action.alt || action.query)){ results.push(`Imagem encontrada e inserida em ${target.name}: ${image.title}`); completedActions++; }
       }catch(error){
         console.error('Falha ao buscar imagem para o agente', error);
         results.push(`Não encontrei uma imagem pública adequada para “${String(action.query||'').slice(0,80)}”.`);
@@ -5593,6 +5669,7 @@ async function executeNoteAgentActions(actions, currentNote){
     }
   }
   if(results.length) await saveData();
+  results.completedActions = completedActions;
   return results;
 }
 async function sendNoteChatMessage(){
@@ -5613,7 +5690,7 @@ async function sendNoteChatMessage(){
   const noteContent = note ? getNoteContent(note.id) : '';
   const workspace = state.notesItems.map(item => `${item.type==='folder'?'Pasta':'Nota'}: ${item.name}`).join('\n') || '(vazio)';
   const decks = state.decks.map(deck => deck.name).join(', ') || '(nenhum)';
-  const prompt = `Você é o agente de IA de um caderno pessoal. Você conversa normalmente e pode executar ações dentro do aplicativo quando o usuário pedir explicitamente. A nota aberta pode ser editada por inteiro ou em partes, sem confirmação adicional. Não invente que fez uma ação: use apenas o formato abaixo para fazê-la. Quando o usuário pedir para procurar/buscar uma imagem na internet e adicioná-la, use search_image: o aplicativo fará a busca real em uma fonte pública e inserirá a imagem com crédito.\n\nNOTA ABERTA: "${note ? note.name : ''}"\nCONTEÚDO DA NOTA (preserve o formato ao editar):\n---\n${noteContent || '(nota vazia)'}\n---\n\nITENS DO CADERNO:\n${workspace}\n\nBARALHOS DISPONÍVEIS: ${decks}\n\nAções permitidas: create_folder {type,name,parentRef?,alias?}; create_note {type,title,content,parentRef?,format?}; edit_note {type,noteRef:'current',mode:'replace'|'append'|'prepend'|'replace_text'|'replace_all',content?,find?,replace?}; create_flashcards {type,deckRef:'linked'?,deckName?,cards:[{front,back,note?}]}; search_image {type,query,alt?,noteRef:'current'}. Para criar uma pasta e colocar notas nela, dê um alias à pasta e use o mesmo valor em parentRef. Só inclua ações solicitadas pelo usuário.\n\nResponda EXCLUSIVAMENTE com JSON válido, sem markdown: {"reply":"resposta curta e natural em português","actions":[...]}. Se não houver ação, use actions vazio.\n\n${history ? `Conversa até agora:\n${history}\n\n` : ''}Usuário: ${question}`;
+  const prompt = `Você é o agente de IA de um aplicativo pessoal de estudos. Você conversa normalmente e pode executar ações dentro do aplicativo quando o usuário pedir explicitamente. A nota aberta pode ser editada por inteiro ou em partes, sem confirmação adicional. Nunca diga que fez uma ação sem incluí-la em actions: o aplicativo só consegue realizar o que estiver nessa lista. Quando o usuário pedir para procurar/buscar uma imagem na internet e adicioná-la, use search_image: o aplicativo fará a busca real em uma fonte pública e inserirá a imagem com crédito.\n\nNOTA ABERTA: "${note ? note.name : ''}"\nCONTEÚDO DA NOTA (preserve o formato ao editar):\n---\n${noteContent || '(nota vazia)'}\n---\n\nITENS DO CADERNO:\n${workspace}\n\nBARALHOS DISPONÍVEIS: ${decks}\n\nAções permitidas: create_folder {type,name,parentRef?,alias?}; create_note {type,title,content,parentRef?,format?}; edit_note {type,noteRef:'current',mode:'replace'|'append'|'prepend'|'replace_text'|'replace_all',content?,find?,replace?}; create_flashcards {type,deckRef:'linked'?,deckName?,cards:[{front,back,note?}]}; create_deck {type,name,deckType?}; update_deck {type,deckRef|deckName,newName?,color?,aiEnabled?}; create_book {type,title,author?,categories?,status?}; update_book {type,bookRef|bookTitle,newTitle?,author?,status?,rating?,pagesRead?,totalPages?}; navigate {type,view:'notes'|'agenda'|'library'|'home'}; search_image {type,query,alt?,noteRef:'current'}. Para criar uma pasta e colocar notas nela, dê um alias à pasta e use o mesmo valor em parentRef. Só inclua ações solicitadas pelo usuário.\n\nResponda EXCLUSIVAMENTE com JSON válido, sem markdown: {"reply":"resposta curta e natural em português","actions":[...]}. Se não houver ação, use actions vazio.\n\n${history ? `Conversa até agora:\n${history}\n\n` : ''}Usuário: ${question}`;
 
   try{
     const agentResponse = parseNoteAgentReply(await callGemini(prompt, { maxTokens: 1800, responseMimeType:'application/json' }));
@@ -5622,7 +5699,7 @@ async function sendNoteChatMessage(){
     // devolvido JSON inválido ou uma ação desconhecida. Neste caso, nunca
     // confirmamos a ação ao usuário: a confirmação visual só vem de `executed`.
     const requestedAction = noteAgentRequestNeedsAction(question);
-    const text = requestedAction && !executed.length
+    const text = requestedAction && !executed.completedActions
       ? 'Não consegui executar essa ação no caderno. Nenhuma nota, pasta ou cartão foi criado; tente pedir novamente.'
       : (agentResponse.reply || (executed.length ? 'Pronto.' : 'Não consegui montar uma resposta.'));
     m.messages.push({ role:'assistant', text, actions:executed });
