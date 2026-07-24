@@ -371,7 +371,7 @@
   .notes-editor-panes.page-view .notes-plain-editor{ width:min(100%, 794px); min-height:1123px; height:auto; margin:0 auto; padding:72px 76px; background:var(--surface); border:1px solid var(--border); border-radius:2px; box-shadow:0 8px 30px rgba(0,0,0,.18); }
   .notes-paged-preview{ display:flex; flex-direction:column; gap:22px; align-items:center; width:100%; overflow-x:auto; }
   .note-page-sheet{ position:relative; box-sizing:border-box; max-width:100%; background:var(--surface); border:1px solid var(--border); box-shadow:0 8px 30px rgba(0,0,0,.18); overflow:hidden; line-height:1.7; font-size:14.5px; }
-  .note-page-sheet-content{ height:100%; overflow:hidden; white-space:pre-wrap; word-break:break-word; }
+  .note-page-sheet-content{ overflow:hidden; white-space:pre-wrap; overflow-wrap:anywhere; word-break:normal; }
   .note-page-sheet-number{ position:absolute; bottom:0; left:0; right:0; font-size:12px; color:var(--text-faint); }
   .notes-editor-panes.page-view{ display:block; position:relative; overflow:auto; padding:24px; }
   .notes-page-title{ position:absolute; z-index:2; top:calc(24px + var(--page-margin,76px)); left:50%; transform:translateX(-50%); width:calc(var(--page-w,566px) - 2 * var(--page-margin,76px)); margin:0; padding:0; background:transparent; border:0; font-family:Georgia,'Iowan Old Style',serif; font-size:25px; font-weight:600; pointer-events:none; }
@@ -446,9 +446,7 @@
     .notes-layout.note-open .notes-explorer{ display:none; }
     .notes-layout:not(.note-open) .notes-editor{ display:none; }
     .notes-editor-panes.split{ flex-direction:column; }
-    .notes-paged-preview{ align-items:flex-start; }
-    .note-page-sheet{ width:100% !important; height:calc(100vw * 1.4) !important; min-height:calc(100vw * 1.4); padding:32px 28px !important; }
-    .note-page-sheet-number{ padding:0 28px 18px !important; }
+    .notes-paged-preview{ align-items:center; overflow-x:hidden; }
   }
 </style>
 <script>
@@ -4442,38 +4440,108 @@ function splitNoteHtmlIntoPages(content, wordsPerPage){
   push();
   return pages.length ? pages : [''];
 }
-function splitNoteHtmlByRenderedHeight(content, width, height, margin){
-  const holder=document.createElement('div'); holder.innerHTML=content||'';
-  const units=[];
-  const collect=node=>{
-    if(node.nodeType===1 && /^(DIV|P|SECTION)$/i.test(node.tagName) && node.children.length>1) Array.from(node.childNodes).forEach(collect);
-    else units.push(node);
-  };
-  Array.from(holder.childNodes).forEach(collect);
-  const test=document.createElement('div');
-  test.style.cssText=`position:fixed;left:-10000px;top:0;visibility:hidden;width:${Math.max(40,width-margin*2)}px;height:${Math.max(40,height-margin*2-28)}px;overflow:hidden;line-height:1.7;font-size:14.5px;box-sizing:border-box;`;
-  document.body.appendChild(test);
-  const pages=[], current=[];
-  units.forEach(node=>{
-    const html=node.outerHTML||escapeHtml(node.textContent||'');
-    test.innerHTML=current.join('')+html;
-    if(current.length && test.scrollHeight>test.clientHeight){ pages.push(current.join('')); current.length=0; test.innerHTML=html; }
-    current.push(html);
+function splitNoteHtmlByRenderedHeight(content, contentWidth, contentHeight){
+  const source=document.createElement('div');
+  source.innerHTML=content||'';
+
+  // Uma linha vazia também ocupa espaço. O caractere invisível faz com que
+  // Range consiga incluí-la na página correta sem alterar sua aparência.
+  source.querySelectorAll('div,p').forEach(el=>{
+    if(!(el.textContent||'').length && !el.querySelector('img,video,iframe,hr')){
+      el.innerHTML='\u200b';
+    }
   });
-  if(current.length) pages.push(current.join(''));
-  test.remove(); return pages.length?pages:[''];
+  source.querySelectorAll('img,video,iframe,hr').forEach(el=>{
+    if(!el.nextSibling || el.nextSibling.nodeType!==3) el.after(document.createTextNode('\u200b'));
+  });
+
+  const measureShell=document.createElement('div');
+  measureShell.style.cssText=`position:fixed;left:-10000px;top:0;visibility:hidden;width:${Math.max(40,contentWidth)}px;height:auto;padding:0;border:0;overflow:visible;`;
+  const measure=document.createElement('div');
+  measure.className='note-page-sheet-content';
+  measure.style.cssText=`box-sizing:border-box;width:${Math.max(40,contentWidth)}px;height:${Math.max(40,contentHeight)}px;max-height:${Math.max(40,contentHeight)}px;overflow:hidden;line-height:1.7;font-size:14.5px;`;
+  measureShell.appendChild(measure);
+  document.body.appendChild(measureShell);
+
+  const textNodes=[];
+  const walker=document.createTreeWalker(source,NodeFilter.SHOW_TEXT);
+  let textNode;
+  while((textNode=walker.nextNode())) textNodes.push(textNode);
+  if(!textNodes.length){
+    measureShell.remove();
+    return [source.innerHTML];
+  }
+
+  const lengths=[];
+  let total=0;
+  textNodes.forEach(node=>{ lengths.push(total); total+=(node.data||'').length; });
+  const plainText=textNodes.map(node=>node.data||'').join('');
+  const boundary=offset=>{
+    if(offset>=total){
+      const last=textNodes[textNodes.length-1];
+      return { node:last, offset:(last.data||'').length };
+    }
+    let low=0, high=textNodes.length-1;
+    while(low<high){
+      const mid=Math.ceil((low+high)/2);
+      if(lengths[mid]<=offset) low=mid; else high=mid-1;
+    }
+    return { node:textNodes[low], offset:offset-lengths[low] };
+  };
+  const htmlBetween=(start,end)=>{
+    const a=boundary(start), b=boundary(end);
+    const range=document.createRange();
+    range.setStart(a.node,a.offset);
+    range.setEnd(b.node,b.offset);
+    const wrapper=document.createElement('div');
+    wrapper.appendChild(range.cloneContents());
+    return wrapper.innerHTML;
+  };
+  const fits=html=>{
+    measure.innerHTML=html;
+    return measure.scrollHeight<=measure.clientHeight+1;
+  };
+
+  const pages=[];
+  let start=0;
+  while(start<total){
+    let low=start+1, high=total, best=start;
+    while(low<=high){
+      const mid=Math.floor((low+high)/2);
+      if(fits(htmlBetween(start,mid))){ best=mid; low=mid+1; }
+      else high=mid-1;
+    }
+    if(best===start) best=Math.min(total,start+1);
+
+    // Sempre que possível, muda de página entre palavras. A medição final
+    // garante que recuar até esse espaço continua cabendo.
+    if(best<total){
+      let wordBreak=best;
+      while(wordBreak>start && best-wordBreak<80 && !/\s/.test(plainText.charAt(wordBreak-1))) wordBreak--;
+      if(wordBreak>start && fits(htmlBetween(start,wordBreak))) best=wordBreak;
+    }
+    pages.push(htmlBetween(start,best));
+    start=best;
+  }
+  measureShell.remove();
+  return pages.length?pages:[''];
 }
 function renderPagedNotePreview(note, content){
   const s=getNotePageSettings(note), factor=s.unit==='px'?1:37.795;
-  const width=s.width*factor, height=s.height*factor, margin=s.margin*factor;
-  const visibleText=htmlToText(content).trim();
-  const words=visibleText.split(/\s+/).filter(Boolean);
-  const perPage=window.innerWidth <= 820 ? Math.min(getNoteWordsPerPage(note), 35) : getNoteWordsPerPage(note);
-  // Uma folha inteira mantém o HTML original: parágrafos, negrito, imagens e
-  // todas as formatações do editor continuam idênticas à nota.
-  const chunks = splitNoteHtmlByRenderedHeight(content, width, height, margin).map(html=>({html}));
+  const configuredWidth=s.width*factor, configuredHeight=s.height*factor, configuredMargin=s.margin*factor;
+  const compact=window.innerWidth<=820;
+  const width=compact?Math.min(configuredWidth,Math.max(240,window.innerWidth-80)):configuredWidth;
+  const scale=width/configuredWidth;
+  const height=configuredHeight*scale;
+  const margin=Math.min(configuredMargin*scale,width/2-40);
+  const footerReserve=s.pageNumbers?Math.max(22,Math.min(34,margin*.55)):0;
+  const contentWidth=Math.max(40,width-margin*2);
+  const contentHeight=Math.max(40,height-margin*2-footerReserve);
+  // Medição e desenho usam as mesmas dimensões. Assim nenhum trecho que o
+  // paginador considerou válido fica escondido pela folha ou pelo rodapé.
+  const chunks = splitNoteHtmlByRenderedHeight(content,contentWidth,contentHeight).map(html=>({html}));
   if(!chunks.length) chunks.push({ html:'' });
-  return `<div class="notes-paged-preview">${chunks.map((chunk,index)=>{ const page=index+1; const position=s.pageNumberPosition==='book' ? (page%2?'right':'left') : s.pageNumberPosition; const number=s.pageNumbers&&!pageNumberIsHidden(page,s.hiddenPages) ? `<div class="note-page-sheet-number" style="text-align:${position}; padding:0 ${margin}px ${Math.max(12,margin*.35)}px;">${page}</div>` : ''; return `<article class="note-page-sheet" style="width:${width}px; height:${height}px; padding:${margin}px;"><div class="note-page-sheet-content">${chunk.html}</div>${number}</article>`; }).join('')}</div>`;
+  return `<div class="notes-paged-preview">${chunks.map((chunk,index)=>{ const page=index+1; const position=s.pageNumberPosition==='book' ? (page%2?'right':'left') : s.pageNumberPosition; const number=s.pageNumbers&&!pageNumberIsHidden(page,s.hiddenPages) ? `<div class="note-page-sheet-number" style="text-align:${position}; padding:0 ${margin}px ${Math.max(8,margin*.25)}px;">${page}</div>` : ''; return `<article class="note-page-sheet" style="width:${width}px; height:${height}px; padding:${margin}px;"><div class="note-page-sheet-content" style="height:${contentHeight}px; max-height:${contentHeight}px;">${chunk.html}</div>${number}</article>`; }).join('')}</div>`;
 }
 function updateNoteWritingStats(content){
   const el = document.getElementById('note-writing-stats');
@@ -6380,7 +6448,7 @@ function renderSidebar(){
       <div>
         <h1>Recall</h1>
         <span>REPETIÇÃO ESPAÇADA</span>
-        <span class="brand-version">v2026.07.24.17</span>
+        <span class="brand-version">v2026.07.24.18</span>
       </div>
     </div>
     <button class="ghost-btn" style="font-size:13px; padding:10px 12px; margin-bottom:6px; ${(state.view==='library'||state.view==='book') ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="openLibrary()">📚 Leituras</button>
