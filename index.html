@@ -5176,28 +5176,9 @@ function requestNoteOpinion(){
   const sel = state.noteSelection;
   if(!sel || !sel.text) return;
   hideNoteSelectionBar();
-  state.modal = { type:'note-opinion', status:'loading', passage:sel.text, opinion:'', noteId: state.currentNoteId, source: sel.source, start: sel.start, end: sel.end, messages:[], input:'', sending:false };
-  render();
-  generateTextOpinion(sel.text).then(opinion => {
-    if(state.modal && state.modal.type === 'note-opinion'){
-      state.modal.status = 'ready';
-      state.modal.opinion = opinion;
-      const note = state.notesItems.find(n=>n.id===state.modal.noteId);
-      if(note){
-        const conversation = createNoteConversation(note, 'suggestion', { title:`Sugestão: ${sel.text.slice(0,45)}`, passage:sel.text, opinion, source:sel.source, start:sel.start, end:sel.end });
-        state.modal.conversationId = conversation.id;
-        state.modal.conversationSearch = '';
-      }
-      render();
-    }
-  }).catch(err => {
-    console.error('Falha ao pedir opinião da IA', err);
-    if(state.modal && state.modal.type === 'note-opinion'){
-      state.modal.status = 'error';
-      state.modal.error = friendlyAiErrorMsg(err);
-      render();
-    }
-  });
+  // Opiniões agora usam o chat principal. O trecho selecionado fica pronto na
+  // caixa de mensagem para a pessoa complementar exatamente o que quer avaliar.
+  openNoteChat(`"${sel.text}"\n\n`);
 }
 function openNotePasteOpinionModal(){
   if(!state.currentNoteId) return;
@@ -5208,24 +5189,7 @@ function confirmNotePasteOpinion(){
   const m = state.modal;
   const text = (m.text||'').trim();
   if(!text){ showToast('Cole o texto primeiro.', 'error'); return; }
-  // texto colado não tem posição nenhuma dentro da nota (pode nem ter vindo de uma
-  // nota) — então aqui o "aplicar" automático não é possível, só copiar manualmente.
-  state.modal = { type:'note-opinion', status:'loading', passage:text, opinion:'', noteId:null, source:null, start:null, end:null, messages:[], input:'', sending:false };
-  render();
-  generateTextOpinion(text).then(opinion => {
-    if(state.modal && state.modal.type === 'note-opinion'){
-      state.modal.status = 'ready';
-      state.modal.opinion = opinion;
-      render();
-    }
-  }).catch(err => {
-    console.error('Falha ao pedir opinião da IA (texto colado)', err);
-    if(state.modal && state.modal.type === 'note-opinion'){
-      state.modal.status = 'error';
-      state.modal.error = friendlyAiErrorMsg(err);
-      render();
-    }
-  });
+  openNoteChat(`"${text}"\n\n`);
 }
 // depois da opinião inicial, o usuário pode continuar conversando — e se pedir uma
 // reescrita concreta, a IA marca a versão revisada com essas tags num bloco à parte,
@@ -5347,12 +5311,12 @@ function diffTextParts(oldText, newText){
 /* --- chat com a IA sobre a nota aberta: manda o conteúdo da nota como
    contexto em todo turno (a API do Gemini usada aqui não mantém sessão),
    junto do histórico da conversa formatado como texto. --- */
-function openNoteChat(){
+function openNoteChat(initialInput){
   const noteId = state.currentNoteId;
   const note = state.notesItems.find(n=>n.id===noteId);
   if(!note) return;
   const conversation = createNoteConversation(note, 'chat', {});
-  state.modal = { type:'note-chat', noteId, conversationId:conversation.id, messages:conversation.messages, input:'', sending:false, conversationSearch:'' };
+  state.modal = { type:'note-chat', noteId, conversationId:conversation.id, messages:conversation.messages, input:initialInput || '', sending:false, conversationSearch:'' };
   render();
 }
 function openSavedNoteConversation(noteId, conversationId){
@@ -5361,9 +5325,7 @@ function openSavedNoteConversation(noteId, conversationId){
   if(!note || !conversation) return;
   if(conversation.type === 'chat'){
     state.modal = { type:'note-chat', noteId, conversationId:conversation.id, messages:conversation.messages||[], input:'', sending:false, conversationSearch:'' };
-  }else{
-    state.modal = { type:'note-opinion', status:'ready', noteId, conversationId:conversation.id, passage:conversation.passage||'', opinion:conversation.opinion||'', source:null, start:null, end:null, messages:conversation.messages||[], input:'', sending:false, conversationSearch:'' };
-  }
+  }else openNoteChat(`"${conversation.passage||conversation.opinion||''}"\n\n`);
   render();
 }
 function openNoteSuggestionLibrary(){
@@ -5380,6 +5342,21 @@ function toggleActiveNoteConversationFavorite(){
   conversation.favorite = !conversation.favorite;
   saveNoteConversation(note, conversation);
   render();
+}
+function deleteActiveNoteConversation(){
+  const m = state.modal;
+  const note = m && state.notesItems.find(n=>n.id===m.noteId);
+  if(!note || !m.conversationId) return;
+  const conversations = getNoteConversations(note);
+  const index = conversations.findIndex(c=>c.id===m.conversationId);
+  if(index < 0) return;
+  conversations.splice(index, 1);
+  saveData();
+  const next = conversations.find(c=>c.type==='chat');
+  if(next) state.modal = { type:'note-chat', noteId:note.id, conversationId:next.id, messages:next.messages||[], input:'', sending:false, conversationSearch:'' };
+  else openNoteChat();
+  render();
+  showToast('Conversa excluída.');
 }
 function convertActiveNoteConversationToNote(){
   const m = state.modal;
@@ -5413,8 +5390,8 @@ function renderNoteConversationLibrary(m, type){
   <div style="border:1px solid var(--border); border-radius:9px; padding:8px; margin:0 0 8px;">
     <div style="display:flex; gap:6px; align-items:center;">
       <input type="text" placeholder="Buscar conversas e favoritas..." value="${escapeHtml(m.conversationSearch||'')}" style="flex:1; padding:6px 8px; font-size:11.5px;" oninput="state.modal.conversationSearch=this.value; render();">
-      <button class="icon-btn" style="width:28px;height:28px;font-size:12px;${current&&current.favorite?'color:var(--accent);':''}" title="Favoritar conversa" onclick="toggleActiveNoteConversationFavorite()">★</button>
       <button class="icon-btn" style="width:28px;height:28px;font-size:12px;" title="Transformar em nota" onclick="convertActiveNoteConversationToNote()">📄</button>
+      <button class="icon-btn" style="width:28px;height:28px;font-size:12px;" title="Excluir conversa" onclick="deleteActiveNoteConversation()">🗑</button>
     </div>
     ${conversations.length ? `<div style="display:flex; gap:5px; overflow-x:auto; margin-top:7px; padding-bottom:1px;">${conversations.sort((a,b)=>(b.favorite-a.favorite)||(b.updatedAt-a.updatedAt)).map(c=>`<button class="ghost-btn" style="white-space:nowrap; padding:5px 8px; font-size:10.5px; ${c.id===m.conversationId?'border-color:var(--accent); color:var(--accent);':''}" onclick="openSavedNoteConversation('${note.id}','${c.id}')">${c.favorite?'★ ':''}${escapeHtml(getConversationTitle(c))}</button>`).join('')}</div>` : `<div style="font-size:11px; color:var(--text-faint); margin-top:6px;">Nenhuma conversa encontrada.</div>`}
   </div>`;
@@ -6421,7 +6398,6 @@ function renderNoteEditor(note){
       ${pendingComments.length ? `<button class="icon-btn" style="width:auto; padding:0 10px; font-size:12px; color:var(--success);" title="Revisar comentários pendentes" onclick="openNoteCommentsPanel()">📝 ${pendingComments.length}</button>` : ''}
       <button class="icon-btn" title="Buscar e substituir nesta nota" onclick="openNoteFind()">🔍</button>
       <button class="icon-btn" title="Conversar com a IA sobre esta nota" onclick="openNoteChat()">💬</button>
-      <button class="icon-btn" title="Conversas de sugestões salvas" onclick="openNoteSuggestionLibrary()">💭</button>
       ${!isPlain ? `
       <div class="notes-mode-toggle">
         <button class="ghost-btn ${mode==='source'?'active-mode':''}" onclick="setNotesEditorMode('source')">Editar</button>
