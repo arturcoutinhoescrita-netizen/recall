@@ -371,6 +371,7 @@
   .notes-preview h1:first-child, .notes-preview h2:first-child, .notes-preview h3:first-child{ margin-top:0; }
   .notes-preview p{ margin:0 0 0.8em 0; }
   .notes-preview img{ max-width:100%; border-radius:8px; }
+  .notes-preview img.note-image-selected{ outline:3px solid var(--accent); outline-offset:3px; }
   .notes-preview ul, .notes-preview ol{ padding-left:1.4em; margin:0 0 0.8em 0; }
   .notes-preview code{ background:var(--surface-2); padding:1px 5px; border-radius:5px; font-size:0.9em; }
   .notes-preview pre{ background:var(--surface-2); padding:12px 14px; border-radius:8px; overflow-x:auto; }
@@ -4813,6 +4814,32 @@ function openNoteImageUploadPicker(){
   input.click();
 }
 
+// Imagens inseridas por upload, link ou pela IA são imagens HTML comuns no
+// editor visual. Um clique nelas habilita os controles do toolbar sem precisar
+// baixar ou reenviar o arquivo original.
+let selectedNoteImageId = null;
+document.addEventListener('click', (event) => {
+  const image = event.target && event.target.closest && event.target.closest('#note-editor-plain img');
+  if(!image) return;
+  document.querySelectorAll('#note-editor-plain img.note-image-selected').forEach(img => img.classList.remove('note-image-selected'));
+  image.dataset.noteImageId = image.dataset.noteImageId || uid();
+  image.classList.add('note-image-selected');
+  selectedNoteImageId = image.dataset.noteImageId;
+});
+function getSelectedNoteImage(){
+  return selectedNoteImageId ? document.querySelector(`#note-editor-plain img[data-note-image-id="${selectedNoteImageId}"]`) : null;
+}
+function updateSelectedNoteImage(change){
+  const image = getSelectedNoteImage();
+  if(!image){ showToast('Clique na imagem que deseja ajustar primeiro.', 'error'); return; }
+  if(change.size) image.style.width = `${change.size}%`;
+  if(change.align){ image.style.display='block'; image.style.marginLeft=change.align==='left'?'0':'auto'; image.style.marginRight=change.align==='right'?'0':'auto'; }
+  if(change.crop === 'square'){ image.style.width='48%'; image.style.aspectRatio='1 / 1'; image.style.objectFit='cover'; }
+  if(change.crop === 'wide'){ image.style.width='100%'; image.style.aspectRatio='16 / 9'; image.style.objectFit='cover'; }
+  if(change.crop === 'original'){ image.style.aspectRatio=''; image.style.objectFit=''; }
+  onNoteContentInput(state.currentNoteId, document.getElementById('note-editor-plain').innerHTML);
+}
+
 /* --- seleção de texto na nota: criar cartão a partir do trecho, ou pedir
    correção ortográfica/gramatical à IA. A correção só é oferecida quando a
    seleção vem da textarea (fonte), porque só ali dá pra saber o start/end
@@ -6202,7 +6229,7 @@ function renderSidebar(){
       <div>
         <h1>Recall</h1>
         <span>REPETIÇÃO ESPAÇADA</span>
-        <span class="brand-version">v2026.07.24.3</span>
+        <span class="brand-version">v2026.07.24.4</span>
       </div>
     </div>
     <button class="ghost-btn" style="font-size:13px; padding:10px 12px; margin-bottom:6px; ${(state.view==='library'||state.view==='book') ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="openLibrary()">📚 Leituras</button>
@@ -6552,6 +6579,16 @@ function renderNotesToolbar(format){
     <button class="icon-btn" ${noSteal}title="Link pra outra nota (${noteShortcutLabel('l')})" onclick="${wikiLink}">🔀</button>
     <button class="icon-btn" ${noSteal}title="Imagem por link" onclick="openInsertImageModal()">🖼️</button>
     <button class="icon-btn" ${noSteal}title="Enviar imagem do aparelho" onclick="openNoteImageUploadPicker()">📤</button>
+    ${!isMarkdown ? `<span style="width:1px; background:var(--border); margin:2px 2px;"></span>
+    <button class="icon-btn" ${noSteal}title="Imagem pequena (clique antes na imagem)" onclick="updateSelectedNoteImage({size:50})">½</button>
+    <button class="icon-btn" ${noSteal}title="Imagem média (clique antes na imagem)" onclick="updateSelectedNoteImage({size:75})">¾</button>
+    <button class="icon-btn" ${noSteal}title="Imagem inteira (clique antes na imagem)" onclick="updateSelectedNoteImage({size:100})">▣</button>
+    <button class="icon-btn" ${noSteal}title="Cortar em quadrado" onclick="updateSelectedNoteImage({crop:'square'})">□</button>
+    <button class="icon-btn" ${noSteal}title="Cortar em paisagem" onclick="updateSelectedNoteImage({crop:'wide'})">▭</button>
+    <button class="icon-btn" ${noSteal}title="Remover corte" onclick="updateSelectedNoteImage({crop:'original'})">↺</button>
+    <button class="icon-btn" ${noSteal}title="Alinhar imagem à esquerda" onclick="updateSelectedNoteImage({align:'left'})">⇤</button>
+    <button class="icon-btn" ${noSteal}title="Centralizar imagem" onclick="updateSelectedNoteImage({align:'center'})">↔</button>
+    <button class="icon-btn" ${noSteal}title="Alinhar imagem à direita" onclick="updateSelectedNoteImage({align:'right'})">⇥</button>` : ''}
     <span style="width:1px; background:var(--border); margin:2px 2px;"></span>
     <button class="icon-btn" title="Criar cartão colando um texto (útil no celular)" onclick="openNotePasteCardModal()">📌</button>
     <button class="icon-btn" title="Corrigir um texto colado (útil no celular)" onclick="openNotePasteCorrectionModal()">✏️</button>
