@@ -4096,6 +4096,12 @@ function migrateLegacyInlineNoteContent(rawItems){
 }
 function openNotes(){
   finishReadingActivity();
+  // O explorador começa compacto sempre que o caderno é aberto. Assim, uma
+  // árvore grande não ocupa a tela inteira e cada pasta só mostra o conteúdo
+  // quando a pessoa decidir expandi-la.
+  state.notesCollapsedFolders = state.notesItems
+    .filter(item => item.type === 'folder')
+    .map(item => item.id);
   state.view = 'notes';
   render();
 }
@@ -4111,7 +4117,11 @@ function confirmCreateNoteItem(){
   state.notesItems.push(item);
   state.modal = null;
   if(m.kind === 'note'){ state.currentNoteId = item.id; state.notesEditorMode = state.notesEditorMode || 'split'; }
-  else { state.notesCollapsedFolders = (state.notesCollapsedFolders||[]).filter(id=>id!==item.id); }
+  else {
+    // Pastas novas seguem o mesmo padrão do explorador: começam fechadas.
+    const collapsed = state.notesCollapsedFolders || (state.notesCollapsedFolders=[]);
+    if(!collapsed.includes(item.id)) collapsed.push(item.id);
+  }
   saveData(); render();
 }
 function toggleNotesFolder(id){
