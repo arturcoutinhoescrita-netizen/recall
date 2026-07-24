@@ -5165,7 +5165,8 @@ function removeNoteImageTransformOverlay(){
 function syncNoteImageTransformOverlay(){
   const image=getSelectedNoteImage();
   if(!image || !image.isConnected){ removeNoteImageTransformOverlay(); return; }
-  const rect=image.getBoundingClientRect();
+  const rawRect=image.getBoundingClientRect();
+  const rect=getNoteImageVisibleRect(image,rawRect);
   if(rect.width<4 || rect.height<4){ removeNoteImageTransformOverlay(); return; }
   if(!noteImageTransformOverlay){
     noteImageTransformOverlay=document.createElement('div');
@@ -5197,14 +5198,27 @@ function readNoteImageCrop(image){
   const match=(image.style.clipPath||'').match(/^inset\(([\d.]+)% ([\d.]+)% ([\d.]+)% ([\d.]+)%\)$/);
   return match ? {top:+match[1],right:+match[2],bottom:+match[3],left:+match[4]} : {top:0,right:0,bottom:0,left:0};
 }
+function getNoteImageVisibleRect(image, rawRect=image.getBoundingClientRect(), crop=readNoteImageCrop(image)){
+  const horizontal=Math.max(.01,1-(crop.left+crop.right)/100);
+  const vertical=Math.max(.01,1-(crop.top+crop.bottom)/100);
+  return {
+    left:rawRect.left+rawRect.width*crop.left/100,
+    top:rawRect.top+rawRect.height*crop.top/100,
+    width:rawRect.width*horizontal,
+    height:rawRect.height*vertical,
+    horizontal, vertical
+  };
+}
 function beginNoteImageTransform(event){
   const image=getSelectedNoteImage();
   if(!image) return;
   event.preventDefault(); event.stopPropagation();
-  const rect=image.getBoundingClientRect();
+  const rawRect=image.getBoundingClientRect();
+  const crop=readNoteImageCrop(image);
+  const rect=getNoteImageVisibleRect(image,rawRect,crop);
   noteImageTransformDrag={
     image, action:event.currentTarget.dataset.noteImageAction, startX:event.clientX, startY:event.clientY,
-    rect, crop:readNoteImageCrop(image), containerWidth:Math.max(rect.width, image.parentElement?.getBoundingClientRect().width||rect.width)
+    rect, rawRect, crop, containerWidth:Math.max(rawRect.width, image.parentElement?.getBoundingClientRect().width||rawRect.width)
   };
   event.currentTarget.setPointerCapture?.(event.pointerId);
   window.addEventListener('pointermove', moveNoteImageTransform);
@@ -5213,20 +5227,21 @@ function beginNoteImageTransform(event){
 function moveNoteImageTransform(event){
   const drag=noteImageTransformDrag;
   if(!drag) return;
-  const {image,action,rect}=drag;
+  const {image,action,rect,rawRect}=drag;
   const dx=event.clientX-drag.startX, dy=event.clientY-drag.startY;
   if(action.startsWith('resize-')){
     const horizontal=action.endsWith('e') ? dx : -dx;
     const vertical=action.includes('s') ? dy : -dy;
-    const nextWidth=Math.max(40, rect.width + (Math.abs(horizontal)>Math.abs(vertical)?horizontal:vertical));
-    image.style.width=`${Math.min(100, Math.max(8, nextWidth/drag.containerWidth*100)).toFixed(2)}%`;
+    const nextVisibleWidth=Math.max(40, rect.width + (Math.abs(horizontal)>Math.abs(vertical)?horizontal:vertical));
+    const nextRawWidth=nextVisibleWidth/rect.horizontal;
+    image.style.width=`${Math.min(100, Math.max(8, nextRawWidth/drag.containerWidth*100)).toFixed(2)}%`;
   }else{
     const crop={...drag.crop};
     const cap=(value, other)=>Math.max(0,Math.min(92-other,value));
-    if(action==='crop-n') crop.top=cap(drag.crop.top+dy/rect.height*100,crop.bottom);
-    if(action==='crop-s') crop.bottom=cap(drag.crop.bottom-dy/rect.height*100,crop.top);
-    if(action==='crop-w') crop.left=cap(drag.crop.left+dx/rect.width*100,crop.right);
-    if(action==='crop-e') crop.right=cap(drag.crop.right-dx/rect.width*100,crop.left);
+    if(action==='crop-n') crop.top=cap(drag.crop.top+dy/rawRect.height*100,crop.bottom);
+    if(action==='crop-s') crop.bottom=cap(drag.crop.bottom-dy/rawRect.height*100,crop.top);
+    if(action==='crop-w') crop.left=cap(drag.crop.left+dx/rawRect.width*100,crop.right);
+    if(action==='crop-e') crop.right=cap(drag.crop.right-dx/rawRect.width*100,crop.left);
     image.style.clipPath=`inset(${crop.top.toFixed(2)}% ${crop.right.toFixed(2)}% ${crop.bottom.toFixed(2)}% ${crop.left.toFixed(2)}%)`;
   }
   syncNoteImageTransformOverlay();
@@ -6670,7 +6685,7 @@ function renderSidebar(){
       <div>
         <h1>Recall</h1>
         <span>REPETIÇÃO ESPAÇADA</span>
-        <span class="brand-version">v2026.07.24.27</span>
+        <span class="brand-version">v2026.07.24.28</span>
       </div>
     </div>
     <button class="ghost-btn" style="font-size:13px; padding:10px 12px; margin-bottom:6px; ${(state.view==='library'||state.view==='book') ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="openLibrary()">📚 Leituras</button>
