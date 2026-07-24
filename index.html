@@ -6191,14 +6191,14 @@ function ensureNoteChatFor(noteId){
   if(!note) return;
   if(state.modal?.type==='note-chat' && state.modal.noteId===noteId) return;
   const conversation=getNoteConversations(note).find(c=>c.type==='chat') || createNoteConversation(note,'chat',{});
-  state.modal={ type:'note-chat', noteId, conversationId:conversation.id, messages:conversation.messages||[], input:'', sending:false, conversationSearch:'' };
+  state.modal={ type:'note-chat', noteId, conversationId:conversation.id, messages:conversation.messages||[], input:'', sending:false, conversationSearch:'', conversationLibraryOpen:false };
 }
 function openNoteChat(initialInput){
   const noteId = state.currentNoteId;
   const note = state.notesItems.find(n=>n.id===noteId);
   if(!note) return;
   const conversation = createNoteConversation(note, 'chat', {});
-  state.modal = { type:'note-chat', noteId, conversationId:conversation.id, messages:conversation.messages, input:initialInput || '', sending:false, conversationSearch:'' };
+  state.modal = { type:'note-chat', noteId, conversationId:conversation.id, messages:conversation.messages, input:initialInput || '', sending:false, conversationSearch:'', conversationLibraryOpen:false };
   render();
 }
 function openSavedNoteConversation(noteId, conversationId){
@@ -6206,7 +6206,7 @@ function openSavedNoteConversation(noteId, conversationId){
   const conversation = note && getNoteConversations(note).find(c=>c.id===conversationId);
   if(!note || !conversation) return;
   if(conversation.type === 'chat'){
-    state.modal = { type:'note-chat', noteId, conversationId:conversation.id, messages:conversation.messages||[], input:'', sending:false, conversationSearch:'' };
+    state.modal = { type:'note-chat', noteId, conversationId:conversation.id, messages:conversation.messages||[], input:'', sending:false, conversationSearch:'', conversationLibraryOpen:true };
   }else openNoteChat(`"${conversation.passage||conversation.opinion||''}"\n\n`);
   render();
 }
@@ -6235,7 +6235,7 @@ function deleteActiveNoteConversation(){
   conversations.splice(index, 1);
   saveData();
   const next = conversations.find(c=>c.type==='chat');
-  if(next) state.modal = { type:'note-chat', noteId:note.id, conversationId:next.id, messages:next.messages||[], input:'', sending:false, conversationSearch:'' };
+  if(next) state.modal = { type:'note-chat', noteId:note.id, conversationId:next.id, messages:next.messages||[], input:'', sending:false, conversationSearch:'', conversationLibraryOpen:true };
   else openNoteChat();
   render();
   showToast('Conversa excluída.');
@@ -6262,20 +6262,29 @@ function scrollChatMessagesToBottom(selector){
   const el = document.querySelector(selector);
   if(el) el.scrollTop = el.scrollHeight;
 }
+function toggleNoteConversationLibrary(){
+  if(!state.modal) return;
+  state.modal.conversationLibraryOpen = !state.modal.conversationLibraryOpen;
+  if(!state.modal.conversationLibraryOpen) state.modal.conversationSearch='';
+  render();
+}
 function renderNoteConversationLibrary(m, type){
   const note = state.notesItems.find(n=>n.id===m.noteId);
   if(!note) return '';
   const query = (m.conversationSearch||'').toLowerCase().trim();
   const conversations = getNoteConversations(note).filter(c => c.type===type && (!query || `${getConversationTitle(c)} ${(c.messages||[]).map(msg=>msg.text).join(' ')}`.toLowerCase().includes(query)));
-  const current = conversations.find(c=>c.id===m.conversationId);
+  const allCount = getNoteConversations(note).filter(c=>c.type===type).length;
   return `
-  <div style="border:1px solid var(--border); border-radius:9px; padding:8px; margin:0 0 8px;">
-    <div style="display:flex; gap:6px; align-items:center;">
-      <input type="text" placeholder="Buscar conversas e favoritas..." value="${escapeHtml(m.conversationSearch||'')}" style="flex:1; padding:6px 8px; font-size:11.5px;" oninput="state.modal.conversationSearch=this.value; render();">
-      <button class="icon-btn" style="width:28px;height:28px;font-size:12px;" title="Transformar em nota" onclick="convertActiveNoteConversationToNote()">📄</button>
-      <button class="icon-btn" style="width:28px;height:28px;font-size:12px;" title="Excluir conversa" onclick="deleteActiveNoteConversation()">🗑</button>
-    </div>
-    ${conversations.length ? `<div style="display:flex; gap:5px; overflow-x:auto; margin-top:7px; padding-bottom:1px;">${conversations.sort((a,b)=>(b.favorite-a.favorite)||(b.updatedAt-a.updatedAt)).map(c=>`<button class="ghost-btn" style="white-space:nowrap; padding:5px 8px; font-size:10.5px; ${c.id===m.conversationId?'border-color:var(--accent); color:var(--accent);':''}" onclick="openSavedNoteConversation('${note.id}','${c.id}')">${c.favorite?'★ ':''}${escapeHtml(getConversationTitle(c))}</button>`).join('')}</div>` : `<div style="font-size:11px; color:var(--text-faint); margin-top:6px;">Nenhuma conversa encontrada.</div>`}
+  <div style="margin:0 0 8px;">
+    <button class="ghost-btn" style="width:100%; justify-content:space-between; padding:7px 9px; font-size:11.5px;" onclick="toggleNoteConversationLibrary()"><span>☰ Conversas</span><span style="color:var(--text-faint);">${allCount} ${m.conversationLibraryOpen?'⌃':'⌄'}</span></button>
+    ${m.conversationLibraryOpen ? `<div style="border:1px solid var(--border); border-top:0; border-radius:0 0 9px 9px; padding:8px;">
+      <div style="display:flex; gap:6px; align-items:center;">
+        <input type="text" placeholder="Buscar conversas..." value="${escapeHtml(m.conversationSearch||'')}" style="flex:1; min-width:0; padding:6px 8px; font-size:11.5px;" oninput="state.modal.conversationSearch=this.value; render();">
+        <button class="icon-btn" style="width:28px;height:28px;font-size:12px;" title="Transformar em nota" onclick="convertActiveNoteConversationToNote()">📄</button>
+        <button class="icon-btn" style="width:28px;height:28px;font-size:12px;" title="Excluir conversa" onclick="deleteActiveNoteConversation()">🗑</button>
+      </div>
+      ${conversations.length ? `<div style="display:flex; flex-direction:column; gap:5px; max-height:190px; overflow-y:auto; margin-top:7px;">${conversations.sort((a,b)=>(b.favorite-a.favorite)||(b.updatedAt-a.updatedAt)).map(c=>`<button class="ghost-btn" style="width:100%; min-width:0; justify-content:flex-start; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding:6px 8px; font-size:11px; ${c.id===m.conversationId?'border-color:var(--accent); color:var(--accent);':''}" onclick="openSavedNoteConversation('${note.id}','${c.id}')">${c.favorite?'★ ':''}${escapeHtml(getConversationTitle(c))}</button>`).join('')}</div>` : `<div style="font-size:11px; color:var(--text-faint); margin-top:6px;">Nenhuma conversa encontrada.</div>`}
+    </div>` : ''}
   </div>`;
 }
 function parseNoteAgentReply(rawReply){
@@ -7061,7 +7070,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.24.54</span>
+        <span class="brand-version">v2026.07.24.57</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -7119,7 +7128,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.54</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.57</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
@@ -8929,7 +8938,7 @@ function renderNoteChatModal(m, embedded){
         ${m.sending ? `<div class="loading-line" style="align-self:flex-start;"><div class="spinner"></div> Pensando...</div>` : ''}
       </div>
       <div style="display:flex; gap:8px; margin-top:8px;">
-        <textarea id="note-chat-input" rows="1" placeholder="Peça uma ação ou faça uma pergunta..." style="flex:1; resize:none;" onkeydown="if(event.key==='Enter' && !event.shiftKey){ event.preventDefault(); sendNoteChatMessage(); }" onkeyup="state.modal.input=this.value">${escapeHtml(m.input)}</textarea>
+        <textarea id="note-chat-input" rows="${embedded ? 4 : 3}" placeholder="Peça uma ação ou faça uma pergunta..." style="flex:1; resize:none; min-height:${embedded ? '92px' : '72px'};" onkeydown="if(event.key==='Enter' && !event.shiftKey){ event.preventDefault(); sendNoteChatMessage(); }" onkeyup="state.modal.input=this.value">${escapeHtml(m.input)}</textarea>
         <button class="primary-btn" onclick="sendNoteChatMessage()" ${m.sending?'disabled':''}>Enviar</button>
       </div>
       <div class="modal-actions">
