@@ -4039,12 +4039,11 @@ function normalizeNoteItem(n){
     parentId: n.parentId || null,
     format: type === 'folder' ? undefined : (n.format === 'plain' ? 'plain' : 'markdown'),
     linkedDeckId: type === 'folder' ? undefined : (n.linkedDeckId || null),
-    aiConversations: type === 'folder' ? undefined : (Array.isArray(n.aiConversations) ? n.aiConversations.slice(0,30) : []),
+    aiConversations: type === 'folder' ? undefined : (Array.isArray(n.aiConversations) ? n.aiConversations : []),
     createdAt: n.createdAt || Date.now(),
     updatedAt: n.updatedAt || Date.now()
   };
 }
-const NOTE_CONVERSATION_MESSAGE_LIMIT = 80;
 function getNoteConversations(note){
   if(!note) return [];
   if(!Array.isArray(note.aiConversations)) note.aiConversations = [];
@@ -4053,7 +4052,6 @@ function getNoteConversations(note){
 function createNoteConversation(note, type, data){
   const conversation = { id:uid(), type, title:(data && data.title) || (type==='chat' ? 'Nova conversa' : 'Sugestão de texto'), createdAt:Date.now(), updatedAt:Date.now(), favorite:false, messages:[], ...(data||{}) };
   getNoteConversations(note).unshift(conversation);
-  note.aiConversations = note.aiConversations.slice(0,30);
   saveData();
   return conversation;
 }
@@ -4062,7 +4060,6 @@ function saveNoteConversation(note, conversation){
   const list = getNoteConversations(note);
   const index = list.findIndex(c=>c.id===conversation.id);
   if(index < 0) return;
-  conversation.messages = (conversation.messages||[]).slice(-NOTE_CONVERSATION_MESSAGE_LIMIT);
   conversation.updatedAt = Date.now();
   list[index] = conversation;
   saveData();
@@ -5395,6 +5392,95 @@ function renderNoteConversationLibrary(m, type){
     ${conversations.length ? `<div style="display:flex; gap:5px; overflow-x:auto; margin-top:7px; padding-bottom:1px;">${conversations.sort((a,b)=>(b.favorite-a.favorite)||(b.updatedAt-a.updatedAt)).map(c=>`<button class="ghost-btn" style="white-space:nowrap; padding:5px 8px; font-size:10.5px; ${c.id===m.conversationId?'border-color:var(--accent); color:var(--accent);':''}" onclick="openSavedNoteConversation('${note.id}','${c.id}')">${c.favorite?'★ ':''}${escapeHtml(getConversationTitle(c))}</button>`).join('')}</div>` : `<div style="font-size:11px; color:var(--text-faint); margin-top:6px;">Nenhuma conversa encontrada.</div>`}
   </div>`;
 }
+function parseNoteAgentReply(rawReply){
+  const raw = String(rawReply||'').trim();
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = (fenced ? fenced[1] : raw).trim();
+  try{
+    const data = JSON.parse(candidate);
+    if(data && typeof data === 'object' && !Array.isArray(data)){
+      return { reply: String(data.reply || data.message || '').trim(), actions: Array.isArray(data.actions) ? data.actions : [] };
+    }
+  }catch(e){}
+  return { reply: raw, actions: [] };
+}
+function resolveNoteAgentParent(parentRef, currentNote, aliases){
+  if(!parentRef || parentRef === 'current_parent') return currentNote ? currentNote.parentId : null;
+  const key = String(parentRef).replace(/^folder:/, '');
+  if(aliases[key]) return aliases[key];
+  const folder = state.notesItems.find(item => item.type==='folder' && item.id===parentRef);
+  return folder ? folder.id : null;
+}
+function ensureAgentDeck(action, currentNote){
+  let deck = null;
+  if(action.deckRef === 'linked' && currentNote && currentNote.linkedDeckId) deck = state.decks.find(d=>d.id===currentNote.linkedDeckId);
+  if(!deck && action.deckName){
+    const wanted = String(action.deckName).trim().toLowerCase();
+    deck = state.decks.find(d=>String(d.name||'').trim().toLowerCase()===wanted);
+  }
+  if(!deck){
+    const name = String(action.deckName||'Flashcards da nota').trim().slice(0,100) || 'Flashcards da nota';
+    deck = { id:uid(), name, color:DECK_COLORS[state.decks.length % DECK_COLORS.length], type:'standard', aiEnabled:true, sentenceDifficulty:'intermediate' };
+    state.decks.push(deck);
+    state.cards[deck.id] = [];
+  }
+  if(currentNote && !currentNote.linkedDeckId) currentNote.linkedDeckId = deck.id;
+  return deck;
+}
+async function executeNoteAgentActions(actions, currentNote){
+  const results = [];
+  const aliases = {};
+  for(const action of (actions||[])){
+    if(!action || typeof action !== 'object') continue;
+    if(action.type === 'create_folder'){
+      const name = String(action.name||'').trim().slice(0,120);
+      if(!name) continue;
+      const folder = makeNoteItem('folder', name, resolveNoteAgentParent(action.parentRef, currentNote, aliases));
+      state.notesItems.push(folder);
+      if(action.alias) aliases[String(action.alias)] = folder.id;
+      results.push(`Pasta criada: ${folder.name}`);
+    }else if(action.type === 'create_note'){
+      const name = String(action.title||action.name||'').trim().slice(0,120) || 'Nova nota';
+      const newNote = makeNoteItem('note', name, resolveNoteAgentParent(action.parentRef, currentNote, aliases), action.format);
+      noteContentCache[newNote.id] = String(action.content||'');
+      state.notesItems.push(newNote);
+      await saveNoteContentToR2(newNote.id, noteContentCache[newNote.id]);
+      results.push(`Nota criada: ${newNote.name}`);
+    }else if(action.type === 'edit_note'){
+      // Por design, o agente pode editar toda a nota aberta sem pedir uma
+      // confirmação extra; a alteração entra no histórico de desfazer/refazer.
+      const target = action.noteRef === 'current' || !action.noteRef ? currentNote : state.notesItems.find(n=>n.id===action.noteRef && n.type==='note');
+      if(!target) continue;
+      const before = getNoteContent(target.id);
+      let updated = before;
+      const mode = action.mode || 'replace';
+      if(mode === 'append') updated = before + (before && action.content ? '\n\n' : '') + String(action.content||'');
+      else if(mode === 'prepend') updated = String(action.content||'') + (before && action.content ? '\n\n' : '') + before;
+      else if(mode === 'replace_text' || mode === 'replace_all'){
+        const find = String(action.find||'');
+        if(!find || !before.includes(find)){ results.push(`Não encontrei o trecho para alterar em ${target.name}.`); continue; }
+        const replacement = String(action.replace||action.content||'');
+        updated = mode === 'replace_all' ? before.split(find).join(replacement) : before.replace(find, replacement);
+      }else updated = String(action.content||'');
+      if(updated === before){ results.push(`A nota ${target.name} já estava assim.`); continue; }
+      saveNoteContentUpdate(target, updated);
+      results.push(`Nota editada: ${target.name}`);
+    }else if(action.type === 'create_flashcards'){
+      const cards = Array.isArray(action.cards) ? action.cards : [];
+      const validCards = cards.filter(card => card && String(card.front||'').trim() && String(card.back||'').trim());
+      if(!validCards.length) continue;
+      const deck = ensureAgentDeck(action, currentNote);
+      validCards.forEach(data => {
+        const card = makeCard(String(data.front), String(data.back));
+        card.note = String(data.note||'').trim();
+        state.cards[deck.id].push(card);
+      });
+      results.push(`${validCards.length} flashcard${validCards.length===1?'':'s'} criado${validCards.length===1?'':'s'} em ${deck.name}`);
+    }
+  }
+  if(results.length) saveData();
+  return results;
+}
 async function sendNoteChatMessage(){
   const m = state.modal;
   if(!m || m.type !== 'note-chat') return;
@@ -5411,13 +5497,16 @@ async function sendNoteChatMessage(){
 
   const history = m.messages.slice(0,-1).map(msg => `${msg.role==='user'?'Usuário':'Assistente'}: ${msg.text}`).join('\n');
   const noteContent = note ? getNoteContent(note.id) : '';
-  const prompt = `Você é um assistente dentro de um caderno de notas pessoal. O usuário está com a nota abaixo aberta (em markdown) — use-a como contexto quando a pergunta se relacionar a ela, mas também pode responder perguntas totalmente gerais, sem relação com a nota.\n\n--- NOTA "${note ? note.name : ''}" ---\n${noteContent || '(nota vazia)'}\n--- FIM DA NOTA ---\n\n${history ? `Conversa até agora:\n${history}\n\n` : ''}Usuário: ${question}\n\nResponda de forma direta e natural, como numa conversa de chat. Não repita a pergunta antes de responder.`;
+  const workspace = state.notesItems.map(item => `${item.type==='folder'?'Pasta':'Nota'}: ${item.name}`).join('\n') || '(vazio)';
+  const decks = state.decks.map(deck => deck.name).join(', ') || '(nenhum)';
+  const prompt = `Você é o agente de IA de um caderno pessoal. Você conversa normalmente e pode executar ações dentro do aplicativo quando o usuário pedir explicitamente. A nota aberta pode ser editada por inteiro ou em partes, sem confirmação adicional. Não invente que fez uma ação: use apenas o formato abaixo para fazê-la.\n\nNOTA ABERTA: "${note ? note.name : ''}"\nCONTEÚDO DA NOTA (preserve o formato ao editar):\n---\n${noteContent || '(nota vazia)'}\n---\n\nITENS DO CADERNO:\n${workspace}\n\nBARALHOS DISPONÍVEIS: ${decks}\n\nAções permitidas: create_folder {type,name,parentRef?,alias?}; create_note {type,title,content,parentRef?,format?}; edit_note {type,noteRef:'current',mode:'replace'|'append'|'prepend'|'replace_text'|'replace_all',content?,find?,replace?}; create_flashcards {type,deckRef:'linked'?,deckName?,cards:[{front,back,note?}]}. Para criar uma pasta e colocar notas nela, dê um alias à pasta e use o mesmo valor em parentRef. Só inclua ações solicitadas pelo usuário.\n\nResponda EXCLUSIVAMENTE com JSON válido, sem markdown: {"reply":"resposta curta e natural em português","actions":[...]}. Se não houver ação, use actions vazio.\n\n${history ? `Conversa até agora:\n${history}\n\n` : ''}Usuário: ${question}`;
 
   try{
-    const reply = (await callGemini(prompt, { maxTokens: 700 })).trim();
-    m.messages.push({ role:'assistant', text: reply });
+    const agentResponse = parseNoteAgentReply(await callGemini(prompt, { maxTokens: 1800 }));
+    const executed = await executeNoteAgentActions(agentResponse.actions, note);
+    m.messages.push({ role:'assistant', text:agentResponse.reply || (executed.length ? 'Pronto.' : 'Não consegui montar uma resposta.'), actions:executed });
   }catch(err){
-    console.error('Falha no chat da nota', err);
+    console.error('Falha no agente da nota', err);
     m.messages.push({ role:'assistant', text: friendlyAiErrorMsg(err), error:true });
   }
   if(conversation){ conversation.messages = m.messages; conversation.title = getConversationTitle(conversation); saveNoteConversation(note, conversation); }
@@ -7625,17 +7714,18 @@ function renderNoteChatModal(m){
   return `
   <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
     <div class="modal" style="width:520px; max-height:80vh; display:flex; flex-direction:column;">
-      <h3>💬 Conversar sobre "${escapeHtml(note ? note.name : '')}"</h3>
+      <h3>✨ Agente da nota — "${escapeHtml(note ? note.name : '')}"</h3>
+      <p style="font-size:11.5px; color:var(--text-faint); margin:-4px 0 9px;">Pode criar notas, pastas e flashcards, além de editar livremente esta nota. Toda edição pode ser desfeita no editor.</p>
       ${renderNoteConversationLibrary(m, 'chat')}
       <div class="note-chat-messages" style="flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:10px; padding:6px 2px; min-height:200px; max-height:50vh;">
-        ${m.messages.length === 0 ? `<p style="color:var(--text-faint); font-size:12.5px; text-align:center; margin-top:20px;">Pergunte qualquer coisa — a IA já sabe o que está escrito nessa nota.</p>` : ''}
+        ${m.messages.length === 0 ? `<p style="color:var(--text-faint); font-size:12.5px; text-align:center; margin-top:20px;">Peça algo como “resuma esta conversa em uma nova nota”, “crie flashcards deste texto” ou “reescreva a introdução”.</p>` : ''}
         ${m.messages.map(msg => `
-        <div style="align-self:${msg.role==='user'?'flex-end':'flex-start'}; max-width:85%; background:${msg.role==='user'?'var(--accent-soft)':'var(--surface-2)'}; color:${msg.error?'var(--error)':'var(--text)'}; border-radius:12px; padding:9px 13px; font-size:13.5px; line-height:1.5; white-space:pre-wrap;">${escapeHtml(msg.text)}</div>
+        <div style="align-self:${msg.role==='user'?'flex-end':'flex-start'}; max-width:85%; background:${msg.role==='user'?'var(--accent-soft)':'var(--surface-2)'}; color:${msg.error?'var(--error)':'var(--text)'}; border-radius:12px; padding:9px 13px; font-size:13.5px; line-height:1.5; white-space:pre-wrap;">${escapeHtml(msg.text)}${msg.actions&&msg.actions.length ? `<div style="margin-top:8px; padding-top:7px; border-top:1px solid var(--border); font-size:11.5px; color:var(--text-muted); white-space:normal;">${msg.actions.map(action=>`✓ ${escapeHtml(action)}`).join('<br>')}</div>` : ''}</div>
         `).join('')}
         ${m.sending ? `<div class="loading-line" style="align-self:flex-start;"><div class="spinner"></div> Pensando...</div>` : ''}
       </div>
       <div style="display:flex; gap:8px; margin-top:8px;">
-        <textarea id="note-chat-input" rows="1" placeholder="Pergunte alguma coisa..." style="flex:1; resize:none;" onkeydown="if(event.key==='Enter' && !event.shiftKey){ event.preventDefault(); sendNoteChatMessage(); }" onkeyup="state.modal.input=this.value">${escapeHtml(m.input)}</textarea>
+        <textarea id="note-chat-input" rows="1" placeholder="Peça uma ação ou faça uma pergunta..." style="flex:1; resize:none;" onkeydown="if(event.key==='Enter' && !event.shiftKey){ event.preventDefault(); sendNoteChatMessage(); }" onkeyup="state.modal.input=this.value">${escapeHtml(m.input)}</textarea>
         <button class="primary-btn" onclick="sendNoteChatMessage()" ${m.sending?'disabled':''}>Enviar</button>
       </div>
       <div class="modal-actions">
