@@ -4529,7 +4529,10 @@ function splitNoteHtmlByRenderedHeight(content, contentWidth, contentHeight){
     // garante que recuar até esse espaço continua cabendo.
     if(best<total){
       let wordBreak=best;
-      while(wordBreak>start && best-wordBreak<80 && !/\s/.test(plainText.charAt(wordBreak-1))) wordBreak--;
+      // Linhas vazias usam U+200B como marcador interno e são pontos ideais
+      // para a quebra. Ignorá-las fazia o algoritmo recuar até a palavra
+      // anterior e deixar um grande vazio, especialmente em A4 e A3.
+      while(wordBreak>start && best-wordBreak<80 && !/[\s\u200b]/.test(plainText.charAt(wordBreak-1))) wordBreak--;
       if(wordBreak>start && fits(htmlBetween(start,wordBreak))) best=wordBreak;
     }
     pages.push(htmlBetween(start,best));
@@ -6502,7 +6505,7 @@ function renderSidebar(){
       <div>
         <h1>Recall</h1>
         <span>REPETIÇÃO ESPAÇADA</span>
-        <span class="brand-version">v2026.07.24.21</span>
+        <span class="brand-version">v2026.07.24.22</span>
       </div>
     </div>
     <button class="ghost-btn" style="font-size:13px; padding:10px 12px; margin-bottom:6px; ${(state.view==='library'||state.view==='book') ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="openLibrary()">📚 Leituras</button>
