@@ -369,7 +369,7 @@
   .notes-plain-editor{ width:100%; height:100%; outline:none; cursor:text; }
   .notes-editor-panes.page-view{ padding:24px; background:var(--bg-2); }
   .notes-editor-panes.page-view .notes-plain-editor{ width:min(100%, 794px); min-height:1123px; height:auto; margin:0 auto; padding:72px 76px; background:var(--surface); border:1px solid var(--border); border-radius:2px; box-shadow:0 8px 30px rgba(0,0,0,.18); }
-  .notes-paged-preview{ display:flex; flex-direction:column; gap:22px; align-items:center; width:100%; overflow-x:auto; }
+  .notes-paged-preview{ display:flex; flex-direction:column; gap:14px; align-items:center; width:100%; overflow-x:auto; }
   .note-page-frame{ position:relative; flex:none; }
   .note-page-sheet{ position:absolute; inset:0 auto auto 0; box-sizing:border-box; transform-origin:top left; background:var(--surface); border:1px solid var(--border); box-shadow:0 8px 30px rgba(0,0,0,.18); overflow:hidden; line-height:1.7; font-size:14.5px; }
   .note-page-sheet-content{ overflow:hidden; white-space:pre-wrap; overflow-wrap:anywhere; word-break:normal; }
@@ -4456,6 +4456,22 @@ function splitNoteHtmlByRenderedHeight(content, contentWidth, contentHeight){
   const source=document.createElement('div');
   source.innerHTML=content||'';
 
+  // No editor, todas as linhas vazias continuam intactas. Na visualização
+  // paginada, sequências muito longas são limitadas a duas linhas para não
+  // criar páginas quase vazias quando o formato muda entre 15×21, A4 e A3.
+  const isBlankBlock=el=>el && el.nodeType===1 && /^(DIV|P)$/i.test(el.tagName) && !(el.textContent||'').trim() && !el.querySelector('img,video,iframe,hr');
+  const collapseBlankRuns=parent=>{
+    let run=0;
+    Array.from(parent.children).forEach(child=>{
+      if(isBlankBlock(child)){
+        run++;
+        if(run>2){ child.remove(); return; }
+      }else run=0;
+      collapseBlankRuns(child);
+    });
+  };
+  collapseBlankRuns(source);
+
   // Uma linha vazia também ocupa espaço. O caractere invisível faz com que
   // Range consiga incluí-la na página correta sem alterar sua aparência.
   source.querySelectorAll('div,p').forEach(el=>{
@@ -6505,7 +6521,7 @@ function renderSidebar(){
       <div>
         <h1>Recall</h1>
         <span>REPETIÇÃO ESPAÇADA</span>
-        <span class="brand-version">v2026.07.24.22</span>
+        <span class="brand-version">v2026.07.24.23</span>
       </div>
     </div>
     <button class="ghost-btn" style="font-size:13px; padding:10px 12px; margin-bottom:6px; ${(state.view==='library'||state.view==='book') ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="openLibrary()">📚 Leituras</button>
