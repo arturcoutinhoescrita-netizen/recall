@@ -139,6 +139,15 @@
     padding:2px 7px; border-radius:20px; font-family:ui-monospace,'SF Mono','Cascadia Code','Roboto Mono',Consolas,'Courier New',monospace;
   }
   .sidebar-foot{ font-size:11px; color:var(--text-faint); padding:0 2px; line-height:1.5; }
+  .sidebar-edge-trigger, .sidebar-focus-toggle{ display:none; }
+
+  @media (min-width:821px){
+    #app.sidebar-auto-hide .sidebar{ margin-left:-280px; transition:margin-left .2s ease .28s; position:relative; z-index:110; box-shadow:8px 0 20px rgba(0,0,0,0); }
+    #app.sidebar-auto-hide .sidebar-edge-trigger{ display:block; position:fixed; z-index:111; left:0; top:0; bottom:0; width:12px; background:transparent; }
+    #app.sidebar-auto-hide .sidebar-edge-trigger:hover + .sidebar,
+    #app.sidebar-auto-hide .sidebar:hover{ margin-left:0; transition-delay:0s; box-shadow:8px 0 20px rgba(0,0,0,.16); }
+    .sidebar-focus-toggle{ display:flex; align-items:center; justify-content:center; width:100%; font-size:11px; padding:7px 9px; }
+  }
 
   /* ---------- Main ---------- */
   .main{ flex:1; padding:40px 48px; overflow-y:auto; }
@@ -609,7 +618,8 @@ let state = {
   currentNoteId: null,
   notesCollapsedFolders: [], // ids de pastas fechadas no explorer (só estado de UI)
   notesEditorMode: 'split', // 'source' | 'split' | 'preview'
-  notesPageView: false
+  notesPageView: false,
+  sidebarAutoHide: false
 };
 
 function uid(){ return Math.random().toString(36).slice(2,10); }
@@ -668,6 +678,7 @@ async function loadData(){
           state.activities = Array.isArray(d.activities) ? d.activities : [];
           state.books = (d.books || []).map(normalizeBook);
           state.notesItems = (d.notesItems || []).map(normalizeNoteItem);
+          state.sidebarAutoHide = !!d.sidebarAutoHide;
           migrateLegacyInlineNoteContent(d.notesItems);
           if(d.geminiApiKey) setApiKey(d.geminiApiKey);
           if(d.geminiApiKey2) setApiKey2(d.geminiApiKey2);
@@ -683,6 +694,7 @@ async function loadData(){
           state.activities = Array.isArray(d.activities) ? d.activities : [];
           state.books = (d.books || []).map(normalizeBook);
           state.notesItems = (d.notesItems || []).map(normalizeNoteItem);
+          state.sidebarAutoHide = !!d.sidebarAutoHide;
           migrateLegacyInlineNoteContent(d.notesItems);
           // sincroniza a chave do Gemini entre aparelhos logados na mesma conta —
           // assim não precisa configurar de novo em cada navegador/celular.
@@ -704,7 +716,7 @@ async function loadData(){
 // antigo termine depois e sobrescreva uma criação mais nova no armazenamento.
 let dataSaveQueue = Promise.resolve();
 function saveData(){
-  const payload = JSON.parse(JSON.stringify({decks: state.decks, cards: state.cards, stats: state.stats, activities: state.activities, books: state.books, notesItems: state.notesItems, geminiApiKey: getApiKey(), geminiApiKey2: getApiKey2(), booksApiKey: getBooksApiKey()}));
+  const payload = JSON.parse(JSON.stringify({decks: state.decks, cards: state.cards, stats: state.stats, activities: state.activities, books: state.books, notesItems: state.notesItems, sidebarAutoHide: state.sidebarAutoHide, geminiApiKey: getApiKey(), geminiApiKey2: getApiKey2(), booksApiKey: getBooksApiKey()}));
   const persist = async () => {
     for(let attempt=0; attempt<2; attempt++){
       try{
@@ -4204,6 +4216,12 @@ document.addEventListener('keydown', e => {
     else if(state.modal.type==='quick-command') focusQuickCommandInput();
   }
 });
+document.addEventListener('keydown', e => {
+  if((e.ctrlKey || e.metaKey) && e.key==='\\'){
+    e.preventDefault();
+    toggleSidebarAutoHide();
+  }
+});
 function confirmCreateNoteItem(){
   const m = state.modal;
   const name = (m.name||'').trim();
@@ -6832,7 +6850,7 @@ function render(){
   }
   // no mobile, alterna entre a "etapa" da lista de baralhos e a do baralho aberto;
   // no desktop essa classe não tem efeito nenhum (barra lateral fica sempre visível).
-  app.className = state.view === 'home' ? 'step-home' : 'step-detail';
+  app.className = `${state.view === 'home' ? 'step-home' : 'step-detail'}${state.sidebarAutoHide ? ' sidebar-auto-hide' : ''}`;
   app.innerHTML = `
     ${renderSidebar()}
     <div class="main">${renderMain()}</div>
@@ -6896,15 +6914,17 @@ function focusStudyInput(){
 
 function renderSidebar(){
   return `
+  <div class="sidebar-edge-trigger" aria-hidden="true"></div>
   <div class="sidebar">
     <div class="brand">
       <div class="brand-mark">R</div>
       <div>
         <h1>Recall</h1>
         <span>REPETIÇÃO ESPAÇADA</span>
-        <span class="brand-version">v2026.07.24.39</span>
+        <span class="brand-version">v2026.07.24.40</span>
       </div>
     </div>
+    <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
     <button class="ghost-btn" style="font-size:13px; padding:10px 12px; margin-bottom:6px; ${(state.view==='library'||state.view==='book') ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" style="font-size:13px; padding:10px 12px; margin-bottom:6px; ${state.view==='notes' ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="openNotes()">📓 Notas</button>
     <button class="ghost-btn" style="font-size:13px; padding:10px 12px; margin-bottom:6px; ${state.view==='agenda' ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="openAgenda()">🗓️ Agenda</button>
@@ -6941,6 +6961,12 @@ function renderSidebar(){
       <br><a href="#" style="color:var(--text-muted); text-decoration:underline;" onclick="event.preventDefault(); toggleTheme();">${getTheme()==='light' ? '🌙 Usar tema escuro' : '☀️ Usar tema claro'}</a>
     </div>
   </div>`;
+}
+function toggleSidebarAutoHide(){
+  if(window.matchMedia('(max-width:820px)').matches) return;
+  state.sidebarAutoHide=!state.sidebarAutoHide;
+  saveData();
+  render();
 }
 
 function selectDeck(id){
