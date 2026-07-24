@@ -95,6 +95,10 @@
   @media (min-width:821px){
     #app > .sidebar, #app > .sidebar-edge-trigger{ display:none; }
     .desktop-top-nav{ display:flex; align-items:center; gap:5px; align-self:flex-start; margin:16px 32px 0; padding:5px; border:1px solid var(--border); border-radius:12px; background:var(--surface); box-shadow:0 5px 18px rgba(0,0,0,.08); }
+    .desktop-top-brand{ display:flex; align-items:center; gap:7px; padding:3px 9px 3px 3px; margin-right:3px; border-right:1px solid var(--border); color:var(--text); text-align:left; }
+    .desktop-top-brand .brand-mark{ width:30px; height:30px; border-radius:8px; }
+    .desktop-top-brand strong{ display:block; font-size:12px; line-height:1.1; }
+    .desktop-top-brand small{ display:block; color:var(--text-faint); font-size:9px; letter-spacing:.06em; text-transform:uppercase; margin-top:2px; }
     .desktop-top-nav button{ padding:8px 12px; font-size:12.5px; }
     .desktop-top-nav button.active{ color:var(--accent); border-color:var(--accent-dim); background:var(--accent-soft); }
     .desktop-content{ flex:1; min-height:0; display:flex; }
@@ -470,6 +474,9 @@
     .sidebar{ width:100%; flex-direction:column; padding:18px 16px; gap:16px; }
     .desktop-sidebar-content{ display:none; }
     .mobile-sidebar-content{ display:flex; flex:1; min-height:0; flex-direction:column; gap:10px; }
+    .mobile-sidebar-content > .brand{ padding:8px 4px 14px; gap:13px; }
+    .mobile-sidebar-content > .brand .brand-mark{ width:58px; height:58px; border-radius:16px; }
+    .mobile-sidebar-content > .brand h1{ font-size:25px; }
     .mobile-home-nav{ display:flex; flex-direction:column; gap:8px; }
     .mobile-nav-button{ width:100%; display:flex; align-items:center; gap:11px; padding:14px 15px; text-align:left; font-size:15px; }
     .mobile-nav-button.active{ color:var(--accent); border-color:var(--accent-dim); background:var(--accent-soft); }
@@ -1497,12 +1504,16 @@ async function saveToFileSystem(){
     if(!state.fileHandle){
       state.fileHandle = await window.showSaveFilePicker({
         suggestedName: 'recall-backup.json',
-        types: [{ description: 'Backup do Recall', accept: {'application/json': ['.json']} }]
+        types: [{ description: 'Backup do Letther B', accept: {'application/json': ['.json']} }]
       });
       storeFileHandle(state.fileHandle);
     }
     const payload = JSON.stringify({ decks: state.decks, cards: state.cards, stats: state.stats }, null, 2);
     const writable = await state.fileHandle.createWritable();
+    await writable.write(payload);
+    await writable.close();
+    showToast('Salvo no arquivo. As próximas mudanças sincronizam automaticamente nele, inclusive se você recarregar a página.');
+  teWritable();
     await writable.write(payload);
     await writable.close();
     showToast('Salvo no arquivo. As próximas mudanças sincronizam automaticamente nele, inclusive se você recarregar a página.');
@@ -1517,13 +1528,13 @@ async function saveToFileSystem(){
 async function openFromFileSystem(){
   try{
     const [handle] = await window.showOpenFilePicker({
-      types: [{ description: 'Backup do Recall', accept: {'application/json': ['.json']} }],
+      types: [{ description: 'Backup do Letther B', accept: {'application/json': ['.json']} }],
       multiple: false
     });
     const file = await handle.getFile();
     const text = await file.text();
     const data = JSON.parse(text);
-    if(!data || !Array.isArray(data.decks)){ showToast('Esse arquivo não parece ser um backup do Recall.', 'error'); return; }
+    if(!data || !Array.isArray(data.decks)){ showToast('Esse arquivo não parece ser um backup do Letther B.', 'error'); return; }
     state.fileHandle = handle;
     storeFileHandle(handle);
     replaceAllData(data);
@@ -1583,7 +1594,7 @@ function triggerImportBackup(){
     reader.onload = () => {
       try{
         const data = JSON.parse(String(reader.result));
-        if(!data.decks || !data.cards){ showToast('Esse arquivo não parece ser um backup do Recall.', 'error'); return; }
+        if(!data.decks || !data.cards){ showToast('Esse arquivo não parece ser um backup do Letther B.', 'error'); return; }
         importFullBackup(data);
         showToast('Backup importado com sucesso!');
       }catch(err){ console.error(err); showToast('Não foi possível ler esse arquivo de backup.', 'error'); }
@@ -6981,10 +6992,12 @@ function openDesktopDecks(){
 function renderDesktopTopNav(){
   const deckActive=state.view==='home'||state.view==='deck'||state.view==='study';
   return `<nav class="desktop-top-nav" aria-label="Navegação principal">
+    <button class="desktop-top-brand" title="Baralhos" onclick="openDesktopDecks()"><span class="brand-mark"></span><span><strong>Letther B</strong><small>let it be</small></span></button>
     <button class="ghost-btn ${deckActive?'active':''}" onclick="openDesktopDecks()">🗂️ Baralhos</button>
     <button class="ghost-btn ${state.view==='notes'?'active':''}" onclick="openNotes()">📓 Notas</button>
     <button class="ghost-btn ${state.view==='agenda'?'active':''}" onclick="openAgenda()">🗓️ Agenda</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
+    <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -7007,7 +7020,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.24.44</span>
+        <span class="brand-version">v2026.07.24.45</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -7065,13 +7078,14 @@ function renderMobileSidebar(){
   const section=state.mobileHomeSection||null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.44</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.45</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${section==='decks' ? `<div class="mobile-deck-actions"><button class="icon-btn" title="Novo baralho" onclick="openNewDeckModal()">＋</button><button class="icon-btn" title="Tirar foto para criar cartões" onclick="openPhotoImportPicker(true)">📷</button><button class="icon-btn" title="Carregar imagem para criar cartões" onclick="openPhotoImportPicker(false)">🖼️</button></div><div class="mobile-deck-list">${getOrderedDecks().length ? getOrderedDecks().map(d=>{ const due=getDueCards(d.id).length; return `<div class="mobile-deck-card" onclick="selectDeck('${d.id}')"><span class="deck-dot" style="background:${d.color}"></span><span class="deck-item-name">${escapeHtml(d.name)}</span>${due?`<span class="due-badge">${due}</span>`:''}<button class="mobile-deck-star ${d.favorite?'active':''}" title="Favoritar" onclick="event.stopPropagation(); toggleDeckFavorite('${d.id}')">${d.favorite?'★':'☆'}</button></div>`; }).join('') : `<p style="font-size:12px; color:var(--text-faint); text-align:center;">Crie seu primeiro baralho.</p>`}</div>`:''}
       ${nav('library','Leituras','📚')}
       ${nav('notes','Notas','📓')}
       ${nav('agenda','Agenda','🗓️')}
+      <button class="ghost-btn mobile-nav-button" onclick="openAppOptionsModal()"><span style="font-size:20px;">⚙️</span>Opções</button>
     </div>
   </div>`;
 }
@@ -7105,9 +7119,9 @@ function renderMain(){
   if(state.view === 'home' || !state.currentDeckId){
     return `
     <div class="empty-state">
-      <div style="font-size:40px;">🕯️</div>
-      <h2>Sua mesa de estudos</h2>
-      <p>Crie um baralho na barra lateral, adicione perguntas e respostas, e comece a estudar com repetição espaçada. Seu progresso fica salvo automaticamente.</p>
+      <div class="brand-mark" style="width:92px; height:92px; border-radius:25px;"></div>
+      <h2 class="app-home-title">Letther B</h2>
+      <p>Let it be. Crie um baralho, adicione perguntas e respostas e estude no seu ritmo. Seu progresso fica salvo automaticamente.</p>
       ${(state.stats && state.stats.totalPoints > 0) ? `<div style="margin-top:18px; font-size:14px; color:var(--success); font-weight:600;">🏆 ${state.stats.totalPoints} pontos acumulados no total</div>` : ''}
     </div>`;
   }
@@ -8522,10 +8536,27 @@ function backToDeck(){
 /* ============ MODALS ============ */
 function openNewDeckModal(){ state.modal = { type:'new-deck', name:'', color: DECK_COLORS[state.decks.length % DECK_COLORS.length], deckType:'standard' }; render(); }
 function openApiKeyModal(){ state.modal = { type:'api-key', key: getApiKey(), key2: getApiKey2(), booksKey: getBooksApiKey() }; render(); }
+function openAppOptionsModal(){ state.modal={type:'app-options'}; render(); }
 function closeModal(){ state.modal = null; render(); }
+function renderAppOptionsModal(){
+  return `<div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal" style="width:420px;">
+    <h3>Opções do Letther B</h3>
+    <p style="margin:0 0 14px; font-size:12px; color:var(--text-faint);">Backup, aparência e conexões da sua conta.</p>
+    <div style="display:flex; flex-direction:column; gap:8px;">
+      <button class="ghost-btn" onclick="exportAllBackup(); closeModal();">⇩ Exportar backup completo</button>
+      <button class="ghost-btn" onclick="triggerImportBackup(); closeModal();">⇧ Importar backup</button>
+      ${(!hasClaudeStorage() && hasFileSystemAccess()) ? `<button class="ghost-btn" onclick="saveToFileSystem(); closeModal();">💾 ${state.fileHandle?'Sincronizar arquivo local':'Salvar em arquivo local'}</button><button class="ghost-btn" onclick="openFromFileSystem(); closeModal();">📂 Abrir arquivo local</button>` : ''}
+      <button class="ghost-btn" onclick="openApiKeyModal()">🔑 ${getApiKey()?'Gerenciar chaves de API':'Configurar chaves de API'}</button>
+      <button class="ghost-btn" onclick="toggleTheme(); closeModal();">${getTheme()==='light'?'🌙 Usar tema escuro':'☀️ Usar tema claro'}</button>
+      ${hasFirebaseUser() ? `<button class="ghost-btn" style="color:var(--error);" onclick="signOutUser(); closeModal();">Sair da conta</button>` : ''}
+    </div>
+    <div class="modal-actions"><button class="ghost-btn" onclick="closeModal()">Fechar</button></div>
+  </div></div>`;
+}
 function renderModal(){
   const m = state.modal;
   if(m.type === 'api-key') return renderApiKeyModal(m);
+  if(m.type === 'app-options') return renderAppOptionsModal();
   if(m.type === 'photo-crop') return renderPhotoCropModal(m);
   if(m.type === 'photo-import') return renderPhotoImportModal(m);
   if(m.type === 'add-book') return renderAddBookModal(m);
@@ -9588,14 +9619,4 @@ if(hasClaudeStorage()){
   loadData();
   tryReconnectFileHandle();
 } else {
-  initFirebase();
-}
-
-if('serviceWorker' in navigator){
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('sw.js').catch(e => console.error('Falha ao registrar o service worker', e));
-  });
-}
-</script>
-</body>
-</html>
+  initFire
