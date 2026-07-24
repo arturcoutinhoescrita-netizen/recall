@@ -7,9 +7,9 @@
 <meta name="description" content="Letther B — seu espaço para escrever, estudar e deixar ser.">
 <meta name="theme-color" content="#14162B" id="theme-color-meta">
 <link rel="manifest" href="manifest.json">
-<link rel="icon" type="image/png" sizes="32x32" href="assets/letther-b-icon-32.png">
-<link rel="icon" type="image/png" sizes="512x512" href="assets/letther-b-icon-512.png">
-<link rel="apple-touch-icon" sizes="180x180" href="assets/letther-b-icon-180.png">
+<link rel="icon" type="image/png" sizes="32x32" href="assets/letther-b-icon-contrast-32.png">
+<link rel="icon" type="image/png" sizes="512x512" href="assets/letther-b-icon-contrast-512.png">
+<link rel="apple-touch-icon" sizes="180x180" href="assets/letther-b-icon-contrast-180.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" id="status-bar-style-meta">
 <meta name="apple-mobile-web-app-title" content="Letther B">
@@ -94,15 +94,15 @@
 
   @media (min-width:821px){
     #app > .sidebar, #app > .sidebar-edge-trigger{ display:none; }
-    .desktop-top-nav{ display:flex; align-items:center; gap:5px; align-self:center; margin:16px 0 0; padding:5px; border:1px solid var(--border); border-radius:12px; background:var(--surface); box-shadow:0 5px 18px rgba(0,0,0,.08); }
-    .desktop-top-brand{ display:flex; align-items:center; gap:7px; padding:3px 12px 3px 3px; margin-right:3px; border:0; border-right:1px solid var(--border); border-radius:0; background:transparent; color:var(--text); text-align:left; box-shadow:none; }
+    .desktop-top-nav{ display:flex; align-items:center; gap:3px; align-self:center; margin:6px 0 0; padding:3px; border:1px solid var(--border); border-radius:10px; background:color-mix(in srgb,var(--surface) 92%,transparent); box-shadow:0 3px 12px rgba(0,0,0,.05); }
+    .desktop-top-brand{ display:flex; align-items:center; gap:5px; padding:2px 9px 2px 2px; margin-right:2px; border:0; border-right:1px solid var(--border); border-radius:0; background:transparent; color:var(--text); text-align:left; box-shadow:none; }
     .desktop-top-brand:hover{ background:transparent; filter:none; transform:none; }
     .desktop-top-brand:focus{ outline:none; }
     .desktop-top-brand:focus-visible{ outline:2px solid var(--accent-dim); outline-offset:3px; border-radius:8px; }
-    .desktop-top-brand .brand-mark{ width:30px; height:30px; border-radius:8px; }
-    .desktop-top-brand strong{ display:block; font-size:12px; line-height:1.1; }
-    .desktop-top-brand small{ display:block; color:var(--text-faint); font-size:9px; letter-spacing:.06em; text-transform:uppercase; margin-top:2px; }
-    .desktop-top-nav button{ padding:8px 12px; font-size:12.5px; }
+    .desktop-top-brand .brand-mark{ width:24px; height:24px; border-radius:7px; }
+    .desktop-top-brand strong{ display:block; font-size:11px; line-height:1; }
+    .desktop-top-brand small{ display:block; color:var(--text-faint); font-size:8px; letter-spacing:.05em; text-transform:uppercase; margin-top:1px; }
+    .desktop-top-nav button{ padding:6px 9px; font-size:11.5px; }
     .desktop-top-nav button.active{ color:var(--accent); border-color:var(--accent-dim); background:var(--accent-soft); }
     .desktop-content{ flex:1; min-height:0; display:flex; }
     .desktop-deck-explorer{ display:flex; flex-direction:column; width:260px; flex-shrink:0; margin:16px 0 16px 32px; padding:12px; gap:8px; border:1px solid var(--border); border-radius:14px; background:var(--bg-2); overflow-y:auto; }
@@ -130,7 +130,7 @@
   .brand{ display:flex; align-items:center; gap:10px; padding:0 2px; }
   .brand-mark{
     width:34px; height:34px; border-radius:9px;
-    background:url('assets/letther-b-icon-512.png') center/cover no-repeat;
+    background:url('assets/letther-b-icon-contrast-512.png') center/cover no-repeat;
     display:flex; align-items:center; justify-content:center;
     font-size:0; box-shadow:0 3px 12px rgba(74,53,37,.16);
   }
@@ -7039,7 +7039,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.24.48</span>
+        <span class="brand-version">v2026.07.24.50</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -7097,7 +7097,7 @@ function renderMobileSidebar(){
   const section=state.mobileHomeSection||null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.48</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.50</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${section==='decks' ? `<div class="mobile-deck-actions"><button class="icon-btn" title="Novo baralho" onclick="openNewDeckModal()">＋</button><button class="icon-btn" title="Tirar foto para criar cartões" onclick="openPhotoImportPicker(true)">📷</button><button class="icon-btn" title="Carregar imagem para criar cartões" onclick="openPhotoImportPicker(false)">🖼️</button></div><div class="mobile-deck-list">${getOrderedDecks().length ? getOrderedDecks().map(d=>{ const due=getDueCards(d.id).length; return `<div class="mobile-deck-card" onclick="selectDeck('${d.id}')"><span class="deck-dot" style="background:${d.color}"></span><span class="deck-item-name">${escapeHtml(d.name)}</span>${due?`<span class="due-badge">${due}</span>`:''}<button class="mobile-deck-star ${d.favorite?'active':''}" title="Favoritar" onclick="event.stopPropagation(); toggleDeckFavorite('${d.id}')">${d.favorite?'★':'☆'}</button></div>`; }).join('') : `<p style="font-size:12px; color:var(--text-faint); text-align:center;">Crie seu primeiro baralho.</p>`}</div>`:''}
