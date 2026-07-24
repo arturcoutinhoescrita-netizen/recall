@@ -649,34 +649,42 @@ async function loadData(){
   }
   render();
 }
-async function saveData(){
+// Gravações podem acontecer quase ao mesmo tempo (por exemplo, uma mensagem do
+// agente, seguida de uma nota criada por ele). Enfileirar evita que um snapshot
+// antigo termine depois e sobrescreva uma criação mais nova no armazenamento.
+let dataSaveQueue = Promise.resolve();
+function saveData(){
   const payload = JSON.parse(JSON.stringify({decks: state.decks, cards: state.cards, stats: state.stats, activities: state.activities, books: state.books, notesItems: state.notesItems, geminiApiKey: getApiKey(), geminiApiKey2: getApiKey2(), booksApiKey: getBooksApiKey()}));
-  for(let attempt=0; attempt<2; attempt++){
-    try{
-      if(hasClaudeStorage()){
-        await window.storage.set(STORAGE_KEY, JSON.stringify(payload), false);
-      } else if(hasFirebaseUser()){
-        await db.collection('users').doc(state.firebaseUser.uid).set(payload);
+  const persist = async () => {
+    for(let attempt=0; attempt<2; attempt++){
+      try{
+        if(hasClaudeStorage()){
+          await window.storage.set(STORAGE_KEY, JSON.stringify(payload), false);
+        } else if(hasFirebaseUser()){
+          await db.collection('users').doc(state.firebaseUser.uid).set(payload);
+        }
+        if(state.saveFailed){ state.saveFailed = false; render(); }
+        break; // sucesso
+      }catch(e){
+        if(attempt === 0){ await sleep(600); continue; }
+        state.saveFailed = true; // segunda falha: sinaliza discretamente na UI, sem banner de erro
+        render();
       }
-      if(state.saveFailed){ state.saveFailed = false; render(); }
-      break; // sucesso
-    }catch(e){
-      if(attempt === 0){ await sleep(600); continue; }
-      state.saveFailed = true; // segunda falha: sinaliza discretamente na UI, sem banner de erro
-      render();
     }
-  }
-  // se o usuário escolheu um arquivo local (File System Access API), mantém ele sincronizado também
-  if(state.fileHandle){
-    try{
-      const writable = await state.fileHandle.createWritable();
-      await writable.write(JSON.stringify(payload));
-      await writable.close();
-    }catch(e){
-      console.error('Falha ao sincronizar com o arquivo local', e);
-      // não interrompe o fluxo — o armazenamento padrão já cuidou de salvar
+    // se o usuário escolheu um arquivo local (File System Access API), mantém ele sincronizado também
+    if(state.fileHandle){
+      try{
+        const writable = await state.fileHandle.createWritable();
+        await writable.write(JSON.stringify(payload));
+        await writable.close();
+      }catch(e){
+        console.error('Falha ao sincronizar com o arquivo local', e);
+        // não interrompe o fluxo — o armazenamento padrão já cuidou de salvar
+      }
     }
-  }
+  };
+  dataSaveQueue = dataSaveQueue.catch(()=>{}).then(persist);
+  return dataSaveQueue;
 }
 
 /* ============ AGENDA E HISTÓRICO DE ATIVIDADES ============ */
@@ -5427,9 +5435,55 @@ function ensureAgentDeck(action, currentNote){
   if(currentNote && !currentNote.linkedDeckId) currentNote.linkedDeckId = deck.id;
   return deck;
 }
+async function searchCommonsImage(query){
+  const term = String(query||'').trim().slice(0,180);
+  if(!term) throw new Error('image_search_empty');
+  // A Commons expõe imagens públicas e permite consultas CORS. Pedimos uma
+  // miniatura para a nota não depender do download do arquivo original enorme.
+  const url = `https://commons.wikimedia.org/w/api.php?action=query&format=json&generator=search&gsrnamespace=6&gsrlimit=10&gsrsearch=${encodeURIComponent(term)}&prop=imageinfo&iiprop=url%7Cmime%7Cthumbmime&iiurlwidth=1200&origin=*`;
+  const response = await fetch(url);
+  if(!response.ok) throw new Error('image_search_failed');
+  const data = await response.json();
+  const pages = Object.values((data.query && data.query.pages) || {});
+  const result = pages.map(page => {
+    const info = page.imageinfo && page.imageinfo[0];
+    return info && {
+      url: info.thumburl || info.url,
+      mime: info.thumbmime || info.mime || '',
+      pageUrl: info.descriptionurl || `https://commons.wikimedia.org/wiki/${encodeURIComponent(page.title||'')}`,
+      title: String(page.title||'').replace(/^File:/i, '')
+    };
+  }).find(image => image && image.url && /^image\/(jpeg|png|webp|gif|svg\+xml)$/i.test(image.mime));
+  if(!result) throw new Error('image_not_found');
+  return result;
+}
+function insertAgentImageInNote(note, image, alt){
+  if(!note || !image || !image.url) return false;
+  const label = String(alt || image.title || 'Imagem').trim().slice(0,180) || 'Imagem';
+  const before = getNoteContent(note.id);
+  let addition;
+  if(note.format === 'plain'){
+    addition = `<figure><img src="${escapeHtml(image.url)}" alt="${escapeHtml(label)}"><figcaption>Fonte: <a href="${escapeHtml(image.pageUrl)}" target="_blank" rel="noopener">Wikimedia Commons</a></figcaption></figure>`;
+  }else{
+    const markdownAlt = label.replace(/[\[\]]/g, '');
+    addition = `![${markdownAlt}](${image.url})\n\n*Fonte: [Wikimedia Commons](${image.pageUrl})*`;
+  }
+  saveNoteContentUpdate(note, before + (before ? '\n\n' : '') + addition);
+  return true;
+}
+function revealAgentCreatedItem(itemId){
+  let item = state.notesItems.find(n=>n.id===itemId);
+  const collapsed = state.notesCollapsedFolders || (state.notesCollapsedFolders=[]);
+  while(item){
+    const hiddenIndex = collapsed.indexOf(item.id);
+    if(hiddenIndex >= 0) collapsed.splice(hiddenIndex, 1);
+    item = item.parentId ? state.notesItems.find(n=>n.id===item.parentId) : null;
+  }
+}
 async function executeNoteAgentActions(actions, currentNote){
   const results = [];
   const aliases = {};
+  const createdItemIds = [];
   for(const action of (actions||[])){
     if(!action || typeof action !== 'object') continue;
     if(action.type === 'create_folder'){
@@ -5438,12 +5492,14 @@ async function executeNoteAgentActions(actions, currentNote){
       const folder = makeNoteItem('folder', name, resolveNoteAgentParent(action.parentRef, currentNote, aliases));
       state.notesItems.push(folder);
       if(action.alias) aliases[String(action.alias)] = folder.id;
+      createdItemIds.push(folder.id);
       results.push(`Pasta criada: ${folder.name}`);
     }else if(action.type === 'create_note'){
       const name = String(action.title||action.name||'').trim().slice(0,120) || 'Nova nota';
       const newNote = makeNoteItem('note', name, resolveNoteAgentParent(action.parentRef, currentNote, aliases), action.format);
       noteContentCache[newNote.id] = String(action.content||'');
       state.notesItems.push(newNote);
+      createdItemIds.push(newNote.id);
       await saveNoteContentToR2(newNote.id, noteContentCache[newNote.id]);
       results.push(`Nota criada: ${newNote.name}`);
     }else if(action.type === 'edit_note'){
@@ -5476,9 +5532,28 @@ async function executeNoteAgentActions(actions, currentNote){
         state.cards[deck.id].push(card);
       });
       results.push(`${validCards.length} flashcard${validCards.length===1?'':'s'} criado${validCards.length===1?'':'s'} em ${deck.name}`);
+    }else if(action.type === 'search_image'){
+      const target = action.noteRef === 'current' || !action.noteRef ? currentNote : state.notesItems.find(n=>n.id===action.noteRef && n.type==='note');
+      if(!target) continue;
+      try{
+        const image = await searchCommonsImage(action.query);
+        if(insertAgentImageInNote(target, image, action.alt || action.query)) results.push(`Imagem encontrada e inserida em ${target.name}: ${image.title}`);
+      }catch(error){
+        console.error('Falha ao buscar imagem para o agente', error);
+        results.push(`Não encontrei uma imagem pública adequada para “${String(action.query||'').slice(0,80)}”.`);
+      }
     }
   }
-  if(results.length) saveData();
+  if(createdItemIds.length){
+    createdItemIds.forEach(revealAgentCreatedItem);
+    // Se havia um filtro ativo, a nova nota poderia existir mas ficar invisível
+    // na árvore. A criação pelo agente sempre revela o resultado ao usuário.
+    if(state.notesSearch && state.notesSearch.query){
+      state.notesSearch.query = '';
+      state.notesSearch.contentResults = null;
+    }
+  }
+  if(results.length) await saveData();
   return results;
 }
 async function sendNoteChatMessage(){
@@ -5499,7 +5574,7 @@ async function sendNoteChatMessage(){
   const noteContent = note ? getNoteContent(note.id) : '';
   const workspace = state.notesItems.map(item => `${item.type==='folder'?'Pasta':'Nota'}: ${item.name}`).join('\n') || '(vazio)';
   const decks = state.decks.map(deck => deck.name).join(', ') || '(nenhum)';
-  const prompt = `Você é o agente de IA de um caderno pessoal. Você conversa normalmente e pode executar ações dentro do aplicativo quando o usuário pedir explicitamente. A nota aberta pode ser editada por inteiro ou em partes, sem confirmação adicional. Não invente que fez uma ação: use apenas o formato abaixo para fazê-la.\n\nNOTA ABERTA: "${note ? note.name : ''}"\nCONTEÚDO DA NOTA (preserve o formato ao editar):\n---\n${noteContent || '(nota vazia)'}\n---\n\nITENS DO CADERNO:\n${workspace}\n\nBARALHOS DISPONÍVEIS: ${decks}\n\nAções permitidas: create_folder {type,name,parentRef?,alias?}; create_note {type,title,content,parentRef?,format?}; edit_note {type,noteRef:'current',mode:'replace'|'append'|'prepend'|'replace_text'|'replace_all',content?,find?,replace?}; create_flashcards {type,deckRef:'linked'?,deckName?,cards:[{front,back,note?}]}. Para criar uma pasta e colocar notas nela, dê um alias à pasta e use o mesmo valor em parentRef. Só inclua ações solicitadas pelo usuário.\n\nResponda EXCLUSIVAMENTE com JSON válido, sem markdown: {"reply":"resposta curta e natural em português","actions":[...]}. Se não houver ação, use actions vazio.\n\n${history ? `Conversa até agora:\n${history}\n\n` : ''}Usuário: ${question}`;
+  const prompt = `Você é o agente de IA de um caderno pessoal. Você conversa normalmente e pode executar ações dentro do aplicativo quando o usuário pedir explicitamente. A nota aberta pode ser editada por inteiro ou em partes, sem confirmação adicional. Não invente que fez uma ação: use apenas o formato abaixo para fazê-la. Quando o usuário pedir para procurar/buscar uma imagem na internet e adicioná-la, use search_image: o aplicativo fará a busca real em uma fonte pública e inserirá a imagem com crédito.\n\nNOTA ABERTA: "${note ? note.name : ''}"\nCONTEÚDO DA NOTA (preserve o formato ao editar):\n---\n${noteContent || '(nota vazia)'}\n---\n\nITENS DO CADERNO:\n${workspace}\n\nBARALHOS DISPONÍVEIS: ${decks}\n\nAções permitidas: create_folder {type,name,parentRef?,alias?}; create_note {type,title,content,parentRef?,format?}; edit_note {type,noteRef:'current',mode:'replace'|'append'|'prepend'|'replace_text'|'replace_all',content?,find?,replace?}; create_flashcards {type,deckRef:'linked'?,deckName?,cards:[{front,back,note?}]}; search_image {type,query,alt?,noteRef:'current'}. Para criar uma pasta e colocar notas nela, dê um alias à pasta e use o mesmo valor em parentRef. Só inclua ações solicitadas pelo usuário.\n\nResponda EXCLUSIVAMENTE com JSON válido, sem markdown: {"reply":"resposta curta e natural em português","actions":[...]}. Se não houver ação, use actions vazio.\n\n${history ? `Conversa até agora:\n${history}\n\n` : ''}Usuário: ${question}`;
 
   try{
     const agentResponse = parseNoteAgentReply(await callGemini(prompt, { maxTokens: 1800 }));
