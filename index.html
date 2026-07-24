@@ -558,8 +558,8 @@
     .mobile-deck-card .deck-item-name{ font-size:15px; }
     .mobile-deck-star{ margin-left:auto; color:var(--text-faint); font-size:19px; background:transparent; border:0; padding:4px; }
     .mobile-deck-star.active{ color:#F5A623; }
-    #app.step-home .sidebar{ animation:mobileMenuIn .24s ease both; }
-    #app.step-detail .main{ animation:mobilePageIn .24s ease both; }
+    #app.step-home.page-transition .sidebar{ animation:mobileMenuIn .24s ease both; }
+    #app.step-detail.page-transition .main{ animation:mobilePageIn .24s ease both; }
     @keyframes mobileMenuIn{ from{ opacity:.25; transform:translateX(-28px); } to{ opacity:1; transform:translateX(0); } }
     @keyframes mobilePageIn{ from{ opacity:.25; transform:translateX(28px); } to{ opacity:1; transform:translateX(0); } }
     .agenda-board{ grid-template-columns:1fr; }
@@ -612,7 +612,7 @@
     .notes-editor-panes.split{ flex-direction:column; }
     .notes-paged-preview{ align-items:flex-start; overflow-x:auto; }
   }
-  @media (prefers-reduced-motion:reduce){ #app.step-home .sidebar, #app.step-detail .main{ animation:none; } }
+  @media (prefers-reduced-motion:reduce){ #app.step-home.page-transition .sidebar, #app.step-detail.page-transition .main{ animation:none; } }
 </style>
 <script>
 // aplica o tema salvo o quanto antes, antes do resto da página desenhar,
@@ -7526,6 +7526,7 @@ function fmtDue(due){
 }
 
 let __lastRenderKey = null;
+let pageTransitionTimer = null;
 function render(){
   // guarda foco e posição do cursor ANTES de recriar a tela, pra restaurar depois —
   // evita que re-renders disparados por outra coisa (ex: o toast sumindo sozinho)
@@ -7558,7 +7559,7 @@ function render(){
   }
   // no mobile, alterna entre a "etapa" da lista de baralhos e a do baralho aberto;
   // no desktop essa classe não tem efeito nenhum (barra lateral fica sempre visível).
-  app.className = `${state.view === 'home' ? 'step-home' : 'step-detail'}${state.sidebarAutoHide ? ' sidebar-auto-hide' : ''}`;
+  app.className = `${state.view === 'home' ? 'step-home' : 'step-detail'}${state.sidebarAutoHide ? ' sidebar-auto-hide' : ''}${state.pageTransition ? ' page-transition' : ''}`;
   app.innerHTML = `
     ${renderSidebar()}
     <div class="app-workspace">
@@ -7578,6 +7579,10 @@ function render(){
   }
   if(prevAgendaHourScrolls.length){
     document.querySelectorAll('.agenda-day-hours').forEach((el,index)=>{ el.scrollTop=prevAgendaHourScrolls[index]||0; });
+  }
+  if(state.pageTransition){
+    if(pageTransitionTimer) clearTimeout(pageTransitionTimer);
+    pageTransitionTimer=setTimeout(()=>{ state.pageTransition=false; app.classList.remove('page-transition'); },280);
   }
 
   if(savedId){
@@ -7650,7 +7655,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='routine'?'active':''}" onclick="openRoutine()">🌿 Rotina</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.24.82</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.24.83</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -7673,7 +7678,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.24.82</span>
+        <span class="brand-version">v2026.07.24.83</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -7720,7 +7725,9 @@ function renderSidebar(){
 function getOrderedDecks(){
   return [...state.decks].sort((a,b)=>(Number(!!b.favorite)-Number(!!a.favorite)) || a.name.localeCompare(b.name,'pt-BR'));
 }
+function markMainMenuTransition(){ state.pageTransition=true; }
 function selectMobileHomeSection(section){
+  markMainMenuTransition();
   if(section==='decks'){ state.mobileHomeSection='decks'; state.view='deck-list'; render(); return; }
   state.mobileHomeSection=section;
   if(section==='library') openLibrary();
@@ -7732,7 +7739,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.82</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.83</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
@@ -7760,6 +7767,7 @@ function selectDeck(id){
 function backToHome(){
   finishReadingActivity();
   finishWritingActivity();
+  markMainMenuTransition();
   state.mobileHomeSection=null;
   state.view = 'home';
   render();
