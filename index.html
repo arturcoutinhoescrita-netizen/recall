@@ -4927,6 +4927,12 @@ function setRichHeading(level){
   state.lastRichHeading=level;
   applyRichCommand('formatBlock',`<${level}>`);
 }
+function setRichAlignment(alignment){
+  const commands={left:'justifyLeft',center:'justifyCenter',right:'justifyRight',justify:'justifyFull'};
+  if(!commands[alignment]) return;
+  state.lastRichAlignment=alignment;
+  applyRichCommand(commands[alignment]);
+}
 function setRichFontSize(size){
   const px=Math.max(8,Math.min(72,Number(size)||14));
   const editor=document.getElementById('note-editor-plain');
@@ -5003,10 +5009,10 @@ function restoreRichCursorOffset(el, savedOffset){
     sel.addRange(range);
   }
 }
-function openInsertRichLinkModal(){
+function openInsertRichLinkModal(savedOffsetOverride, selectedTextOverride){
   const sel = window.getSelection();
-  const text = sel ? sel.toString() : '';
-  const savedOffset = captureRichCursorOffset();
+  const text = selectedTextOverride != null ? selectedTextOverride : (sel ? sel.toString() : '');
+  const savedOffset = savedOffsetOverride || captureRichCursorOffset();
   state.modal = { type:'insert-rich-link', url:'', text, savedOffset };
   render();
 }
@@ -5125,11 +5131,23 @@ function domPositionToTextOffset(container, node, offset){
   range.setEnd(node, offset);
   return range.toString().length;
 }
-function openInsertImageModal(){
+function openInsertImageModal(savedOffsetOverride){
   const note = state.notesItems.find(n=>n.id===state.currentNoteId);
-  const savedOffset = (note && note.format === 'plain') ? captureRichCursorOffset() : null;
+  const savedOffset = savedOffsetOverride || ((note && note.format === 'plain') ? captureRichCursorOffset() : null);
   state.modal = { type:'insert-note-image', url:'', alt:'', savedOffset };
   render();
+}
+function openNoteInsertOption(select){
+  const choice=select.value;
+  select.value='';
+  if(!choice) return;
+  const savedOffset=state.pendingNoteInsertOffset || null;
+  const selectedText=state.pendingNoteInsertText || '';
+  state.pendingNoteInsertOffset=null;
+  state.pendingNoteInsertText=null;
+  if(choice==='link') openInsertRichLinkModal(savedOffset,selectedText);
+  else if(choice==='image-url') openInsertImageModal(savedOffset);
+  else if(choice==='image-upload') openNoteImageUploadPicker(savedOffset);
 }
 function confirmInsertNoteImage(){
   const m = state.modal;
@@ -5152,11 +5170,11 @@ function confirmInsertNoteImage(){
     insertImageMarkdown('note-editor-textarea', url, alt);
   }
 }
-function openNoteImageUploadPicker(){
+function openNoteImageUploadPicker(savedOffsetOverride){
   const noteId = state.currentNoteId;
   if(!noteId) return;
   const note = state.notesItems.find(n=>n.id===noteId);
-  const savedOffset = (note && note.format === 'plain') ? captureRichCursorOffset() : null;
+  const savedOffset = savedOffsetOverride || ((note && note.format === 'plain') ? captureRichCursorOffset() : null);
   const input = document.createElement('input');
   input.type = 'file';
   input.accept = 'image/*';
@@ -6884,7 +6902,7 @@ function renderSidebar(){
       <div>
         <h1>Recall</h1>
         <span>REPETIÇÃO ESPAÇADA</span>
-        <span class="brand-version">v2026.07.24.37</span>
+        <span class="brand-version">v2026.07.24.39</span>
       </div>
     </div>
     <button class="ghost-btn" style="font-size:13px; padding:10px 12px; margin-bottom:6px; ${(state.view==='library'||state.view==='book') ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="openLibrary()">📚 Leituras</button>
@@ -7217,10 +7235,6 @@ function renderNotesToolbar(format){
   const list = isMarkdown ? `applyMdLinePrefix('${id}','- ')` : `applyRichCommand('insertUnorderedList')`;
   const olist = isMarkdown ? `applyMdLinePrefix('${id}','1. ')` : `applyRichCommand('insertOrderedList')`;
   const indent = isMarkdown ? `insertTabIndent('${id}')` : `insertRichIndent()`;
-  const alignLeft = isMarkdown ? `applyMdAlign('${id}','left')` : `applyRichCommand('justifyLeft')`;
-  const alignCenter = isMarkdown ? `applyMdAlign('${id}','center')` : `applyRichCommand('justifyCenter')`;
-  const alignRight = isMarkdown ? `applyMdAlign('${id}','right')` : `applyRichCommand('justifyRight')`;
-  const alignJustify = isMarkdown ? `applyMdAlign('${id}','justify')` : `applyRichCommand('justifyFull')`;
   const link = isMarkdown ? `applyMdLink('${id}')` : `openInsertRichLinkModal()`;
   const wikiLink = isMarkdown ? `insertWikiLink('${id}')` : `openInsertWikiLinkModalRich()`;
   return `
@@ -7238,14 +7252,9 @@ function renderNotesToolbar(format){
     <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Lista" onclick="${list}">•</button>
     <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Lista numerada" onclick="${olist}">1.</button>
     <button class="icon-btn" ${noSteal}title="Recuo de parágrafo (igual à tecla Tab)" onclick="${indent}">↹</button>
-    <button class="icon-btn" ${noSteal}title="Alinhar à esquerda" onclick="${alignLeft}">⬅</button>
-    <button class="icon-btn" ${noSteal}title="Centralizar" onclick="${alignCenter}">↔</button>
-    <button class="icon-btn" ${noSteal}title="Alinhar à direita" onclick="${alignRight}">➡</button>
-    <button class="icon-btn" ${noSteal}title="Justificar" onclick="${alignJustify}">≡</button>
-    <button class="icon-btn" ${noSteal}title="Link" onclick="${link}">🔗</button>
+    ${!isMarkdown ? `<select title="Alinhamento do texto" style="width:auto; max-width:112px; padding:5px 7px; font-size:11px;" onchange="setRichAlignment(this.value)"><option value="left" ${(state.lastRichAlignment||'left')==='left'?'selected':''}>← Esquerda</option><option value="center" ${(state.lastRichAlignment||'left')==='center'?'selected':''}>↔ Centro</option><option value="right" ${(state.lastRichAlignment||'left')==='right'?'selected':''}>Direita →</option><option value="justify" ${(state.lastRichAlignment||'left')==='justify'?'selected':''}>☰ Justificar</option></select>` : ''}
+    ${!isMarkdown ? `<select title="Inserir na nota" style="width:auto; max-width:112px; padding:5px 7px; font-size:11px;" onpointerdown="state.pendingNoteInsertOffset=captureRichCursorOffset(); state.pendingNoteInsertText=window.getSelection()?.toString()||''" onchange="openNoteInsertOption(this)"><option value="">＋ Inserir</option><option value="link">🔗 Link</option><option value="image-url">🖼️ Imagem por link</option><option value="image-upload">📤 Enviar imagem</option></select>` : `<button class="icon-btn" title="Link" onclick="${link}">🔗</button>`}
     <button class="icon-btn" ${noSteal}title="Link pra outra nota (${noteShortcutLabel('l')})" onclick="${wikiLink}">🔀</button>
-    <button class="icon-btn" ${noSteal}title="Imagem por link" onclick="openInsertImageModal()">🖼️</button>
-    <button class="icon-btn" ${noSteal}title="Enviar imagem do aparelho" onclick="openNoteImageUploadPicker()">📤</button>
   </div>`;
 }
 function renderLibraryView(){
