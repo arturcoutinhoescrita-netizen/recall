@@ -341,6 +341,7 @@
   .notes-tree-row.active .notes-tree-label{ color:var(--accent); font-weight:600; }
   .notes-tree-label{ flex:1; font-size:13px; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:flex; align-items:center; gap:6px; }
   .notes-tree-actions{ display:flex; gap:3px; flex-shrink:0; }
+  .note-color-dot{ width:11px; height:11px; border-radius:50%; flex-shrink:0; box-shadow:0 0 0 1px rgba(255,255,255,.16); }
   .notes-editor{ flex:1; min-width:0; min-height:0; display:flex; flex-direction:column; gap:10px; overflow:hidden; }
   .notes-editor-header{ display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; }
   .note-writing-stats{ font-size:11px; color:var(--text-faint); margin-top:3px; font-variant-numeric:tabular-nums; }
@@ -4045,7 +4046,8 @@ function makeNoteItem(type, name, parentId){
     // Todas as notas novas usam o editor visual de texto normal.
     format: type === 'note' ? 'plain' : undefined,
     linkedDeckId: type === 'note' ? null : undefined,
-    icon: type === 'folder' ? '📁' : '📄',
+    icon: type === 'folder' ? '📁' : undefined,
+    iconColor: type === 'note' ? '#F5A623' : undefined,
     createdAt: Date.now(), updatedAt: Date.now()
   };
   if(type === 'note') noteContentCache[item.id] = ''; // nota nova nasce vazia — não precisa buscar nada no R2
@@ -4062,7 +4064,8 @@ function normalizeNoteItem(n){
     // a abrir no editor de texto normal.
     format: type === 'folder' ? undefined : 'plain',
     linkedDeckId: type === 'folder' ? undefined : (n.linkedDeckId || null),
-    icon: n.icon || (type === 'folder' ? '📁' : '📄'),
+    icon: type === 'folder' ? (n.icon || '📁') : undefined,
+    iconColor: type === 'note' ? (n.iconColor || '#F5A623') : undefined,
     aiConversations: type === 'folder' ? undefined : (Array.isArray(n.aiConversations) ? n.aiConversations : []),
     createdAt: n.createdAt || Date.now(),
     updatedAt: n.updatedAt || Date.now()
@@ -4263,6 +4266,13 @@ function setNoteItemIcon(id, icon){
   const item = state.notesItems.find(n=>n.id===id);
   if(!item) return;
   item.icon = icon;
+  item.updatedAt = Date.now();
+  saveData(); render();
+}
+function setNoteItemColor(id, color){
+  const item = state.notesItems.find(n=>n.id===id && n.type==='note');
+  if(!item) return;
+  item.iconColor = color;
   item.updatedAt = Date.now();
   saveData(); render();
 }
@@ -4563,6 +4573,28 @@ function applyRichCommand(cmd, value){
 function setRichTextColor(color){ applyRichCommand('foreColor', color); }
 function setRichHighlight(color){ applyRichCommand('hiliteColor', color); }
 function setRichFont(font){ applyRichCommand('fontName', font); }
+function openRichColorMenu(kind){
+  const savedOffset = captureRichCursorOffset();
+  state.noteColorMenu = { kind, savedOffset };
+  render();
+}
+function applyRichPaletteColor(kind, color){
+  const menu = state.noteColorMenu;
+  state.noteColorMenu = null;
+  if(kind === 'text') state.lastRichTextColor = color;
+  else state.lastRichHighlight = color;
+  render();
+  const editor = document.getElementById('note-editor-plain');
+  if(editor){
+    editor.focus();
+    restoreRichCursorOffset(editor, menu && menu.savedOffset);
+    document.execCommand(kind === 'text' ? 'foreColor' : 'hiliteColor', false, color);
+    onNoteContentInput(state.currentNoteId, editor.innerHTML);
+  }
+}
+function applyLastRichColor(kind){
+  applyRichCommand(kind === 'text' ? 'foreColor' : 'hiliteColor', kind === 'text' ? (state.lastRichTextColor || '#F5A623') : (state.lastRichHighlight || '#F5D76E'));
+}
 function toggleNotePageView(){
   state.notesPageView = !state.notesPageView;
   render();
@@ -6170,7 +6202,7 @@ function renderSidebar(){
       <div>
         <h1>Recall</h1>
         <span>REPETIÇÃO ESPAÇADA</span>
-        <span class="brand-version">v2026.07.24.1</span>
+        <span class="brand-version">v2026.07.24.3</span>
       </div>
     </div>
     <button class="ghost-btn" style="font-size:13px; padding:10px 12px; margin-bottom:6px; ${(state.view==='library'||state.view==='book') ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="openLibrary()">📚 Leituras</button>
@@ -6343,7 +6375,7 @@ function renderNotesTreeLevel(parentId, depth){
     }
     return `
     <div class="notes-tree-row ${state.currentNoteId===item.id?'active':''}" style="padding-left:${depth*16+16}px;" draggable="true" ondragstart="onNoteDragStart(event,'${item.id}')">
-      <div class="notes-tree-label" onclick="openNote('${item.id}')">${escapeHtml(item.icon || '📄')} ${escapeHtml(item.name)}</div>
+      <div class="notes-tree-label" onclick="openNote('${item.id}')"><span class="note-color-dot" style="background:${escapeHtml(item.iconColor || '#F5A623')};"></span>${escapeHtml(item.name)}</div>
       <div class="notes-tree-actions">
         <button class="icon-btn" style="width:22px;height:22px;font-size:11px;" title="Renomear" onclick="event.stopPropagation(); openNotesRenameModal('${item.id}')">✏️</button>
         <button class="icon-btn" style="width:22px;height:22px;font-size:11px;" title="Duplicar" onclick="event.stopPropagation(); duplicateNoteItem('${item.id}')">⧉</button>
@@ -6460,6 +6492,18 @@ function renderNoteEditor(note){
   </div>
   `;
 }
+function renderRichColorPalette(kind){
+  const menu = state.noteColorMenu;
+  if(!menu || menu.kind !== kind) return '';
+  const colors = kind === 'text'
+    ? ['#F4F1EA','#F5A623','#FB7185','#A78BFA','#60A5FA','#34D399']
+    : ['#F5D76E','#F9A8D4','#A7F3D0','#BFDBFE','#DDD6FE','#FED7AA'];
+  const noColor = kind === 'text' ? 'inherit' : 'transparent';
+  return `<div style="position:absolute; top:38px; left:0; z-index:120; display:flex; gap:6px; flex-wrap:wrap; width:176px; padding:9px; background:var(--surface); border:1px solid var(--border); border-radius:10px; box-shadow:0 10px 24px rgba(0,0,0,.25);">
+    ${colors.map(color=>`<button type="button" title="${color}" onmousedown="event.preventDefault()" onclick="applyRichPaletteColor('${kind}','${color}')" style="width:22px; height:22px; border-radius:50%; border:1px solid var(--border); background:${color};"></button>`).join('')}
+    <button type="button" class="ghost-btn" onmousedown="event.preventDefault()" onclick="applyRichPaletteColor('${kind}','${noColor}')" style="width:100%; padding:5px 7px; font-size:10px;">Sem cor</button>
+  </div>`;
+}
 function renderNotesToolbar(format){
   const id = 'note-editor-textarea';
   const isMarkdown = format !== 'plain';
@@ -6491,8 +6535,8 @@ function renderNotesToolbar(format){
     <span style="width:1px; background:var(--border); margin:2px 2px;"></span>
     <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Negrito" onclick="${bold}"><strong>B</strong></button>
     <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Itálico" onclick="${italic}"><em>I</em></button>
-    ${!isMarkdown ? `<label class="icon-btn" title="Cor do texto" style="position:relative; overflow:hidden; font-size:13px;">A<input type="color" value="#f4f1ea" style="position:absolute; inset:0; opacity:0; cursor:pointer;" onchange="setRichTextColor(this.value)"></label>
-    <label class="icon-btn" title="Destacar como marca-texto" style="position:relative; overflow:hidden; font-size:14px;">🖍<input type="color" value="#f5d76e" style="position:absolute; inset:0; opacity:0; cursor:pointer;" onchange="setRichHighlight(this.value)"></label>
+    ${!isMarkdown ? `<span style="display:inline-flex; position:relative;"><button class="icon-btn" ${noSteal}title="Aplicar última cor de texto" onclick="applyLastRichColor('text')" style="font-size:13px; border-bottom:3px solid ${state.lastRichTextColor||'#F5A623'};">A</button><button class="icon-btn" ${noSteal}title="Escolher cor do texto" onclick="openRichColorMenu('text')" style="width:20px; font-size:10px; margin-left:-4px;">▾</button>${renderRichColorPalette('text')}</span>
+    <span style="display:inline-flex; position:relative;"><button class="icon-btn" ${noSteal}title="Aplicar último destaque" onclick="applyLastRichColor('highlight')" style="font-size:14px; border-bottom:3px solid ${state.lastRichHighlight||'#F5D76E'};">🖍</button><button class="icon-btn" ${noSteal}title="Escolher cor do destaque" onclick="openRichColorMenu('highlight')" style="width:20px; font-size:10px; margin-left:-4px;">▾</button>${renderRichColorPalette('highlight')}</span>
     <select title="Fonte" style="width:auto; max-width:108px; padding:5px 7px; font-size:11px;" onchange="setRichFont(this.value)"><option value="inherit">Fonte</option><option value="Arial">Arial</option><option value="Georgia">Georgia</option><option value="Verdana">Verdana</option><option value="Courier New">Monoespaçada</option></select>` : ''}
     <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Título 1" onclick="${h1}">H1</button>
     <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Título 2" onclick="${h2}">H2</button>
@@ -7730,7 +7774,8 @@ function renderNewNoteItemModal(m){
 }
 function renderRenameNoteItemModal(m){
   const item = state.notesItems.find(n=>n.id===m.id);
-  const icons = item && item.type==='folder' ? ['📁','📚','🗂️','💼','⭐','🏷️'] : ['📄','📝','📌','💡','📚','⭐'];
+  const icons = ['📁','📚','🗂️','💼','⭐','🏷️'];
+  const colors = ['#F5A623','#FB7185','#A78BFA','#60A5FA','#34D399','#F472B6','#FACC15','#94A3B8'];
   return `
   <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
     <div class="modal">
@@ -7740,9 +7785,11 @@ function renderRenameNoteItemModal(m){
         <input type="text" autofocus value="${escapeHtml(m.name)}" onkeyup="state.modal.name=this.value; if(event.key==='Enter') confirmRenameNoteItem();">
       </div>
       <div class="field" style="margin-top:10px;">
-        <label>ÍCONE</label>
+        <label>${item&&item.type==='folder' ? 'ÍCONE' : 'COR DA NOTA'}</label>
         <div style="display:flex; gap:7px; flex-wrap:wrap;">
-          ${icons.map(icon=>`<button type="button" class="ghost-btn" style="padding:6px 9px; font-size:17px; ${item&&item.icon===icon?'border-color:var(--accent); background:var(--accent-soft);':''}" onclick="setNoteItemIcon('${m.id}','${icon}')">${icon}</button>`).join('')}
+          ${item&&item.type==='folder'
+            ? icons.map(icon=>`<button type="button" class="ghost-btn" style="padding:6px 9px; font-size:17px; ${item.icon===icon?'border-color:var(--accent); background:var(--accent-soft);':''}" onclick="setNoteItemIcon('${m.id}','${icon}')">${icon}</button>`).join('')
+            : colors.map(color=>`<button type="button" class="ghost-btn" title="${color}" style="width:30px; height:30px; padding:0; border-radius:50%; background:${color}; border:${item&&item.iconColor===color?'3px solid var(--text)':'2px solid transparent'};" onclick="setNoteItemColor('${m.id}','${color}')"></button>`).join('')}
         </div>
       </div>
       <div class="modal-actions">
