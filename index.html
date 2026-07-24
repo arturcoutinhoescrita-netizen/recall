@@ -460,6 +460,10 @@
   .wiki-link{ color:var(--accent); text-decoration:none; border-bottom:1px dotted var(--accent-dim); }
   .wiki-link:hover{ border-bottom-style:solid; }
   .wiki-link-new{ color:var(--text-faint); border-bottom-color:var(--text-faint); }
+  .wiki-link-autocomplete{ position:fixed; z-index:260; display:none; width:min(300px, calc(100vw - 24px)); max-height:240px; overflow-y:auto; padding:6px; background:var(--surface); border:1px solid var(--border); border-radius:10px; box-shadow:0 10px 28px rgba(0,0,0,.18); }
+  .wiki-link-autocomplete-label{ padding:5px 7px 6px; color:var(--text-faint); font-size:10px; font-weight:700; letter-spacing:.06em; }
+  .wiki-link-autocomplete-option{ display:block; width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding:8px 9px; border:1px solid transparent; border-radius:7px; background:transparent; color:var(--text); text-align:left; font:inherit; font-size:12.5px; cursor:pointer; }
+  .wiki-link-autocomplete-option:hover, .wiki-link-autocomplete-option.active{ background:var(--accent-soft); border-color:var(--accent-dim); color:var(--accent); }
   .revisor-mark{ background:var(--success-soft); color:var(--success); border-bottom:2px solid var(--success); padding:0 1px; border-radius:2px; cursor:pointer; font:inherit; }
   .notes-comments-panel{ display:flex; flex-direction:column; gap:8px; background:var(--surface); border:1px solid var(--success); border-radius:10px; padding:12px 14px; margin-bottom:8px; }
   .notes-comments-panel-nav{ display:flex; align-items:center; justify-content:space-between; gap:8px; }
@@ -4292,19 +4296,27 @@ function focusQuickCommandInput(){
     try{ input.setSelectionRange(position,position); }catch(e){}
   });
 }
-function openQuickCommand(){ state.modal = { type:'quick-command', query:'' }; render(); focusQuickCommandInput(); }
+// No desktop o chat da nota é um painel lateral, mas usa o mesmo estado de
+// modal. Guardamos esse painel enquanto a paleta rápida está aberta para que
+// Option/Alt + Espaço continue funcionando sem "fechar" o chat.
+let suspendedEmbeddedNoteChat = null;
+function openQuickCommand(){
+  if(isDesktopLayout() && state.modal?.type==='note-chat') suspendedEmbeddedNoteChat = state.modal;
+  state.modal = { type:'quick-command', query:'' };
+  render(); focusQuickCommandInput();
+}
 function runQuickCommand(query){
   const q = String(query||'').trim(), lower=q.toLowerCase();
   if(!q) return;
-  if(lower === 'chat'){ state.modal=null; openNoteChat(); return; }
-  if(lower === 'nota'){ state.modal=null; openNotesCreateModal(null,'note'); return; }
+  if(lower === 'chat'){ suspendedEmbeddedNoteChat=null; state.modal=null; openNoteChat(); return; }
+  if(lower === 'nota'){ suspendedEmbeddedNoteChat=null; state.modal=null; openNotesCreateModal(null,'note'); return; }
   const note = state.notesItems.find(n=>n.type==='note' && n.name.toLowerCase()===lower);
-  if(note){ state.modal=null; state.view='notes'; openNote(note.id); }
+  if(note){ suspendedEmbeddedNoteChat=null; state.modal=null; state.view='notes'; openNote(note.id); }
 }
 document.addEventListener('keydown', e => {
-  if((e.altKey || e.metaKey && e.altKey) && e.code==='Space'){
+  if(e.altKey && e.code==='Space'){
     e.preventDefault();
-    if(!state.modal) openQuickCommand();
+    if(!state.modal || (isDesktopLayout() && state.modal.type==='note-chat')) openQuickCommand();
     else if(state.modal.type==='quick-command') focusQuickCommandInput();
   }
 });
@@ -4919,6 +4931,126 @@ function openOrCreateNoteByName(name){
   saveData(); render();
   showToast(`Nota "${name}" criada.`);
 }
+/* Autocompletar de links entre notas: ao digitar [[ no editor rico, a lista
+   aparece junto ao cursor. A implementação usa offsets do texto visível para
+   funcionar mesmo quando o parágrafo já tem negrito, links ou outras tags. */
+let wikiAutocomplete = { active:false, query:'', start:0, end:0, items:[], selected:0 };
+function getRichWikiAutocompleteContext(editor){
+  const selection=window.getSelection();
+  if(!editor || !selection || !selection.rangeCount || !editor.contains(selection.anchorNode)) return null;
+  const range=selection.getRangeAt(0);
+  if(!range.collapsed) return null;
+  const end=domPositionToTextOffset(editor, range.endContainer, range.endOffset);
+  const before=(editor.textContent||'').slice(0,end);
+  const start=before.lastIndexOf('[[');
+  if(start<0) return null;
+  const query=before.slice(start+2);
+  if(/[\n\r\[\]]/.test(query)) return null;
+  return { start, end, query };
+}
+function hideWikiAutocomplete(){
+  wikiAutocomplete.active=false;
+  const menu=document.getElementById('wiki-link-autocomplete');
+  if(menu) menu.style.display='none';
+}
+function getWikiAutocompleteItems(query){
+  const normalized=normalizeAnswer(query);
+  const matches=state.notesItems.filter(item=>item.type==='note' && (!normalized || normalizeAnswer(item.name).includes(normalized)))
+    .sort((a,b)=>Number(!!b.favorite)-Number(!!a.favorite) || (b.updatedAt||0)-(a.updatedAt||0))
+    .slice(0,7)
+    .map(item=>({kind:'note', id:item.id, name:item.name, favorite:!!item.favorite}));
+  const exact=state.notesItems.some(item=>item.type==='note' && normalizeAnswer(item.name)===normalized);
+  if(query.trim() && !exact) matches.push({kind:'create', name:query.trim()});
+  return matches;
+}
+function showWikiAutocomplete(editor, context){
+  const menu=document.getElementById('wiki-link-autocomplete');
+  if(!menu) return;
+  const items=getWikiAutocompleteItems(context.query);
+  const sameQuery=wikiAutocomplete.active && wikiAutocomplete.query===context.query;
+  wikiAutocomplete={active:true, query:context.query, start:context.start, end:context.end, items, selected:sameQuery ? Math.min(wikiAutocomplete.selected,Math.max(0,items.length-1)) : 0};
+  if(!items.length){ hideWikiAutocomplete(); return; }
+  menu.innerHTML=`<div class="wiki-link-autocomplete-label">VINCULAR NOTA</div>${items.map((item,index)=>`<button type="button" class="wiki-link-autocomplete-option ${index===wikiAutocomplete.selected?'active':''}" onmousedown="event.preventDefault()" onclick="selectWikiAutocompleteItem(${index})">${item.kind==='create'?'＋ Criar nota: ':''}${item.favorite?'★ ':''}${escapeHtml(item.name)}</button>`).join('')}`;
+  const selection=window.getSelection();
+  const range=selection && selection.rangeCount ? selection.getRangeAt(0) : null;
+  const rect=range && range.getBoundingClientRect();
+  const fallback=editor.getBoundingClientRect();
+  const left=Math.max(12,Math.min((rect && rect.left) || fallback.left, window.innerWidth-312));
+  const top=Math.min(((rect && rect.bottom) || fallback.top+28)+6, window.innerHeight-80);
+  menu.style.left=`${left}px`; menu.style.top=`${top}px`; menu.style.display='block';
+}
+function createNoteFromWikiLink(name){
+  const clean=String(name||'').trim();
+  if(!clean) return null;
+  const existing=findNoteByName(clean);
+  if(existing) return existing;
+  const current=state.notesItems.find(item=>item.id===state.currentNoteId);
+  const item=makeNoteItem('note',clean,current ? current.parentId : null);
+  state.notesItems.push(item);
+  saveData();
+  return item;
+}
+function replaceRichWikiText(editor,start,end,name){
+  const range=textOffsetToRange(editor,start,end);
+  if(!range) return false;
+  const note=createNoteFromWikiLink(name);
+  if(!note) return false;
+  const link=document.createElement('a');
+  link.href='#'; link.className='wiki-link'; link.dataset.noteName=note.name; link.title='Abrir nota'; link.textContent=note.name;
+  range.deleteContents(); range.insertNode(link);
+  const caret=document.createRange(); caret.setStartAfter(link); caret.collapse(true);
+  const selection=window.getSelection(); selection.removeAllRanges(); selection.addRange(caret);
+  onNoteContentInput(state.currentNoteId,editor.innerHTML);
+  return true;
+}
+function maybeFinalizeRichWikiLink(editor){
+  const selection=window.getSelection();
+  if(!editor || !selection || !selection.rangeCount || !editor.contains(selection.anchorNode)) return false;
+  const range=selection.getRangeAt(0);
+  if(!range.collapsed) return false;
+  const end=domPositionToTextOffset(editor,range.endContainer,range.endOffset);
+  const before=(editor.textContent||'').slice(0,end);
+  const match=before.match(/\[\[([^\]\n]+)\]\]$/);
+  if(!match) return false;
+  const name=match[1].trim();
+  if(!name) return false;
+  return replaceRichWikiText(editor,end-match[0].length,end,name);
+}
+function handleRichEditorInput(editor){
+  if(!editor || !state.currentNoteId) return;
+  onNoteContentInput(state.currentNoteId,editor.innerHTML);
+  if(maybeFinalizeRichWikiLink(editor)){ hideWikiAutocomplete(); return; }
+  const context=getRichWikiAutocompleteContext(editor);
+  if(context) showWikiAutocomplete(editor,context); else hideWikiAutocomplete();
+}
+function selectWikiAutocompleteItem(index){
+  const editor=document.getElementById('note-editor-plain');
+  const item=wikiAutocomplete.items[index];
+  if(!editor || !item || !wikiAutocomplete.active) return;
+  replaceRichWikiText(editor,wikiAutocomplete.start,wikiAutocomplete.end,item.name);
+  hideWikiAutocomplete();
+}
+function handleWikiAutocompleteKeydown(event){
+  if(!wikiAutocomplete.active) return false;
+  if(event.key==='ArrowDown' || event.key==='ArrowUp'){
+    event.preventDefault();
+    const step=event.key==='ArrowDown' ? 1 : -1;
+    wikiAutocomplete.selected=(wikiAutocomplete.selected+step+wikiAutocomplete.items.length)%wikiAutocomplete.items.length;
+    const editor=document.getElementById('note-editor-plain');
+    const context=getRichWikiAutocompleteContext(editor);
+    if(editor && context) showWikiAutocomplete(editor,context);
+    return true;
+  }
+  if(event.key==='Enter' || event.key==='Tab'){
+    event.preventDefault(); selectWikiAutocompleteItem(wikiAutocomplete.selected); return true;
+  }
+  if(event.key==='Escape'){ event.preventDefault(); hideWikiAutocomplete(); return true; }
+  return false;
+}
+document.addEventListener('mousedown',event=>{
+  if(event.target.closest && (event.target.closest('#wiki-link-autocomplete') || event.target.closest('#note-editor-plain'))) return;
+  hideWikiAutocomplete();
+});
 function applyMdWrap(textareaId, before, after){
   const el = document.getElementById(textareaId);
   if(!el) return;
@@ -7070,7 +7202,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.24.57</span>
+        <span class="brand-version">v2026.07.24.59</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -7128,7 +7260,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.57</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.59</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
@@ -7407,7 +7539,7 @@ function renderNoteEditor(note){
   ${(isPlain || mode !== 'preview') ? renderNotesToolbar(note.format) : ''}
   ${isPlain ? `
   <div class="notes-editor-panes plain ${state.notesPageView ? 'page-view' : ''}" style="${state.notesPageView ? pageStyle : ''}">
-    ${state.notesPageView ? pagedPreview : `<div id="note-editor-plain" class="notes-plain-editor notes-preview" contenteditable="true" data-placeholder="Escreva à vontade, sem se preocupar com formatação..." oninput="onNoteContentInput('${note.id}', this.innerHTML)" onkeydown="if(event.key==='Tab'){ event.preventDefault(); insertRichIndent(); }">${content}</div>`}
+    ${state.notesPageView ? pagedPreview : `<div id="note-editor-plain" class="notes-plain-editor notes-preview" contenteditable="true" data-placeholder="Escreva à vontade, sem se preocupar com formatação..." oninput="handleRichEditorInput(this)" onkeydown="if(handleWikiAutocompleteKeydown(event)) return; if(event.key==='Tab'){ event.preventDefault(); insertRichIndent(); }">${content}</div>`}
   </div>
   ` : `
   <div class="notes-editor-panes ${mode}">
@@ -7421,6 +7553,7 @@ function renderNoteEditor(note){
     <button class="ghost-btn" id="note-comment-btn" onmousedown="event.preventDefault()" onclick="openNoteCommentModal()">📝 Comentário</button>
     <button class="primary-btn" onmousedown="event.preventDefault()" title="Atalho: ${noteShortcutLabel('f')}" onclick="requestCardFromNoteSelection()">📌 Criar cartão</button>
   </div>
+  <div id="wiki-link-autocomplete" class="wiki-link-autocomplete" role="listbox" aria-label="Notas para vincular"></div>
   `;
 }
 function renderRichColorPalette(kind){
@@ -8595,7 +8728,12 @@ function backToDeck(){
 function openNewDeckModal(){ state.modal = { type:'new-deck', name:'', color: DECK_COLORS[state.decks.length % DECK_COLORS.length], deckType:'standard' }; render(); }
 function openApiKeyModal(){ state.modal = { type:'api-key', key: getApiKey(), key2: getApiKey2(), booksKey: getBooksApiKey() }; render(); }
 function openAppOptionsModal(){ state.modal={type:'app-options'}; render(); }
-function closeModal(){ state.modal = null; render(); }
+function closeModal(){
+  const closingQuickCommand = state.modal?.type==='quick-command';
+  state.modal = closingQuickCommand && suspendedEmbeddedNoteChat ? suspendedEmbeddedNoteChat : null;
+  suspendedEmbeddedNoteChat = null;
+  render();
+}
 function renderAppOptionsModal(){
   return `<div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal" style="width:420px;">
     <h3>Opções do Letther B</h3>
