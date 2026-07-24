@@ -4549,7 +4549,11 @@ function splitNoteHtmlByRenderedHeight(content, contentWidth, contentHeight){
       // para a quebra. Ignorá-las fazia o algoritmo recuar até a palavra
       // anterior e deixar um grande vazio, especialmente em A4 e A3.
       while(wordBreak>start && best-wordBreak<80 && !/[\s\u200b]/.test(plainText.charAt(wordBreak-1))) wordBreak--;
-      if(wordBreak>start && fits(htmlBetween(start,wordBreak))) best=wordBreak;
+      const foundNaturalBreak=wordBreak>start && /[\s\u200b]/.test(plainText.charAt(wordBreak-1));
+      // Se não houver espaço nos últimos 80 caracteres (URL longa, código ou
+      // palavra contínua), mantém o limite medido. Recuar mesmo sem encontrar
+      // uma quebra desperdiçava cerca de duas linhas em todas as páginas.
+      if(foundNaturalBreak && fits(htmlBetween(start,wordBreak))) best=wordBreak;
     }
     pages.push(htmlBetween(start,best));
     start=best;
@@ -6521,7 +6525,7 @@ function renderSidebar(){
       <div>
         <h1>Recall</h1>
         <span>REPETIÇÃO ESPAÇADA</span>
-        <span class="brand-version">v2026.07.24.23</span>
+        <span class="brand-version">v2026.07.24.24</span>
       </div>
     </div>
     <button class="ghost-btn" style="font-size:13px; padding:10px 12px; margin-bottom:6px; ${(state.view==='library'||state.view==='book') ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="openLibrary()">📚 Leituras</button>
