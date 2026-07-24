@@ -369,6 +369,10 @@
   .notes-plain-editor{ width:100%; height:100%; outline:none; cursor:text; }
   .notes-editor-panes.page-view{ padding:24px; background:var(--bg-2); }
   .notes-editor-panes.page-view .notes-plain-editor{ width:min(100%, 794px); min-height:1123px; height:auto; margin:0 auto; padding:72px 76px; background:var(--surface); border:1px solid var(--border); border-radius:2px; box-shadow:0 8px 30px rgba(0,0,0,.18); }
+  .notes-paged-preview{ display:flex; flex-direction:column; gap:22px; align-items:center; width:100%; }
+  .note-page-sheet{ position:relative; background:var(--surface); border:1px solid var(--border); box-shadow:0 8px 30px rgba(0,0,0,.18); overflow:hidden; line-height:1.7; font-size:14.5px; }
+  .note-page-sheet-content{ height:100%; overflow:hidden; white-space:pre-wrap; word-break:break-word; }
+  .note-page-sheet-number{ position:absolute; bottom:0; left:0; right:0; font-size:12px; color:var(--text-faint); }
   .notes-plain-editor:empty:before{ content:attr(data-placeholder); color:var(--text-faint); pointer-events:none; }
   .notes-preview h1, .notes-preview h2, .notes-preview h3{ margin:0.8em 0 0.4em 0; line-height:1.3; }
   .notes-preview h1:first-child, .notes-preview h2:first-child, .notes-preview h3:first-child{ margin-top:0; }
@@ -388,6 +392,9 @@
   .notes-comments-panel-versions{ display:flex; flex-direction:column; gap:6px; }
   .notes-comments-panel-versions div{ font-size:13px; line-height:1.5; padding:8px 10px; border-radius:8px; background:var(--bg-2); border:1px solid var(--border); }
   .notes-comments-panel-actions{ display:flex; gap:8px; flex-wrap:wrap; }
+  .page-settings .row{ align-items:end; }
+  .page-settings input[type=text]{ min-width:0; width:100%; }
+  .page-settings select{ width:100%; }
   .agenda-board{ display:grid; grid-template-columns:repeat(3,minmax(220px,1fr)); gap:14px; align-items:start; }
   .agenda-column{ background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:14px; min-height:260px; }
   .agenda-column h3{ font-size:16px; margin:0 0 10px; }
@@ -4385,6 +4392,30 @@ function getNoteWritingStats(content, note){
   const pageLabel = pages === 1 ? 'página' : 'páginas';
   return `${wordCount.toLocaleString('pt-BR')} ${wordCount === 1 ? 'palavra' : 'palavras'} · ≈ ${pages.toLocaleString('pt-BR', { maximumFractionDigits:1 })} ${pageLabel}`;
 }
+function renderCurrentPageNumber(note, content){
+  const settings = getNotePageSettings(note);
+  if(!settings.pageNumbers) return '';
+  const hidden = String(settings.hiddenPages||'').split(',').some(part => part.trim()==='1');
+  if(hidden) return '';
+  const align = settings.pageNumberPosition==='left' ? 'left' : settings.pageNumberPosition==='center' ? 'center' : 'right';
+  return `<div class="note-page-number" style="text-align:${align}; padding:0 ${settings.margin}${settings.unit};">1</div>`;
+}
+function pageNumberIsHidden(page, hiddenPages){
+  return String(hiddenPages||'').split(',').some(raw => {
+    const part=raw.trim(); if(!part) return false;
+    const range=part.match(/^(\d+)\s*-\s*(\d+)$/); if(range) return page>=Number(range[1]) && page<=Number(range[2]);
+    return Number(part)===page;
+  });
+}
+function renderPagedNotePreview(note, content){
+  const s=getNotePageSettings(note), factor=s.unit==='px'?1:37.795;
+  const width=s.width*factor, height=s.height*factor, margin=s.margin*factor;
+  const words=htmlToText(content).trim().split(/\s+/).filter(Boolean);
+  const perPage=getNoteWordsPerPage(note);
+  const chunks=[]; for(let i=0;i<words.length;i+=perPage) chunks.push(words.slice(i,i+perPage).join(' '));
+  if(!chunks.length) chunks.push('');
+  return `<div class="notes-paged-preview">${chunks.map((chunk,index)=>{ const page=index+1; const position=s.pageNumberPosition==='book' ? (page%2?'right':'left') : s.pageNumberPosition; const number=s.pageNumbers&&!pageNumberIsHidden(page,s.hiddenPages) ? `<div class="note-page-sheet-number" style="text-align:${position}; padding:0 ${margin}px ${Math.max(12,margin*.35)}px;">${page}</div>` : ''; return `<article class="note-page-sheet" style="width:${width}px; height:${height}px; padding:${margin}px;"><div class="note-page-sheet-content">${escapeHtml(chunk)}</div>${number}</article>`; }).join('')}</div>`;
+}
 function updateNoteWritingStats(content){
   const el = document.getElementById('note-writing-stats');
   const note = state.notesItems.find(n=>n.id===state.currentNoteId);
@@ -4895,6 +4926,10 @@ function updateSelectedNoteImage(change){
   if(change.crop === 'wide'){ image.style.width='100%'; image.style.aspectRatio='16 / 9'; image.style.objectFit='cover'; }
   if(change.crop === 'original'){ image.style.aspectRatio=''; image.style.objectFit=''; }
   onNoteContentInput(state.currentNoteId, document.getElementById('note-editor-plain').innerHTML);
+}
+function openNoteImageAdjustModal(){
+  if(!getSelectedNoteImage()){ showToast('Clique na imagem que deseja ajustar primeiro.', 'error'); return; }
+  state.modal = { type:'note-image-adjust' }; render();
 }
 
 /* --- seleção de texto na nota: criar cartão a partir do trecho, ou pedir
@@ -6286,7 +6321,7 @@ function renderSidebar(){
       <div>
         <h1>Recall</h1>
         <span>REPETIÇÃO ESPAÇADA</span>
-        <span class="brand-version">v2026.07.24.6</span>
+        <span class="brand-version">v2026.07.24.8</span>
       </div>
     </div>
     <button class="ghost-btn" style="font-size:13px; padding:10px 12px; margin-bottom:6px; ${(state.view==='library'||state.view==='book') ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="openLibrary()">📚 Leituras</button>
@@ -6568,7 +6603,7 @@ function renderNoteEditor(note){
   ${(isPlain || mode !== 'preview') ? renderNotesToolbar(note.format) : ''}
   ${isPlain ? `
   <div class="notes-editor-panes plain ${state.notesPageView ? 'page-view' : ''}">
-    <div id="note-editor-plain" class="notes-plain-editor notes-preview" contenteditable="true" data-placeholder="Escreva à vontade, sem se preocupar com formatação..." oninput="onNoteContentInput('${note.id}', this.innerHTML)" onkeydown="if(event.key==='Tab'){ event.preventDefault(); insertRichIndent(); }">${content}</div>
+    ${state.notesPageView ? renderPagedNotePreview(note, content) : `<div id="note-editor-plain" class="notes-plain-editor notes-preview" contenteditable="true" data-placeholder="Escreva à vontade, sem se preocupar com formatação..." oninput="onNoteContentInput('${note.id}', this.innerHTML)" onkeydown="if(event.key==='Tab'){ event.preventDefault(); insertRichIndent(); }">${content}</div>`}
   </div>
   ` : `
   <div class="notes-editor-panes ${mode}">
@@ -6644,16 +6679,7 @@ function renderNotesToolbar(format){
     <button class="icon-btn" ${noSteal}title="Link pra outra nota (${noteShortcutLabel('l')})" onclick="${wikiLink}">🔀</button>
     <button class="icon-btn" ${noSteal}title="Imagem por link" onclick="openInsertImageModal()">🖼️</button>
     <button class="icon-btn" ${noSteal}title="Enviar imagem do aparelho" onclick="openNoteImageUploadPicker()">📤</button>
-    ${!isMarkdown ? `<span style="width:1px; background:var(--border); margin:2px 2px;"></span>
-    <button class="icon-btn" ${noSteal}title="Imagem pequena (clique antes na imagem)" onclick="updateSelectedNoteImage({size:50})">½</button>
-    <button class="icon-btn" ${noSteal}title="Imagem média (clique antes na imagem)" onclick="updateSelectedNoteImage({size:75})">¾</button>
-    <button class="icon-btn" ${noSteal}title="Imagem inteira (clique antes na imagem)" onclick="updateSelectedNoteImage({size:100})">▣</button>
-    <button class="icon-btn" ${noSteal}title="Cortar em quadrado" onclick="updateSelectedNoteImage({crop:'square'})">□</button>
-    <button class="icon-btn" ${noSteal}title="Cortar em paisagem" onclick="updateSelectedNoteImage({crop:'wide'})">▭</button>
-    <button class="icon-btn" ${noSteal}title="Remover corte" onclick="updateSelectedNoteImage({crop:'original'})">↺</button>
-    <button class="icon-btn" ${noSteal}title="Alinhar imagem à esquerda" onclick="updateSelectedNoteImage({align:'left'})">⇤</button>
-    <button class="icon-btn" ${noSteal}title="Centralizar imagem" onclick="updateSelectedNoteImage({align:'center'})">↔</button>
-    <button class="icon-btn" ${noSteal}title="Alinhar imagem à direita" onclick="updateSelectedNoteImage({align:'right'})">⇥</button>` : ''}
+    ${!isMarkdown ? `<button class="icon-btn" ${noSteal}title="Ajustar imagem selecionada" onclick="openNoteImageAdjustModal()">🖼️⚙</button>` : ''}
     <span style="width:1px; background:var(--border); margin:2px 2px;"></span>
     <button class="icon-btn" title="Criar cartão colando um texto (útil no celular)" onclick="openNotePasteCardModal()">📌</button>
     <button class="icon-btn" title="Corrigir um texto colado (útil no celular)" onclick="openNotePasteCorrectionModal()">✏️</button>
@@ -7800,6 +7826,7 @@ function renderModal(){
   if(m.type === 'new-note-item') return renderNewNoteItemModal(m);
   if(m.type === 'note-page-settings') return renderNotePageSettingsModal(m);
   if(m.type === 'quick-command') return renderQuickCommandModal(m);
+  if(m.type === 'note-image-adjust') return renderNoteImageAdjustModal();
   if(m.type === 'rename-note-item') return renderRenameNoteItemModal(m);
   if(m.type === 'insert-note-image') return renderInsertNoteImageModal(m);
   if(m.type === 'note-passage-card') return renderNotePassageCardModal(m);
@@ -7881,7 +7908,7 @@ function renderNotePageSettingsModal(m){
   const s = m.settings;
   return `<div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal" style="width:440px;">
     <h3>Configuração de página</h3>
-    <div class="card-form" style="padding:0; border:0; background:none;"><div class="row"><div class="field"><label>LARGURA</label><input type="text" value="${s.width}" oninput="state.modal.settings.width=this.value"></div><div class="field"><label>ALTURA</label><input type="text" value="${s.height}" oninput="state.modal.settings.height=this.value"></div><div class="field"><label>UNIDADE</label><select onchange="state.modal.settings.unit=this.value"><option value="cm" ${s.unit==='cm'?'selected':''}>cm</option><option value="px" ${s.unit==='px'?'selected':''}>px</option></select></div></div>
+    <div class="card-form page-settings" style="padding:0; border:0; background:none;"><div class="row"><div class="field"><label>LARGURA</label><input type="text" value="${s.width}" oninput="state.modal.settings.width=this.value"></div><div class="field"><label>ALTURA</label><input type="text" value="${s.height}" oninput="state.modal.settings.height=this.value"></div><div class="field"><label>UNIDADE</label><select onchange="state.modal.settings.unit=this.value"><option value="cm" ${s.unit==='cm'?'selected':''}>cm</option><option value="px" ${s.unit==='px'?'selected':''}>px</option></select></div></div>
     <div class="field"><label>MARGEM DE SEGURANÇA (em ${escapeHtml(s.unit)})</label><input type="text" value="${s.margin}" oninput="state.modal.settings.margin=this.value"></div>
     <div class="field" style="margin-top:10px;"><label><input type="checkbox" ${s.pageNumbers?'checked':''} onchange="state.modal.settings.pageNumbers=this.checked"> Mostrar número de página</label><select style="margin-top:7px;" onchange="state.modal.settings.pageNumberPosition=this.value"><option value="left" ${s.pageNumberPosition==='left'?'selected':''}>Inferior esquerdo</option><option value="center" ${s.pageNumberPosition==='center'?'selected':''}>Inferior central</option><option value="right" ${s.pageNumberPosition==='right'?'selected':''}>Inferior direito</option><option value="book" ${s.pageNumberPosition==='book'?'selected':''}>Alternado como livro</option></select></div>
     <div class="field" style="margin-top:10px;"><label>PÁGINAS SEM NÚMERO</label><input type="text" placeholder="Ex.: 1, 3, 8-10" value="${escapeHtml(s.hiddenPages)}" oninput="state.modal.settings.hiddenPages=this.value"></div></div>
@@ -7896,6 +7923,9 @@ function renderQuickCommandModal(m){
   ${!q ? `<div style="display:flex; gap:7px;"><button class="ghost-btn" onclick="runQuickCommand('chat')">💬 Chat</button><button class="ghost-btn" onclick="runQuickCommand('nota')">📄 Nova nota</button></div>` : ''}
   ${matches.map(n=>`<button class="ghost-btn" style="display:block; width:100%; text-align:left; margin-top:5px;" onclick="runQuickCommand('${escapeHtml(n.name).replace(/'/g,'&#39;')}')"><span class="note-color-dot" style="display:inline-block; background:${escapeHtml(n.iconColor||'#F5A623')};"></span> ${escapeHtml(n.name)}</button>`).join('')}
   ${q && !matches.length && q!=='chat' && q!=='nota' ? `<div style="font-size:12px; color:var(--text-faint); padding:8px 4px;">Nenhuma nota encontrada.</div>`:''}</div></div>`;
+}
+function renderNoteImageAdjustModal(){
+  return `<div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal" style="width:350px;"><h3>Ajustar imagem</h3><p style="font-size:12px; color:var(--text-faint);">Tamanho, corte e alinhamento da imagem selecionada.</p><div style="display:flex; gap:7px; flex-wrap:wrap;"><button class="ghost-btn" onclick="updateSelectedNoteImage({size:50})">Pequena</button><button class="ghost-btn" onclick="updateSelectedNoteImage({size:75})">Média</button><button class="ghost-btn" onclick="updateSelectedNoteImage({size:100})">Inteira</button><button class="ghost-btn" onclick="updateSelectedNoteImage({crop:'square'})">Corte quadrado</button><button class="ghost-btn" onclick="updateSelectedNoteImage({crop:'wide'})">Paisagem</button><button class="ghost-btn" onclick="updateSelectedNoteImage({crop:'original'})">Sem corte</button><button class="ghost-btn" onclick="updateSelectedNoteImage({align:'left'})">Esquerda</button><button class="ghost-btn" onclick="updateSelectedNoteImage({align:'center'})">Centro</button><button class="ghost-btn" onclick="updateSelectedNoteImage({align:'right'})">Direita</button></div><div class="modal-actions"><button class="primary-btn" onclick="closeModal()">Concluído</button></div></div></div>`;
 }
 function renderRenameNoteItemModal(m){
   const item = state.notesItems.find(n=>n.id===m.id);
