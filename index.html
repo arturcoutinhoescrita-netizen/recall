@@ -130,6 +130,8 @@
     font-size:0; box-shadow:0 3px 12px rgba(74,53,37,.16);
   }
   .brand h1{ font-size:20px; margin:0; font-weight:600; }
+  .brand h1, .desktop-top-brand strong, .app-home-title, .app-auth-name{ font-family:'Nickainley',cursive; font-weight:400; letter-spacing:0; }
+  .brand h1{ font-size:29px; line-height:.9; }
   .brand span{ display:block; font-size:11px; color:var(--text-faint); margin-top:1px; letter-spacing:0.04em; }
   .brand-version{ font-size:9px !important; letter-spacing:0.06em !important; opacity:0.72; }
 
@@ -1033,7 +1035,7 @@ function renderAuthGate(){
   return `
   <div style="width:100%; min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; text-align:center; padding:20px;">
     <div class="brand-mark" style="width:56px; height:56px; border-radius:14px;"></div>
-    <h1 style="margin:0;">Letther B</h1>
+    <h1 class="app-auth-name" style="margin:0;">Letther B</h1>
     ${standalone ? `
       <p style="color:var(--text-muted); max-width:320px; font-size:14px;">Como o app está instalado, o login do Google funciona melhor abrindo pelo navegador na primeira vez.</p>
       <button class="primary-btn" onclick="openInBrowserForLogin()">Abrir no navegador pra entrar</button>
@@ -1510,10 +1512,6 @@ async function saveToFileSystem(){
     }
     const payload = JSON.stringify({ decks: state.decks, cards: state.cards, stats: state.stats }, null, 2);
     const writable = await state.fileHandle.createWritable();
-    await writable.write(payload);
-    await writable.close();
-    showToast('Salvo no arquivo. As próximas mudanças sincronizam automaticamente nele, inclusive se você recarregar a página.');
-  teWritable();
     await writable.write(payload);
     await writable.close();
     showToast('Salvo no arquivo. As próximas mudanças sincronizam automaticamente nele, inclusive se você recarregar a página.');
@@ -7020,7 +7018,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.24.45</span>
+        <span class="brand-version">v2026.07.24.46</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -7078,7 +7076,7 @@ function renderMobileSidebar(){
   const section=state.mobileHomeSection||null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.45</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.46</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${section==='decks' ? `<div class="mobile-deck-actions"><button class="icon-btn" title="Novo baralho" onclick="openNewDeckModal()">＋</button><button class="icon-btn" title="Tirar foto para criar cartões" onclick="openPhotoImportPicker(true)">📷</button><button class="icon-btn" title="Carregar imagem para criar cartões" onclick="openPhotoImportPicker(false)">🖼️</button></div><div class="mobile-deck-list">${getOrderedDecks().length ? getOrderedDecks().map(d=>{ const due=getDueCards(d.id).length; return `<div class="mobile-deck-card" onclick="selectDeck('${d.id}')"><span class="deck-dot" style="background:${d.color}"></span><span class="deck-item-name">${escapeHtml(d.name)}</span>${due?`<span class="due-badge">${due}</span>`:''}<button class="mobile-deck-star ${d.favorite?'active':''}" title="Favoritar" onclick="event.stopPropagation(); toggleDeckFavorite('${d.id}')">${d.favorite?'★':'☆'}</button></div>`; }).join('') : `<p style="font-size:12px; color:var(--text-faint); text-align:center;">Crie seu primeiro baralho.</p>`}</div>`:''}
@@ -9619,4 +9617,14 @@ if(hasClaudeStorage()){
   loadData();
   tryReconnectFileHandle();
 } else {
-  initFire
+  initFirebase();
+}
+
+if('serviceWorker' in navigator){
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').catch(e => console.error('Falha ao registrar o service worker', e));
+  });
+}
+</script>
+</body>
+</html>
