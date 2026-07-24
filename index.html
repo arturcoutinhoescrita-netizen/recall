@@ -481,6 +481,23 @@
   .agenda-column h3{ font-size:16px; margin:0 0 10px; }
   .agenda-card{ background:var(--bg-2); border:1px solid var(--border); border-radius:10px; padding:11px 12px; margin-top:8px; font-size:13px; line-height:1.45; }
   .agenda-card .agenda-meta{ color:var(--text-faint); font-size:11px; margin-top:4px; }
+  .agenda-calendar{ background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:12px; }
+  .agenda-calendar-weekdays, .agenda-calendar-grid{ display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:5px; }
+  .agenda-calendar-weekdays{ margin-bottom:5px; }
+  .agenda-calendar-weekdays span{ padding:5px 2px; color:var(--text-faint); font-size:10px; font-weight:700; text-align:center; text-transform:uppercase; }
+  .agenda-day{ min-height:84px; padding:7px; border:1px solid transparent; border-radius:9px; background:var(--bg-2); color:var(--text); text-align:left; transition:background .15s,border-color .15s; }
+  .agenda-day:hover{ border-color:var(--accent-dim); }
+  .agenda-day.other-month{ opacity:.38; }
+  .agenda-day.today{ box-shadow:inset 0 0 0 1px var(--accent-dim); }
+  .agenda-day.selected{ background:var(--accent-soft); border-color:var(--accent); }
+  .agenda-day-number{ display:block; font-size:12px; font-weight:700; }
+  .agenda-day-summary{ display:flex; flex-wrap:wrap; gap:3px; margin-top:6px; }
+  .agenda-day-dot{ width:7px; height:7px; border-radius:50%; }
+  .agenda-day-count{ margin-top:5px; color:var(--text-faint); font-size:10px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .agenda-summary-grid{ display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin:12px 0; }
+  .agenda-summary-chip{ padding:10px; border:1px solid var(--border); border-radius:10px; background:var(--surface); }
+  .agenda-summary-chip strong{ display:block; font-size:17px; color:var(--accent); }
+  .agenda-summary-chip span{ color:var(--text-faint); font-size:10.5px; }
 
 
   @media (max-width:820px){
@@ -509,6 +526,9 @@
     @keyframes mobileMenuIn{ from{ opacity:.25; transform:translateX(-28px); } to{ opacity:1; transform:translateX(0); } }
     @keyframes mobilePageIn{ from{ opacity:.25; transform:translateX(28px); } to{ opacity:1; transform:translateX(0); } }
     .agenda-board{ grid-template-columns:1fr; }
+    .agenda-day{ min-height:70px; padding:5px; }
+    .agenda-summary-grid{ gap:6px; }
+    .agenda-calendar{ grid-column:auto !important; }
     .new-deck-btn, .sidebar > .ghost-btn{ width:100%; justify-content:center; }
     .deck-list{ flex-direction:column; overflow-x:visible; gap:8px; }
     .deck-item{ padding:14px 16px; border-radius:12px; background:var(--surface); border:1px solid var(--border); }
@@ -827,7 +847,9 @@ function saveData(){
 
 /* ============ AGENDA E HISTÓRICO DE ATIVIDADES ============ */
 const ACTIVITY_HISTORY_LIMIT = 240;
-const WRITING_MIN_MS = 5 * 60 * 1000;
+// Um minuto já é suficiente para aparecer na Agenda; pausas maiores são
+// encerradas automaticamente, evitando contabilizar uma nota abandonada.
+const WRITING_MIN_MS = 1 * 60 * 1000;
 const READING_AUTOSAVE_MS = 2 * 60 * 60 * 1000;
 function addActivity(type, details){
   const durationMs = Math.max(0, Math.round((details.durationMs || 0) / 60000) * 60000);
@@ -2288,6 +2310,9 @@ function openLibrary(){
 function openAgenda(){
   finishReadingActivity();
   finishWritingActivity();
+  const now=new Date();
+  if(!state.agendaCursor) state.agendaCursor={year:now.getFullYear(),month:now.getMonth()};
+  if(!state.agendaSelectedDate) state.agendaSelectedDate=agendaDateKey(now);
   state.view = 'agenda';
   render();
 }
@@ -2306,6 +2331,46 @@ function formatActivityDuration(durationMs){
 function formatActivityTime(timestamp){
   return new Date(timestamp).toLocaleString('pt-BR', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' });
 }
+function agendaDateKey(value){
+  const d=value instanceof Date ? value : new Date(value);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+function agendaDateFromKey(key){
+  const parts=String(key||'').split('-').map(Number);
+  return parts.length===3 ? new Date(parts[0],parts[1]-1,parts[2]) : new Date();
+}
+function getAgendaCursor(){
+  const now=new Date();
+  const c=state.agendaCursor;
+  return c && Number.isInteger(c.year) && Number.isInteger(c.month) ? c : {year:now.getFullYear(),month:now.getMonth()};
+}
+function changeAgendaMonth(delta){
+  const cursor=getAgendaCursor();
+  const next=new Date(cursor.year,cursor.month+delta,1);
+  state.agendaCursor={year:next.getFullYear(),month:next.getMonth()};
+  state.agendaSelectedDate=agendaDateKey(next);
+  render();
+}
+function goToAgendaToday(){
+  const now=new Date();
+  state.agendaCursor={year:now.getFullYear(),month:now.getMonth()};
+  state.agendaSelectedDate=agendaDateKey(now);
+  render();
+}
+function selectAgendaDate(key){ state.agendaSelectedDate=key; render(); }
+function getAgendaWeekNumber(date){
+  const d=new Date(Date.UTC(date.getFullYear(),date.getMonth(),date.getDate()));
+  const day=d.getUTCDay() || 7; d.setUTCDate(d.getUTCDate()+4-day);
+  const yearStart=new Date(Date.UTC(d.getUTCFullYear(),0,1));
+  return Math.ceil((((d-yearStart)/86400000)+1)/7);
+}
+function getActivityTotals(activities){
+  return activities.reduce((totals,activity)=>{
+    totals[activity.type]=(totals[activity.type]||0)+(activity.durationMs||0);
+    if(activity.type==='flashcards') totals.cards+=(activity.count||0);
+    return totals;
+  },{reading:0,writing:0,flashcards:0,cards:0});
+}
 function isToday(timestamp){
   const now = new Date(), date = new Date(timestamp);
   return now.getFullYear()===date.getFullYear() && now.getMonth()===date.getMonth() && now.getDate()===date.getDate();
@@ -2320,27 +2385,52 @@ function renderAgendaActivity(activity){
 }
 function renderAgendaView(){
   const dueDecks = state.decks.map(deck => ({ deck, count:getDueCards(deck.id).length })).filter(item => item.count);
-  const today = state.activities.filter(a=>isToday(a.at));
   const totalDue = dueDecks.reduce((sum,item)=>sum+item.count,0);
+  const cursor=getAgendaCursor();
+  const monthStart=new Date(cursor.year,cursor.month,1);
+  const monthLabel=monthStart.toLocaleDateString('pt-BR',{month:'long',year:'numeric'});
+  const selectedKey=state.agendaSelectedDate || agendaDateKey(new Date());
+  const selectedDate=agendaDateFromKey(selectedKey);
+  const activitiesByDay={};
+  state.activities.forEach(activity=>{ const key=agendaDateKey(activity.at); (activitiesByDay[key]||(activitiesByDay[key]=[])).push(activity); });
+  const selectedActivities=(activitiesByDay[selectedKey]||[]).sort((a,b)=>b.at-a.at);
+  const selectedTotals=getActivityTotals(selectedActivities);
+  const leading=(monthStart.getDay()+6)%7;
+  const gridStart=new Date(cursor.year,cursor.month,1-leading);
+  const calendarDays=Array.from({length:42},(_,index)=>{
+    const date=new Date(gridStart.getFullYear(),gridStart.getMonth(),gridStart.getDate()+index);
+    const key=agendaDateKey(date), activities=activitiesByDay[key]||[], totals=getActivityTotals(activities);
+    const markers=[(totals.flashcards||totals.cards)&&'<i class="agenda-day-dot" style="background:#7DA9FA"></i>',totals.writing&&'<i class="agenda-day-dot" style="background:#B88E74"></i>',totals.reading&&'<i class="agenda-day-dot" style="background:#6EE7B7"></i>'].filter(Boolean).join('');
+    const label=activities.length ? `${activities.length} atividade${activities.length>1?'s':''}` : '';
+    return `<button class="agenda-day ${date.getMonth()!==cursor.month?'other-month':''} ${key===agendaDateKey(new Date())?'today':''} ${key===selectedKey?'selected':''}" title="${date.toLocaleDateString('pt-BR',{weekday:'long',day:'numeric',month:'long'})}${label?` · ${label}`:''}" onclick="selectAgendaDate('${key}')"><span class="agenda-day-number">${date.getDate()}</span><span class="agenda-day-summary">${markers}</span><span class="agenda-day-count">${label}</span></button>`;
+  }).join('');
   return `
   <div style="max-width:1200px; margin:0 auto;">
     <button class="ghost-btn mobile-back-btn" onclick="backToHome()">← Menu</button>
     <div class="deck-header" style="margin-bottom:20px;">
-      <div><h2 style="margin:0 0 6px;">🗓️ Agenda</h2><p>Organize as revisões de hoje e acompanhe seu ritmo de leitura, estudo e escrita.</p></div>
+      <div><h2 style="margin:0 0 6px;">🗓️ Agenda</h2><p>Seu calendário de estudo, escrita e leitura.</p></div>
       <div style="font-size:12px; color:var(--text-faint);">${totalDue} revisão(ões) para hoje</div>
     </div>
+    <div class="agenda-summary-grid">
+      <div class="agenda-summary-chip"><strong>${selectedTotals.flashcards?formatActivityDuration(selectedTotals.flashcards):'0 min'}</strong><span>em flashcards</span></div>
+      <div class="agenda-summary-chip"><strong>${selectedTotals.writing?formatActivityDuration(selectedTotals.writing):'0 min'}</strong><span>escrevendo</span></div>
+      <div class="agenda-summary-chip"><strong>${selectedTotals.reading?formatActivityDuration(selectedTotals.reading):'0 min'}</strong><span>lendo</span></div>
+    </div>
     <div class="agenda-board">
+      <section class="agenda-calendar" style="grid-column:span 2;">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:9px;"><button class="icon-btn" title="Mês anterior" onclick="changeAgendaMonth(-1)">‹</button><div style="text-align:center;"><strong style="font-size:16px; text-transform:capitalize;">${monthLabel}</strong><div style="font-size:10.5px; color:var(--text-faint);">Ano ${cursor.year}</div></div><div style="display:flex; gap:5px;"><button class="ghost-btn" style="padding:5px 8px; font-size:11px;" onclick="goToAgendaToday()">Hoje</button><button class="icon-btn" title="Próximo mês" onclick="changeAgendaMonth(1)">›</button></div></div>
+        <div class="agenda-calendar-weekdays"><span>Seg</span><span>Ter</span><span>Qua</span><span>Qui</span><span>Sex</span><span>Sáb</span><span>Dom</span></div>
+        <div class="agenda-calendar-grid">${calendarDays}</div>
+        <div style="display:flex; gap:10px; flex-wrap:wrap; margin:10px 4px 0; color:var(--text-faint); font-size:10.5px;"><span><i class="agenda-day-dot" style="display:inline-block; background:#7DA9FA"></i> Flashcards</span><span><i class="agenda-day-dot" style="display:inline-block; background:#B88E74"></i> Escrita</span><span><i class="agenda-day-dot" style="display:inline-block; background:#6EE7B7"></i> Leitura</span></div>
+      </section>
       <section class="agenda-column">
-        <h3>📌 A fazer <span style="font-size:11px; color:var(--text-faint);">${totalDue}</span></h3>
+        <h3>${selectedDate.toLocaleDateString('pt-BR',{day:'numeric',month:'long'})} <span style="font-size:11px; color:var(--text-faint);">· semana ${getAgendaWeekNumber(selectedDate)}</span></h3>
+        <p style="margin:0; font-size:11.5px; color:var(--text-faint);">${selectedTotals.cards||0} cartão(ões) · ${selectedActivities.length} registro(s)</p>
+        ${selectedActivities.length ? selectedActivities.map(renderAgendaActivity).join('') : `<p style="color:var(--text-faint); font-size:12.5px;">Nenhuma atividade registrada neste dia.</p>`}
+      </section>
+      <section class="agenda-column">
+        <h3>📌 Revisões <span style="font-size:11px; color:var(--text-faint);">${totalDue}</span></h3>
         ${dueDecks.length ? dueDecks.map(({deck,count}) => `<div class="agenda-card"><div style="display:flex; justify-content:space-between; gap:8px; align-items:center;"><strong>${escapeHtml(deck.name)}</strong><span class="due-badge">${count}</span></div><div class="agenda-meta">${count} cartão(ões) vencido(s)</div><button class="ghost-btn" style="font-size:11.5px; padding:6px 9px; margin-top:9px;" onclick="openAgendaDeckStudy('${deck.id}')">Abrir revisão</button></div>`).join('') : `<p style="color:var(--text-faint); font-size:12.5px;">Nenhuma revisão vencida. Um ótimo momento para avançar em outros projetos.</p>`}
-      </section>
-      <section class="agenda-column">
-        <h3>☀️ Hoje <span style="font-size:11px; color:var(--text-faint);">${today.length} atividade(s)</span></h3>
-        ${today.length ? today.map(renderAgendaActivity).join('') : `<p style="color:var(--text-faint); font-size:12.5px;">As atividades de hoje aparecerão aqui automaticamente.</p>`}
-      </section>
-      <section class="agenda-column">
-        <h3>🕘 Histórico</h3>
-        ${state.activities.length ? state.activities.slice(0,10).map(renderAgendaActivity).join('') : `<p style="color:var(--text-faint); font-size:12.5px;">Ainda não há atividades registradas.</p>`}
       </section>
     </div>
   </div>`;
@@ -7206,7 +7296,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.24.61</span>
+        <span class="brand-version">v2026.07.24.62</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -7264,7 +7354,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.61</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.62</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
