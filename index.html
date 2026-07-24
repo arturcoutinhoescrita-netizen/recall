@@ -1170,12 +1170,28 @@ function resetDeckFlags(deckId){
     showToast('Marcações do baralho resetadas.');
   }, 'Resetar');
 }
-function addTermCard(deckId, term, translation, note){
+function findDuplicateLanguageTerm(deckId, term, category, excludeCardId){
+  const termKey = normalizeAnswer(stripParens(term));
+  const categoryKey = normalizeAnswer(category || '');
+  return (state.cards[deckId] || []).find(card =>
+    card.id !== excludeCardId &&
+    normalizeAnswer(stripParens(card.front)) === termKey &&
+    normalizeAnswer(card.category || '') === categoryKey
+  );
+}
+function addTermCard(deckId, term, translation, note, category){
   if(!term.trim()) return;
+  const duplicate = findDuplicateLanguageTerm(deckId, term, category);
+  if(duplicate){
+    showToast(`O termo "${term.trim()}" já existe neste baralho${category ? ` como ${category}` : ' sem categoria'}.`, 'error');
+    return false;
+  }
   const card = makeCard(term, translation||'');
   card.note = (note||'').trim();
+  card.category = (category||'').trim();
   state.cards[deckId].push(card);
   saveData(); render();
+  return true;
 }
 function fillTranslation(deckId, cardId){
   const val = collectTranslationFields(`fill-back-${cardId}`);
@@ -1407,6 +1423,7 @@ function handleImportFile(deckId, filename, content){
   const deck = state.decks.find(d=>d.id===deckId);
   const isLanguage = deck && deck.type === 'language';
   let added = 0;
+  let skippedDuplicates = 0;
   try{
     if(filename.toLowerCase().endsWith('.json')){
       const data = JSON.parse(content);
@@ -1418,7 +1435,13 @@ function handleImportFile(deckId, filename, content){
         if(isLanguage){
           const term = typeof item === 'string' ? item : (item && (item.front || item.term));
           const translation = (item && typeof item === 'object') ? (item.back || item.translation || '') : '';
-          if(term && String(term).trim()){ state.cards[deckId].push(makeCard(String(term), String(translation||''))); added++; }
+          const category = (item && typeof item === 'object') ? (item.category || '') : '';
+          if(term && String(term).trim()){
+            if(findDuplicateLanguageTerm(deckId, String(term), String(category))){ skippedDuplicates++; return; }
+            const card = makeCard(String(term), String(translation||''));
+            card.category = String(category).trim();
+            state.cards[deckId].push(card); added++;
+          }
         } else if(item && item.front && item.back){
           state.cards[deckId].push(makeCard(item.front, item.back)); added++;
         }
@@ -1434,7 +1457,10 @@ function handleImportFile(deckId, filename, content){
         if(isLanguage){
           const term = parts[0].trim().replace(/^"|"$/g,'').replace(/<[^>]+>/g,'');
           const translation = parts.length >= 2 ? parts[1].trim().replace(/^"|"$/g,'').replace(/<[^>]+>/g,'') : '';
-          if(term){ state.cards[deckId].push(makeCard(term, translation)); added++; }
+          if(term){
+            if(findDuplicateLanguageTerm(deckId, term, '')){ skippedDuplicates++; return; }
+            state.cards[deckId].push(makeCard(term, translation)); added++;
+          }
           return;
         }
         if(parts.length >= 2){
@@ -1450,7 +1476,7 @@ function handleImportFile(deckId, filename, content){
     return;
   }
   saveData(); render();
-  showToast(added > 0 ? `${added} cartão(ões) importado(s) com sucesso.` : 'Nenhum cartão válido encontrado nesse arquivo.');
+  showToast(added > 0 ? `${added} cartão(ões) importado(s) com sucesso.${skippedDuplicates ? ` ${skippedDuplicates} repetido(s) foram ignorados.` : ''}` : (skippedDuplicates ? 'Todos os termos já existiam neste baralho.' : 'Nenhum cartão válido encontrado nesse arquivo.'));
 }
 
 /* ============ AI CALLS ============ */
@@ -2763,6 +2789,10 @@ function addLookupWordToDeck(){
   if(!m || m.type !== 'word-lookup' || m.status !== 'done') return;
   if(!m.deckId || !state.cards[m.deckId]){ state.modal = null; render(); return; }
   const card = buildLookupCard(m);
+  if(findDuplicateLanguageTerm(m.deckId, card.front, card.category)){
+    showToast(`"${card.front}" já existe neste baralho com a categoria ${card.category || 'não informada'}.`, 'error');
+    return;
+  }
   state.cards[m.deckId].push(card);
   state.modal = null;
   saveData(); render();
@@ -2775,6 +2805,10 @@ function memorizeLookupWord(){
   if(!m || m.type !== 'word-lookup' || m.status !== 'done') return;
   if(!m.deckId || !state.cards[m.deckId]){ showToast('Vincule um baralho a este livro pra poder memorizar.', 'error'); return; }
   const card = buildLookupCard(m);
+  if(findDuplicateLanguageTerm(m.deckId, card.front, card.category)){
+    showToast(`"${card.front}" já existe neste baralho com a categoria ${card.category || 'não informada'}.`, 'error');
+    return;
+  }
   state.cards[m.deckId].push(card);
   const bookId = state.currentBookId;
   state.modal = null;
@@ -6179,6 +6213,7 @@ function renderCardsTab(deck){
       <div class="field">
         <label>TERMO EM INGLÊS</label>
         <input type="text" id="new-term" placeholder="Ex: nevertheless">
+        <input type="text" id="new-term-category" list="grammar-categories" placeholder="Categoria (ex: verbo, adjetivo)" style="margin-top:6px; padding:7px 9px; font-size:12px;">
       </div>
       <div class="field">
         <label>TRADUÇÕES ACEITAS (até 4)</label>
@@ -6186,6 +6221,7 @@ function renderCardsTab(deck){
       </div>
     </div>
     <p style="font-size:11.5px; color:var(--text-faint); margin:-4px 0 0 0;">Preencha quantas quiser — na hora de estudar, qualquer uma delas conta como resposta certa.</p>
+    <datalist id="grammar-categories"><option value="substantivo"><option value="verbo"><option value="adjetivo"><option value="advérbio"><option value="pronome"><option value="preposição"><option value="conjunção"><option value="interjeição"></datalist>
     <div class="field">
       <label>NOTA (opcional)</label>
       <textarea id="new-term-note" rows="2" placeholder="Uma explicação mais detalhada sobre o assunto, pra consultar durante o estudo"></textarea>
@@ -6245,6 +6281,10 @@ function renderCardsTab(deck){
                 ? renderTranslationFields(`edit-back-${c.id}`, c.back)
                 : `<input type="text" id="edit-back-${c.id}" value="${escapeHtml(c.back)}" style="padding:7px 9px; font-size:13px;" onkeydown="if(event.key==='Enter'){event.preventDefault(); saveEditCard('${deck.id}','${c.id}');} else if(event.key==='Escape'){ cancelEditCard(); }">`}
             </div>
+            ${isLanguage ? `<div class="field" style="gap:4px;">
+              <label style="font-size:10px;">CATEGORIA GRAMATICAL</label>
+              <input type="text" id="edit-category-${c.id}" list="grammar-categories" value="${escapeHtml(c.category||'')}" placeholder="Ex: verbo" style="padding:7px 9px; font-size:13px;">
+            </div>` : ''}
             <div class="field" style="gap:4px;">
               <label style="font-size:10px;">NOTA (opcional)</label>
               <textarea id="edit-note-${c.id}" rows="2" style="padding:7px 9px; font-size:13px;" placeholder="Explicação mais detalhada" onkeydown="if(event.key==='Escape'){ cancelEditCard(); }">${escapeHtml(c.note||'')}</textarea>
@@ -6263,7 +6303,7 @@ function renderCardsTab(deck){
       const rowStyle = c.learned ? 'style="background:rgba(110,231,183,0.06); border-color:rgba(110,231,183,0.3);"' : c.flagged ? 'style="background:rgba(245,166,35,0.07); border-color:rgba(245,166,35,0.35);"' : '';
       return isLanguage ? `
       <div class="card-row" ${rowStyle}>
-        <div class="front" style="flex:1;">${escapeHtml(c.front)}</div>
+        <div class="front" style="flex:1;">${escapeHtml(c.front)}${c.category ? ` <span style="font-size:10px; color:var(--text-faint); font-weight:500;">(${escapeHtml(c.category)})</span>` : ''}</div>
         ${c.back ? `
           <div class="back" style="flex:1;">${escapeHtml(c.back.split('/').join(' / '))}</div>
         ` : `
@@ -6314,11 +6354,18 @@ function saveEditCard(deckId, cardId){
   if(!front || (!isLanguage && !back)) { showToast('Preencha os campos antes de salvar.', 'error'); return; }
   const noteInput = document.getElementById(`edit-note-${cardId}`);
   const note = noteInput ? noteInput.value.trim() : '';
+  const categoryInput = document.getElementById(`edit-category-${cardId}`);
+  const category = categoryInput ? categoryInput.value.trim() : '';
   const card = (state.cards[deckId]||[]).find(c=>c.id===cardId);
   if(!card) return;
+  if(isLanguage && findDuplicateLanguageTerm(deckId, front, category, cardId)){
+    showToast(`O termo "${front}" já existe neste baralho${category ? ` como ${category}` : ' sem categoria'}.`, 'error');
+    return;
+  }
   card.front = front;
   card.back = back;
   card.note = note;
+  if(isLanguage) card.category = category;
   state.editingCardId = null;
   saveData(); render();
 }
@@ -6332,9 +6379,13 @@ function submitNewTerm(deckId){
   const term = document.getElementById('new-term').value;
   const translation = collectTranslationFields('new-term-translation');
   const note = document.getElementById('new-term-note').value;
-  addTermCard(deckId, term, translation, note);
+  const categoryInput = document.getElementById('new-term-category');
+  const category = categoryInput ? categoryInput.value : '';
+  const added = addTermCard(deckId, term, translation, note, category);
+  if(!added) return;
   const termInput = document.getElementById('new-term');
   if(termInput) termInput.value = '';
+  if(categoryInput) categoryInput.value = '';
 }
 
 function renderStudyPicker(deck){
