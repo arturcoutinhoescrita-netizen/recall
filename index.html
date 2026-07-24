@@ -370,7 +370,8 @@
   .notes-editor-panes.page-view{ padding:24px; background:var(--bg-2); }
   .notes-editor-panes.page-view .notes-plain-editor{ width:min(100%, 794px); min-height:1123px; height:auto; margin:0 auto; padding:72px 76px; background:var(--surface); border:1px solid var(--border); border-radius:2px; box-shadow:0 8px 30px rgba(0,0,0,.18); }
   .notes-paged-preview{ display:flex; flex-direction:column; gap:22px; align-items:center; width:100%; overflow-x:auto; }
-  .note-page-sheet{ position:relative; box-sizing:border-box; max-width:100%; background:var(--surface); border:1px solid var(--border); box-shadow:0 8px 30px rgba(0,0,0,.18); overflow:hidden; line-height:1.7; font-size:14.5px; }
+  .note-page-frame{ position:relative; flex:none; }
+  .note-page-sheet{ position:absolute; inset:0 auto auto 0; box-sizing:border-box; transform-origin:top left; background:var(--surface); border:1px solid var(--border); box-shadow:0 8px 30px rgba(0,0,0,.18); overflow:hidden; line-height:1.7; font-size:14.5px; }
   .note-page-sheet-content{ overflow:hidden; white-space:pre-wrap; overflow-wrap:anywhere; word-break:normal; }
   .note-page-sheet-number{ position:absolute; bottom:0; left:0; right:0; font-size:12px; color:var(--text-faint); }
   .notes-editor-panes.page-view{ display:block; position:relative; overflow:auto; padding:24px; }
@@ -4529,19 +4530,19 @@ function splitNoteHtmlByRenderedHeight(content, contentWidth, contentHeight){
 function renderPagedNotePreview(note, content){
   const s=getNotePageSettings(note), factor=s.unit==='px'?1:37.795;
   const configuredWidth=s.width*factor, configuredHeight=s.height*factor, configuredMargin=s.margin*factor;
-  const compact=window.innerWidth<=820;
-  const width=compact?Math.min(configuredWidth,Math.max(240,window.innerWidth-80)):configuredWidth;
-  const scale=width/configuredWidth;
-  const height=configuredHeight*scale;
-  const margin=Math.min(configuredMargin*scale,width/2-40);
-  const footerReserve=s.pageNumbers?Math.max(22,Math.min(34,margin*.55)):0;
-  const contentWidth=Math.max(40,width-margin*2);
-  const contentHeight=Math.max(40,height-margin*2-footerReserve);
-  // Medição e desenho usam as mesmas dimensões. Assim nenhum trecho que o
-  // paginador considerou válido fica escondido pela folha ou pelo rodapé.
+  const pane=document.querySelector('.notes-editor-panes');
+  const availableWidth=Math.max(240,(pane ? pane.clientWidth : window.innerWidth)-48);
+  const scale=Math.min(1,availableWidth/configuredWidth);
+  const displayWidth=configuredWidth*scale, displayHeight=configuredHeight*scale;
+  const footerReserve=s.pageNumbers?Math.max(22,Math.min(34,configuredMargin*.55)):0;
+  const contentWidth=Math.max(40,configuredWidth-configuredMargin*2);
+  const contentHeight=Math.max(40,configuredHeight-configuredMargin*2-footerReserve);
+  // A paginação usa o tamanho físico configurado. O scale abaixo é apenas o
+  // zoom de visualização necessário para a folha caber na tela: fonte, margem,
+  // imagens e rodapé diminuem juntos, como num editor de documentos.
   const chunks = splitNoteHtmlByRenderedHeight(content,contentWidth,contentHeight).map(html=>({html}));
   if(!chunks.length) chunks.push({ html:'' });
-  return `<div class="notes-paged-preview">${chunks.map((chunk,index)=>{ const page=index+1; const position=s.pageNumberPosition==='book' ? (page%2?'right':'left') : s.pageNumberPosition; const number=s.pageNumbers&&!pageNumberIsHidden(page,s.hiddenPages) ? `<div class="note-page-sheet-number" style="text-align:${position}; padding:0 ${margin}px ${Math.max(8,margin*.25)}px;">${page}</div>` : ''; return `<article class="note-page-sheet" style="width:${width}px; height:${height}px; padding:${margin}px;"><div class="note-page-sheet-content" style="height:${contentHeight}px; max-height:${contentHeight}px;">${chunk.html}</div>${number}</article>`; }).join('')}</div>`;
+  return `<div class="notes-paged-preview">${chunks.map((chunk,index)=>{ const page=index+1; const position=s.pageNumberPosition==='book' ? (page%2?'right':'left') : s.pageNumberPosition; const number=s.pageNumbers&&!pageNumberIsHidden(page,s.hiddenPages) ? `<div class="note-page-sheet-number" style="text-align:${position}; padding:0 ${configuredMargin}px ${Math.max(8,configuredMargin*.25)}px;">${page}</div>` : ''; return `<div class="note-page-frame" style="width:${displayWidth}px; height:${displayHeight}px;"><article class="note-page-sheet" style="width:${configuredWidth}px; height:${configuredHeight}px; padding:${configuredMargin}px; transform:scale(${scale});"><div class="note-page-sheet-content" style="height:${contentHeight}px; max-height:${contentHeight}px;">${chunk.html}</div>${number}</article></div>`; }).join('')}</div>`;
 }
 function updateNoteWritingStats(content){
   const el = document.getElementById('note-writing-stats');
@@ -4789,6 +4790,21 @@ function applyRichCommand(cmd, value){
 function setRichTextColor(color){ applyRichCommand('foreColor', color); }
 function setRichHighlight(color){ applyRichCommand('hiliteColor', color); }
 function setRichFont(font){ applyRichCommand('fontName', font); }
+function setRichFontSize(size){
+  const px=Math.max(8,Math.min(72,Number(size)||14));
+  focusRichEditor();
+  // execCommand aceita somente os tamanhos legados 1–7. O valor 7 funciona
+  // como marcador temporário; em seguida ele é convertido para CSS em pixels,
+  // que preserva o tamanho exato e também é respeitado pela paginação.
+  document.execCommand('fontSize',false,'7');
+  const editor=document.getElementById('note-editor-plain');
+  if(!editor) return;
+  editor.querySelectorAll('font[size="7"]').forEach(el=>{
+    el.removeAttribute('size');
+    el.style.fontSize=`${px}px`;
+  });
+  onNoteContentInput(state.currentNoteId,editor.innerHTML);
+}
 function openRichColorMenu(kind){
   const savedOffset = captureRichCursorOffset();
   state.noteColorMenu = { kind, savedOffset };
@@ -6448,7 +6464,7 @@ function renderSidebar(){
       <div>
         <h1>Recall</h1>
         <span>REPETIÇÃO ESPAÇADA</span>
-        <span class="brand-version">v2026.07.24.18</span>
+        <span class="brand-version">v2026.07.24.19</span>
       </div>
     </div>
     <button class="ghost-btn" style="font-size:13px; padding:10px 12px; margin-bottom:6px; ${(state.view==='library'||state.view==='book') ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="openLibrary()">📚 Leituras</button>
@@ -6794,7 +6810,8 @@ function renderNotesToolbar(format){
     <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Itálico" onclick="${italic}"><em>I</em></button>
     ${!isMarkdown ? `<span style="display:inline-flex; position:relative;"><button class="icon-btn" ${noSteal}title="Aplicar última cor de texto" onclick="applyLastRichColor('text')" style="font-size:13px; border-bottom:3px solid ${state.lastRichTextColor||'#F5A623'};">A</button><button class="icon-btn" ${noSteal}title="Escolher cor do texto" onclick="openRichColorMenu('text')" style="width:20px; font-size:10px; margin-left:-4px;">▾</button>${renderRichColorPalette('text')}</span>
     <span style="display:inline-flex; position:relative;"><button class="icon-btn" ${noSteal}title="Aplicar último destaque" onclick="applyLastRichColor('highlight')" style="font-size:14px; border-bottom:3px solid ${state.lastRichHighlight||'#F5D76E'};">🖍</button><button class="icon-btn" ${noSteal}title="Escolher cor do destaque" onclick="openRichColorMenu('highlight')" style="width:20px; font-size:10px; margin-left:-4px;">▾</button>${renderRichColorPalette('highlight')}</span>
-    <select title="Fonte" style="width:auto; max-width:108px; padding:5px 7px; font-size:11px;" onchange="setRichFont(this.value)"><option value="inherit">Fonte</option><option value="Arial">Arial</option><option value="Georgia">Georgia</option><option value="Verdana">Verdana</option><option value="Courier New">Monoespaçada</option></select>` : ''}
+    <select title="Fonte" style="width:auto; max-width:108px; padding:5px 7px; font-size:11px;" onchange="setRichFont(this.value)"><option value="inherit">Fonte</option><option value="Arial">Arial</option><option value="Georgia">Georgia</option><option value="Verdana">Verdana</option><option value="Courier New">Monoespaçada</option></select>
+    <select title="Tamanho da fonte" style="width:auto; max-width:84px; padding:5px 7px; font-size:11px;" onchange="setRichFontSize(this.value)"><option value="">Tamanho</option><option value="10">10 px</option><option value="12">12 px</option><option value="14">14 px</option><option value="16">16 px</option><option value="18">18 px</option><option value="20">20 px</option><option value="24">24 px</option><option value="28">28 px</option><option value="32">32 px</option><option value="36">36 px</option></select>` : ''}
     <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Título 1" onclick="${h1}">H1</button>
     <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Título 2" onclick="${h2}">H2</button>
     <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Título 3" onclick="${h3}">H3</button>
