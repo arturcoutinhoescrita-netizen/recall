@@ -1599,6 +1599,11 @@ async function callGeminiOnce(prompt, opts, key, model){
   // em raciocínio interno (não aparece na resposta) antes de escrever o texto visível —
   // sem essa folga, respostas curtas saem cortadas no meio (finishReason: MAX_TOKENS).
   body.generationConfig = { maxOutputTokens: (opts.maxTokens||400) + 800 };
+  // O agente da nota depende de uma resposta que a aplicação consiga ler e
+  // executar. Pedir JSON ao modelo no prompt ajuda, mas não impede que ele
+  // acrescente uma frase antes/depois do objeto; o MIME type torna o contrato
+  // explícito na própria API.
+  if(opts.responseMimeType) body.generationConfig.responseMimeType = opts.responseMimeType;
   if(opts.useSearch) body.tools = [{ google_search: {} }];
   const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`, {
     method: "POST",
@@ -5404,13 +5409,37 @@ function parseNoteAgentReply(rawReply){
   const raw = String(rawReply||'').trim();
   const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const candidate = (fenced ? fenced[1] : raw).trim();
-  try{
-    const data = JSON.parse(candidate);
-    if(data && typeof data === 'object' && !Array.isArray(data)){
-      return { reply: String(data.reply || data.message || '').trim(), actions: Array.isArray(data.actions) ? data.actions : [] };
+  // Além da resposta JSON pura, aceita um objeto JSON envolvido por texto.
+  // Isso protege o executor de pequenas quebras do modelo sem transformar
+  // texto normal em uma ação por engano.
+  const candidates = [candidate];
+  const start = candidate.indexOf('{');
+  if(start >= 0){
+    let depth = 0, quoted = false, escaped = false;
+    for(let i=start; i<candidate.length; i++){
+      const ch = candidate[i];
+      if(quoted){
+        if(escaped) escaped = false;
+        else if(ch === '\\') escaped = true;
+        else if(ch === '"') quoted = false;
+      }else if(ch === '"') quoted = true;
+      else if(ch === '{') depth++;
+      else if(ch === '}' && --depth === 0){ candidates.push(candidate.slice(start, i+1)); break; }
     }
-  }catch(e){}
+  }
+  for(const json of candidates){
+    try{
+      const data = JSON.parse(json);
+      if(data && typeof data === 'object' && !Array.isArray(data)){
+        const actions = Array.isArray(data.actions) ? data.actions : (data.action && typeof data.action === 'object' ? [data.action] : []);
+        return { reply: String(data.reply || data.message || '').trim(), actions };
+      }
+    }catch(e){}
+  }
   return { reply: raw, actions: [] };
+}
+function noteAgentRequestNeedsAction(question){
+  return /\b(crie|criar|adicione|adicionar|faça|faca|gere|gerar|edite|editar|reescreva|reescrever|resuma|resumir|mova|mover|organize|organizar|inclua|incluir)\b/i.test(String(question||''));
 }
 function resolveNoteAgentParent(parentRef, currentNote, aliases){
   if(!parentRef || parentRef === 'current_parent') return currentNote ? currentNote.parentId : null;
@@ -5577,9 +5606,16 @@ async function sendNoteChatMessage(){
   const prompt = `Você é o agente de IA de um caderno pessoal. Você conversa normalmente e pode executar ações dentro do aplicativo quando o usuário pedir explicitamente. A nota aberta pode ser editada por inteiro ou em partes, sem confirmação adicional. Não invente que fez uma ação: use apenas o formato abaixo para fazê-la. Quando o usuário pedir para procurar/buscar uma imagem na internet e adicioná-la, use search_image: o aplicativo fará a busca real em uma fonte pública e inserirá a imagem com crédito.\n\nNOTA ABERTA: "${note ? note.name : ''}"\nCONTEÚDO DA NOTA (preserve o formato ao editar):\n---\n${noteContent || '(nota vazia)'}\n---\n\nITENS DO CADERNO:\n${workspace}\n\nBARALHOS DISPONÍVEIS: ${decks}\n\nAções permitidas: create_folder {type,name,parentRef?,alias?}; create_note {type,title,content,parentRef?,format?}; edit_note {type,noteRef:'current',mode:'replace'|'append'|'prepend'|'replace_text'|'replace_all',content?,find?,replace?}; create_flashcards {type,deckRef:'linked'?,deckName?,cards:[{front,back,note?}]}; search_image {type,query,alt?,noteRef:'current'}. Para criar uma pasta e colocar notas nela, dê um alias à pasta e use o mesmo valor em parentRef. Só inclua ações solicitadas pelo usuário.\n\nResponda EXCLUSIVAMENTE com JSON válido, sem markdown: {"reply":"resposta curta e natural em português","actions":[...]}. Se não houver ação, use actions vazio.\n\n${history ? `Conversa até agora:\n${history}\n\n` : ''}Usuário: ${question}`;
 
   try{
-    const agentResponse = parseNoteAgentReply(await callGemini(prompt, { maxTokens: 1800 }));
+    const agentResponse = parseNoteAgentReply(await callGemini(prompt, { maxTokens: 1800, responseMimeType:'application/json' }));
     const executed = await executeNoteAgentActions(agentResponse.actions, note);
-    m.messages.push({ role:'assistant', text:agentResponse.reply || (executed.length ? 'Pronto.' : 'Não consegui montar uma resposta.'), actions:executed });
+    // A resposta do modelo pode dizer que criou algo mesmo se ela tiver
+    // devolvido JSON inválido ou uma ação desconhecida. Neste caso, nunca
+    // confirmamos a ação ao usuário: a confirmação visual só vem de `executed`.
+    const requestedAction = noteAgentRequestNeedsAction(question);
+    const text = requestedAction && !executed.length
+      ? 'Não consegui executar essa ação no caderno. Nenhuma nota, pasta ou cartão foi criado; tente pedir novamente.'
+      : (agentResponse.reply || (executed.length ? 'Pronto.' : 'Não consegui montar uma resposta.'));
+    m.messages.push({ role:'assistant', text, actions:executed });
   }catch(err){
     console.error('Falha no agente da nota', err);
     m.messages.push({ role:'assistant', text: friendlyAiErrorMsg(err), error:true });
