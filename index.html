@@ -447,7 +447,7 @@
     .notes-layout:not(.note-open) .notes-editor{ display:none; }
     .notes-editor-panes.split{ flex-direction:column; }
     .notes-paged-preview{ align-items:flex-start; }
-    .note-page-sheet{ width:100% !important; height:auto !important; min-height:calc(100vw * 1.4); padding:32px 28px !important; }
+    .note-page-sheet{ width:100% !important; height:calc(100vw * 1.4) !important; min-height:calc(100vw * 1.4); padding:32px 28px !important; }
     .note-page-sheet-number{ padding:0 28px 18px !important; }
   }
 </style>
@@ -4419,7 +4419,7 @@ function renderPagedNotePreview(note, content){
   const width=s.width*factor, height=s.height*factor, margin=s.margin*factor;
   const visibleText=htmlToText(content).trim();
   const words=visibleText.split(/\s+/).filter(Boolean);
-  const perPage=getNoteWordsPerPage(note);
+  const perPage=window.innerWidth <= 820 ? Math.min(getNoteWordsPerPage(note), 35) : getNoteWordsPerPage(note);
   // Uma folha inteira mantém o HTML original: parágrafos, negrito, imagens e
   // todas as formatações do editor continuam idênticas à nota.
   const chunks = words.length <= perPage ? [{ html:content }] : [];
@@ -6332,7 +6332,7 @@ function renderSidebar(){
       <div>
         <h1>Recall</h1>
         <span>REPETIÇÃO ESPAÇADA</span>
-        <span class="brand-version">v2026.07.24.13</span>
+        <span class="brand-version">v2026.07.24.14</span>
       </div>
     </div>
     <button class="ghost-btn" style="font-size:13px; padding:10px 12px; margin-bottom:6px; ${(state.view==='library'||state.view==='book') ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="openLibrary()">📚 Leituras</button>
