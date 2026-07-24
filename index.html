@@ -4032,11 +4032,13 @@ let noteContentError = {};
 function getNoteContent(noteId){
   return noteContentCache[noteId] !== undefined ? noteContentCache[noteId] : '';
 }
-function makeNoteItem(type, name, parentId, format){
+function makeNoteItem(type, name, parentId){
   const item = {
     id: uid(), type, name: (name||'').trim() || (type==='folder' ? 'Nova pasta' : 'Nova nota'),
     parentId: parentId || null,
-    format: type === 'note' ? (format === 'plain' ? 'plain' : 'markdown') : undefined,
+    // Novas notas usam sempre o editor visual. O formato Markdown continua
+    // sendo preservado apenas nas notas antigas, para não alterar seu conteúdo.
+    format: type === 'note' ? 'plain' : undefined,
     linkedDeckId: type === 'note' ? null : undefined,
     createdAt: Date.now(), updatedAt: Date.now()
   };
@@ -4113,7 +4115,7 @@ function confirmCreateNoteItem(){
   const m = state.modal;
   const name = (m.name||'').trim();
   if(!name){ showToast('Dê um nome pra continuar.', 'error'); return; }
-  const item = makeNoteItem(m.kind, name, m.parentId, m.format);
+  const item = makeNoteItem(m.kind, name, m.parentId);
   state.notesItems.push(item);
   state.modal = null;
   if(m.kind === 'note'){ state.currentNoteId = item.id; state.notesEditorMode = state.notesEditorMode || 'split'; }
@@ -4281,7 +4283,7 @@ async function duplicateNoteItem(id){
       return;
     }
   }
-  const copy = makeNoteItem('note', `${item.name} (cópia)`, item.parentId, item.format);
+  const copy = makeNoteItem('note', `${item.name} (cópia)`, item.parentId);
   copy.linkedDeckId = item.linkedDeckId || null;
   noteContentCache[copy.id] = content;
   state.notesItems.push(copy);
@@ -4413,7 +4415,7 @@ function openOrCreateNoteByName(name){
   if(existing){ state.currentNoteId = existing.id; render(); return; }
   const current = state.notesItems.find(n=>n.id===state.currentNoteId);
   const parentId = current ? current.parentId : null;
-  const item = makeNoteItem('note', name, parentId, current ? current.format : 'markdown');
+  const item = makeNoteItem('note', name, parentId);
   state.notesItems.push(item);
   state.currentNoteId = item.id;
   saveData(); render();
@@ -5382,12 +5384,12 @@ function convertActiveNoteConversationToNote(){
   const source = m && state.notesItems.find(n=>n.id===m.noteId);
   const conversation = source && getNoteConversations(source).find(c=>c.id===m.conversationId);
   if(!source || !conversation) return;
-  const copy = makeNoteItem('note', `Conversa — ${getConversationTitle(conversation).slice(0,36)}`, source.parentId, 'markdown');
-  const lines = [`# ${getConversationTitle(conversation)}`, ''];
-  if(conversation.passage) lines.push(`> ${conversation.passage.replace(/\n/g,'\n> ')}`, '');
-  if(conversation.opinion) lines.push(`## Sugestão inicial`, conversation.opinion, '');
-  (conversation.messages||[]).forEach(msg => lines.push(`## ${msg.role==='user' ? 'Você' : 'IA'}`, msg.text, ''));
-  noteContentCache[copy.id] = lines.join('\n');
+  const copy = makeNoteItem('note', `Conversa — ${getConversationTitle(conversation).slice(0,36)}`, source.parentId);
+  const lines = [getConversationTitle(conversation), ''];
+  if(conversation.passage) lines.push(conversation.passage, '');
+  if(conversation.opinion) lines.push('Sugestão inicial', conversation.opinion, '');
+  (conversation.messages||[]).forEach(msg => lines.push(msg.role==='user' ? 'Você' : 'IA', msg.text, ''));
+  noteContentCache[copy.id] = escapeHtml(lines.join('\n')).replace(/\n/g, '<br>');
   state.notesItems.push(copy);
   saveData();
   saveNoteContentToR2(copy.id, noteContentCache[copy.id]);
@@ -5563,7 +5565,7 @@ async function executeNoteAgentActions(actions, currentNote){
       completedActions++;
     }else if(action.type === 'create_note'){
       const name = String(action.title||action.name||'').trim().slice(0,120) || 'Nova nota';
-      const newNote = makeNoteItem('note', name, resolveNoteAgentParent(action.parentRef, currentNote, aliases), action.format);
+      const newNote = makeNoteItem('note', name, resolveNoteAgentParent(action.parentRef, currentNote, aliases));
       noteContentCache[newNote.id] = String(action.content||'');
       state.notesItems.push(newNote);
       createdItemIds.push(newNote.id);
@@ -7701,15 +7703,6 @@ function renderNewNoteItemModal(m){
           <button type="button" class="ghost-btn" style="flex:1; ${m.kind==='folder' ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="state.modal.kind='folder'; render();">📁 Pasta</button>
         </div>
       </div>
-      ${m.kind==='note' ? `
-      <div class="field">
-        <label>FORMATO</label>
-        <div style="display:flex; gap:8px;">
-          <button type="button" class="ghost-btn" style="flex:1; ${m.format!=='plain' ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="state.modal.format='markdown'; render();">Markdown<br><span style="font-weight:400; font-size:11px; opacity:0.8;">títulos, negrito, links...</span></button>
-          <button type="button" class="ghost-btn" style="flex:1; ${m.format==='plain' ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="state.modal.format='plain'; render();">Texto normal<br><span style="font-weight:400; font-size:11px; opacity:0.8;">sem formatação</span></button>
-        </div>
-      </div>
-      ` : ''}
       <div class="field">
         <label>NOME</label>
         <input type="text" autofocus placeholder="${m.kind==='folder' ? 'Ex: Anotações de espanhol' : 'Ex: Verbos irregulares'}" value="${escapeHtml(m.name)}" onkeyup="state.modal.name=this.value; if(event.key==='Enter') confirmCreateNoteItem();">
