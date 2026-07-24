@@ -101,6 +101,7 @@
   }
   .brand h1{ font-size:20px; margin:0; font-weight:600; }
   .brand span{ display:block; font-size:11px; color:var(--text-faint); margin-top:1px; letter-spacing:0.04em; }
+  .brand-version{ font-size:9px !important; letter-spacing:0.06em !important; opacity:0.72; }
 
   .new-deck-btn{
     background:var(--accent-soft); color:var(--accent);
@@ -4036,8 +4037,7 @@ function makeNoteItem(type, name, parentId){
   const item = {
     id: uid(), type, name: (name||'').trim() || (type==='folder' ? 'Nova pasta' : 'Nova nota'),
     parentId: parentId || null,
-    // Novas notas usam sempre o editor visual. O formato Markdown continua
-    // sendo preservado apenas nas notas antigas, para não alterar seu conteúdo.
+    // Todas as notas novas usam o editor visual de texto normal.
     format: type === 'note' ? 'plain' : undefined,
     linkedDeckId: type === 'note' ? null : undefined,
     createdAt: Date.now(), updatedAt: Date.now()
@@ -4052,7 +4052,9 @@ function normalizeNoteItem(n){
     type,
     name: n.name || (type==='folder' ? 'Pasta' : 'Nota'),
     parentId: n.parentId || null,
-    format: type === 'folder' ? undefined : (n.format === 'plain' ? 'plain' : 'markdown'),
+    // A aplicação não oferece mais Markdown: inclusive notas antigas passam
+    // a abrir no editor de texto normal.
+    format: type === 'folder' ? undefined : 'plain',
     linkedDeckId: type === 'folder' ? undefined : (n.linkedDeckId || null),
     aiConversations: type === 'folder' ? undefined : (Array.isArray(n.aiConversations) ? n.aiConversations : []),
     createdAt: n.createdAt || Date.now(),
@@ -6160,6 +6162,7 @@ function renderSidebar(){
       <div>
         <h1>Recall</h1>
         <span>REPETIÇÃO ESPAÇADA</span>
+        <span class="brand-version">v2026.07.24</span>
       </div>
     </div>
     <button class="ghost-btn" style="font-size:13px; padding:10px 12px; margin-bottom:6px; ${(state.view==='library'||state.view==='book') ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="openLibrary()">📚 Leituras</button>
