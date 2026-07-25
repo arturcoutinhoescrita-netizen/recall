@@ -1060,24 +1060,39 @@ function addActivity(type, details){
   const activity={ id:uid(), type, at:endedAt, durationMs, startedAt, endedAt, ...details };
   state.activities.unshift(activity);
   state.activities = state.activities.slice(0, ACTIVITY_HISTORY_LIMIT);
+  const agendaEvent=makeLettherActivityAgendaEvent(activity);
+  if(agendaEvent) state.agendaEvents.unshift(agendaEvent);
+  saveData();
+}
+function makeLettherActivityAgendaEvent(activity){
   // Cada sessão do próprio Letther B também é um registro concluído na Agenda.
   // Assim o calendário mostra tanto o planejamento quanto o que foi feito de fato.
+  if(!activity || !Number(activity.durationMs)) return null;
   const presentation={
     notes:{icon:'📓',label:'Notas'}, writing:{icon:'✍️',label:'Escrita'},
     reading:{icon:'📖',label:'Leitura'}, flashcards:{icon:'🧠',label:'Flashcards'}
-  }[type];
-  if(presentation && durationMs){
-    const detail=String(details.title||presentation.label).trim();
-    state.agendaEvents.unshift({
-      id:uid(), activityId:activity.id, source:'letther-activity', activityType:type,
-      title:`${presentation.icon} ${presentation.label}${detail&&detail!==presentation.label?` — ${detail}`:''}`,
-      date:agendaDateKey(startedAt), time:new Date(startedAt).toTimeString().slice(0,5),
-      endTime:new Date(endedAt).toTimeString().slice(0,5),
-      notes:`Registrado automaticamente pelo Letther B · ${formatActivityDuration(durationMs)}${type==='flashcards'&&details.count?` · ${details.count} cartão(ões)`:''}`,
-      completedAt:endedAt, createdAt:endedAt, updatedAt:endedAt
-    });
-  }
+  }[activity.type];
+  if(!presentation) return null;
+  const durationMs=Math.max(0,Number(activity.durationMs)||0);
+  const endedAt=Number(activity.endedAt)||Number(activity.at)||Date.now();
+  const startedAt=Number(activity.startedAt)||Math.max(0,endedAt-durationMs);
+  const detail=String(activity.title||presentation.label).trim();
+  return {
+    id:uid(), activityId:activity.id, source:'letther-activity', activityType:activity.type,
+    title:`${presentation.icon} ${presentation.label}${detail&&detail!==presentation.label?` — ${detail}`:''}`,
+    date:agendaDateKey(startedAt), time:new Date(startedAt).toTimeString().slice(0,5),
+    endTime:new Date(endedAt).toTimeString().slice(0,5),
+    notes:`Registrado automaticamente pelo Letther B · ${formatActivityDuration(durationMs)}${activity.type==='flashcards'&&activity.count?` · ${activity.count} cartão(ões)`:''}`,
+    completedAt:endedAt, createdAt:endedAt, updatedAt:endedAt
+  };
+}
+function syncLettherActivitiesToAgenda(){
+  const existing=new Set(state.agendaEvents.filter(event=>event.source==='letther-activity'&&event.activityId).map(event=>event.activityId));
+  const missing=(state.activities||[]).filter(activity=>!existing.has(activity.id)).map(makeLettherActivityAgendaEvent).filter(Boolean);
+  if(!missing.length) return false;
+  state.agendaEvents.unshift(...missing);
   saveData();
+  return true;
 }
 function startWritingActivity(noteId){
   const current = state.writingActivity;
@@ -3046,6 +3061,9 @@ function renderAgendaView(){
   // Garante a migração também para sessões antigas que ficaram abertas ou
   // receberam dados depois da carga inicial.
   rolloverAgendaOverdueTasks();
+  // Sessões registradas antes desta versão também entram como eventos
+  // concluídos, sem exigir que a pessoa repita a atividade.
+  syncLettherActivitiesToAgenda();
   if((state.agendaView||'week')==='report') return renderAgendaReportView();
   if((state.agendaView||'week')==='week') return renderAgendaWeekView();
   const dueDecks = state.decks.map(deck => ({ deck, count:getDueCards(deck.id).length })).filter(item => item.count);
@@ -8245,7 +8263,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='routine'?'active':''}" onclick="openRoutine()">🌿 Rotina</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.105</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.106</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -8268,7 +8286,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.25.105</span>
+        <span class="brand-version">v2026.07.25.106</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -8329,7 +8347,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.105</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.106</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
