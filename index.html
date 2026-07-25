@@ -403,6 +403,25 @@
   .notes-tree-actions{ display:flex; gap:3px; flex-shrink:0; }
   .note-color-dot{ width:11px; height:11px; border-radius:50%; flex-shrink:0; box-shadow:0 0 0 1px rgba(255,255,255,.16); }
   .notes-editor{ flex:1; min-width:0; min-height:0; display:flex; flex-direction:column; gap:10px; overflow:hidden; }
+  .outline-board{ flex:1; min-height:0; display:flex; gap:12px; overflow:auto; padding:2px 2px 14px; align-items:flex-start; }
+  .outline-column{ width:290px; min-width:290px; max-height:100%; overflow-y:auto; padding:10px; border:1px solid var(--border); border-radius:13px; background:var(--bg-2); }
+  .outline-column-head{ display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px; }
+  .outline-column-head h4{ margin:0; font-size:13px; }
+  .outline-dropzone{ min-height:70px; display:flex; flex-direction:column; gap:8px; }
+  .outline-dropzone.drag-over{ outline:2px dashed var(--accent); outline-offset:3px; border-radius:9px; }
+  .outline-card{ padding:10px; border:1px solid var(--border); border-radius:10px; background:var(--surface); cursor:grab; }
+  .outline-card:active{ cursor:grabbing; }
+  .outline-card-title{ font-size:13px; font-weight:700; line-height:1.35; }
+  .outline-card-summary{ margin-top:6px; color:var(--text-muted); font-size:11.5px; line-height:1.4; white-space:pre-wrap; }
+  .outline-status{ display:inline-block; margin-top:7px; padding:3px 6px; border-radius:999px; background:var(--accent-soft); color:var(--accent); font-size:9.5px; font-weight:700; }
+  .outline-status.ready{ background:var(--success-soft); color:var(--success); }
+  .outline-status.writing{ background:#fff0cf; color:#9b6b00; }
+  .outline-checklist{ margin:8px 0 0; padding:0; list-style:none; display:flex; flex-direction:column; gap:4px; }
+  .outline-checklist label{ display:flex; align-items:flex-start; gap:5px; color:var(--text-muted); font-size:10.5px; line-height:1.3; cursor:pointer; }
+  .outline-checklist input{ margin-top:1px; accent-color:var(--success); }
+  .outline-card-link{ margin-top:8px; width:100%; padding:5px 7px; font-size:10.5px; }
+  .outline-add-topic{ width:100%; box-sizing:border-box; margin-top:7px; padding:5px 7px; border:1px solid var(--border); border-radius:7px; background:var(--surface-2); color:var(--text); font:inherit; font-size:10.5px; }
+  .outline-add-column{ width:290px; min-width:180px; min-height:42px; border:1px dashed var(--accent-dim); border-radius:12px; background:transparent; color:var(--accent); font:inherit; cursor:pointer; }
   .notes-editor-header{ display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; }
   .note-writing-stats{ font-size:11px; color:var(--text-faint); margin-top:3px; font-variant-numeric:tabular-nums; }
   .notes-mode-toggle{ display:flex; gap:6px; }
@@ -623,6 +642,7 @@
     .mobile-back-btn{ display:inline-flex; }
 
     .notes-layout{ flex-direction:column; height:calc(100dvh - 160px); }
+    .outline-column{ width:min(82vw,290px); min-width:min(82vw,290px); }
     .notes-explorer{ width:100%; max-height:none; flex-shrink:0; }
     .notes-layout:not(.note-open) .notes-explorer{ flex:1; min-height:0; }
     .notes-layout:not(.note-open) .notes-tree{ flex:1; }
@@ -4877,7 +4897,7 @@ function getNoteContent(noteId){
 }
 function makeNoteItem(type, name, parentId){
   const item = {
-    id: uid(), type, name: (name||'').trim() || (type==='folder' ? 'Nova pasta' : 'Nova nota'),
+    id: uid(), type, name: (name||'').trim() || (type==='folder' ? 'Nova pasta' : (type==='outline' ? 'Nova escaleta' : 'Nova nota')),
     parentId: parentId || null,
     // Todas as notas novas usam o editor visual de texto normal.
     format: type === 'note' ? 'plain' : undefined,
@@ -4889,10 +4909,13 @@ function makeNoteItem(type, name, parentId){
     createdAt: Date.now(), updatedAt: Date.now()
   };
   if(type === 'note') noteContentCache[item.id] = ''; // nota nova nasce vazia — não precisa buscar nada no R2
+  if(type === 'outline') item.outline={columns:[{id:uid(),name:'Ato I'}],cards:[]};
   return item;
 }
 function normalizeNoteItem(n){
-  const type = n.type === 'folder' ? 'folder' : 'note';
+  const type = n.type === 'folder' ? 'folder' : (n.type === 'outline' ? 'outline' : 'note');
+  const rawOutline=n.outline||{};
+  const columns=Array.isArray(rawOutline.columns)&&rawOutline.columns.length ? rawOutline.columns.map(c=>({id:c.id||uid(),name:String(c.name||'Ato')})) : [{id:uid(),name:'Ato I'}];
   return {
     id: n.id || uid(),
     type,
@@ -4900,13 +4923,14 @@ function normalizeNoteItem(n){
     parentId: n.parentId || null,
     // A aplicação não oferece mais Markdown: inclusive notas antigas passam
     // a abrir no editor de texto normal.
-    format: type === 'folder' ? undefined : 'plain',
-    linkedDeckId: type === 'folder' ? undefined : (n.linkedDeckId || null),
+    format: type === 'note' ? 'plain' : undefined,
+    linkedDeckId: type === 'note' ? (n.linkedDeckId || null) : undefined,
     icon: type === 'folder' ? (n.icon || '📁') : undefined,
     iconColor: type === 'note' ? (n.iconColor || '#F5A623') : undefined,
     favorite: type === 'note' && !!n.favorite,
-    pageSettings: type === 'folder' ? undefined : { ...DEFAULT_NOTE_PAGE_SETTINGS, ...(n.pageSettings || {}) },
-    aiConversations: type === 'folder' ? undefined : (Array.isArray(n.aiConversations) ? n.aiConversations : []),
+    pageSettings: type === 'note' ? { ...DEFAULT_NOTE_PAGE_SETTINGS, ...(n.pageSettings || {}) } : undefined,
+    aiConversations: type === 'note' ? (Array.isArray(n.aiConversations) ? n.aiConversations : []) : undefined,
+    outline: type==='outline' ? {columns,cards:(Array.isArray(rawOutline.cards)?rawOutline.cards:[]).map(card=>({id:card.id||uid(),columnId:card.columnId||columns[0].id,title:String(card.title||'Capítulo'),summary:String(card.summary||''),ideas:String(card.ideas||''),status:['ready','writing','todo'].includes(card.status)?card.status:'todo',linkedNoteId:card.linkedNoteId||null,anchor:String(card.anchor||''),checklist:(Array.isArray(card.checklist)?card.checklist:[]).map(x=>({id:x.id||uid(),text:String(x.text||''),done:!!x.done}))}))} : undefined,
     createdAt: n.createdAt || Date.now(),
     updatedAt: n.updatedAt || Date.now()
   };
@@ -5034,7 +5058,7 @@ function confirmCreateNoteItem(){
   const item = makeNoteItem(m.kind, name, m.parentId);
   state.notesItems.push(item);
   state.modal = null;
-  if(m.kind === 'note'){ state.currentNoteId = item.id; state.lastNoteId = item.id; state.notesEditorMode = state.notesEditorMode || 'split'; }
+  if(m.kind === 'note' || m.kind === 'outline'){ state.currentNoteId = item.id; if(m.kind==='note') state.lastNoteId = item.id; state.notesEditorMode = state.notesEditorMode || 'split'; }
   else {
     // Pastas novas seguem o mesmo padrão do explorador: começam fechadas.
     const collapsed = state.notesCollapsedFolders || (state.notesCollapsedFolders=[]);
@@ -5064,10 +5088,13 @@ function closeCurrentNote(){
   render();
 }
 function openNote(id){
+  const selectedItem=state.notesItems.find(item=>item.id===id);
+  if(!selectedItem) return;
   state.currentNoteId = id;
-  state.lastNoteId = id;
+  if(selectedItem.type==='note') state.lastNoteId = id;
   state.noteFindReplace = null; // trocar de nota fecha qualquer busca/substituição aberta na anterior
   saveData();
+  if(selectedItem.type==='outline'){ render(); return; }
   if(isDesktopLayout()) ensureNoteChatFor(id);
   if(noteContentCache[id] === undefined && !noteContentLoading[id]){
     noteContentLoading[id] = true;
@@ -5083,6 +5110,7 @@ function openNote(id){
       noteContentCache[id] = (note && note.format === 'plain') ? normalizePlainNoteContentForEditing(content) : content;
       delete noteContentLoading[id];
       render();
+      focusPendingOutlineAnchor();
     }).catch(err => {
       console.error('Falha ao carregar conteúdo da nota', err);
       delete noteContentLoading[id];
@@ -5091,11 +5119,98 @@ function openNote(id){
     });
   } else {
     render();
+    focusPendingOutlineAnchor();
   }
 }
 function retryLoadNoteContent(id){
   delete noteContentError[id];
   openNote(id);
+}
+/* ============ ESCALETA ============ */
+function getOutlineData(outline){
+  if(!outline.outline) outline.outline={columns:[{id:uid(),name:'Ato I'}],cards:[]};
+  if(!Array.isArray(outline.outline.columns)||!outline.outline.columns.length) outline.outline.columns=[{id:uid(),name:'Ato I'}];
+  if(!Array.isArray(outline.outline.cards)) outline.outline.cards=[];
+  return outline.outline;
+}
+function saveOutline(outline){ outline.updatedAt=Date.now(); saveData(); render(); }
+function openOutlineColumnModal(outlineId, columnId){
+  const outline=state.notesItems.find(item=>item.id===outlineId&&item.type==='outline'); if(!outline) return;
+  const column=columnId&&getOutlineData(outline).columns.find(item=>item.id===columnId);
+  state.modal={type:'outline-column',outlineId,columnId:column?.id||null,name:column?.name||''}; render();
+}
+function confirmOutlineColumn(){
+  const m=state.modal, outline=state.notesItems.find(item=>item.id===m?.outlineId&&item.type==='outline');
+  const name=String(m?.name||'').trim().slice(0,60); if(!outline||!name){ showToast('Dê um nome ao ato.', 'error'); return; }
+  const data=getOutlineData(outline), existing=data.columns.find(item=>item.id===m.columnId);
+  if(existing) existing.name=name; else data.columns.push({id:uid(),name});
+  state.modal=null; saveOutline(outline);
+}
+function deleteOutlineColumn(outlineId,columnId){
+  const outline=state.notesItems.find(item=>item.id===outlineId&&item.type==='outline'); if(!outline) return;
+  const data=getOutlineData(outline); if(data.columns.length<=1){ showToast('A escaleta precisa ter ao menos um ato.', 'error'); return; }
+  const target=data.columns.find(item=>item.id===columnId); if(!target) return;
+  askConfirm(`Excluir “${target.name}”? Os capítulos irão para o primeiro ato.`,()=>{
+    const fallback=data.columns.find(item=>item.id!==columnId);
+    data.cards.forEach(card=>{ if(card.columnId===columnId) card.columnId=fallback.id; });
+    data.columns=data.columns.filter(item=>item.id!==columnId); saveOutline(outline);
+  },'Excluir ato');
+}
+function openOutlineCardModal(outlineId, cardId, columnId){
+  const outline=state.notesItems.find(item=>item.id===outlineId&&item.type==='outline'); if(!outline) return;
+  const data=getOutlineData(outline), card=cardId&&data.cards.find(item=>item.id===cardId);
+  state.modal={type:'outline-card',outlineId,cardId:card?.id||null,columnId:card?.columnId||columnId||data.columns[0].id,title:card?.title||'',summary:card?.summary||'',ideas:card?.ideas||'',status:card?.status||'todo',linkedNoteId:card?.linkedNoteId||'',anchor:card?.anchor||'',checklistText:(card?.checklist||[]).map(item=>item.text).join('\n')}; render();
+}
+function confirmOutlineCard(){
+  const m=state.modal, outline=state.notesItems.find(item=>item.id===m?.outlineId&&item.type==='outline');
+  const title=String(m?.title||'').trim().slice(0,120); if(!outline||!title){ showToast('Dê um título ao capítulo.', 'error'); return; }
+  const data=getOutlineData(outline); const checklist=String(m.checklistText||'').split('\n').map(text=>text.trim()).filter(Boolean).slice(0,30).map((text,index)=>{
+    const old=(data.cards.find(card=>card.id===m.cardId)?.checklist||[])[index]; return {id:old?.id||uid(),text,done:!!old?.done};
+  });
+  const value={title,summary:String(m.summary||'').slice(0,1200),ideas:String(m.ideas||'').slice(0,1600),status:['ready','writing','todo'].includes(m.status)?m.status:'todo',columnId:m.columnId,linkedNoteId:m.linkedNoteId||null,anchor:String(m.anchor||'').trim().slice(0,180),checklist};
+  const card=data.cards.find(item=>item.id===m.cardId);
+  if(card) Object.assign(card,value); else data.cards.push({id:uid(),...value});
+  state.modal=null; saveOutline(outline);
+}
+function deleteOutlineCard(outlineId,cardId){
+  const outline=state.notesItems.find(item=>item.id===outlineId&&item.type==='outline'); if(!outline) return;
+  getOutlineData(outline).cards=getOutlineData(outline).cards.filter(card=>card.id!==cardId); saveOutline(outline);
+}
+function dragOutlineCard(event,outlineId,cardId){ event.dataTransfer.setData('text/plain',`${outlineId}:${cardId}`); event.dataTransfer.effectAllowed='move'; }
+function outlineDragOver(event){ event.preventDefault(); event.currentTarget.classList.add('drag-over'); }
+function outlineDragLeave(event){ event.currentTarget.classList.remove('drag-over'); }
+function dropOutlineCard(event,outlineId,columnId){
+  event.preventDefault(); event.currentTarget.classList.remove('drag-over');
+  const [fromOutlineId,cardId]=String(event.dataTransfer.getData('text/plain')||'').split(':');
+  if(fromOutlineId!==outlineId||!cardId) return;
+  const outline=state.notesItems.find(item=>item.id===outlineId&&item.type==='outline'); const card=outline&&getOutlineData(outline).cards.find(item=>item.id===cardId);
+  if(!card) return; card.columnId=columnId; saveOutline(outline);
+}
+function toggleOutlineChecklist(outlineId,cardId,itemId){
+  const outline=state.notesItems.find(item=>item.id===outlineId&&item.type==='outline'); const card=outline&&getOutlineData(outline).cards.find(item=>item.id===cardId); const item=card&&(card.checklist||[]).find(entry=>entry.id===itemId);
+  if(!item) return; item.done=!item.done; saveOutline(outline);
+}
+function addOutlineChecklistItem(event,outlineId,cardId){
+  if(event.key!=='Enter') return; event.preventDefault(); const text=event.currentTarget.value.trim(); if(!text) return;
+  const outline=state.notesItems.find(item=>item.id===outlineId&&item.type==='outline'); const card=outline&&getOutlineData(outline).cards.find(item=>item.id===cardId); if(!card) return;
+  card.checklist=card.checklist||[]; card.checklist.push({id:uid(),text:text.slice(0,180),done:false}); saveOutline(outline);
+}
+function openOutlineCardNote(outlineId,cardId){
+  const outline=state.notesItems.find(item=>item.id===outlineId&&item.type==='outline');
+  const card=outline&&getOutlineData(outline).cards.find(item=>item.id===cardId);
+  if(!card?.linkedNoteId){ showToast('Vincule uma nota ao capítulo primeiro.', 'error'); return; }
+  state.pendingOutlineAnchor={noteId:card.linkedNoteId,anchor:String(card.anchor||'').trim()}; openNote(card.linkedNoteId);
+}
+function focusPendingOutlineAnchor(){
+  const pending=state.pendingOutlineAnchor; if(!pending||pending.noteId!==state.currentNoteId) return;
+  state.pendingOutlineAnchor=null;
+  if(!pending.anchor){ showToast('Nota aberta. Informe o texto inicial do capítulo no vínculo para ir ao ponto exato.'); return; }
+  setTimeout(()=>{ try{ if(!window.find(pending.anchor,false,false,true,false,false,false)) showToast('Nota aberta, mas não encontrei o texto inicial do capítulo.'); }catch(e){} },80);
+}
+function renderOutlineEditor(outline){
+  const data=getOutlineData(outline);
+  const labels={todo:'Para escrever',writing:'Escrevendo',ready:'Pronto'};
+  return `<button class="ghost-btn mobile-back-btn" onclick="closeCurrentNote()">← Notas</button><div class="notes-editor-header"><div><h3 style="margin:0;">🧩 ${escapeHtml(outline.name)}</h3><div class="note-writing-stats">Escaleta · atos e capítulos do livro</div></div><button class="primary-btn" onclick="openOutlineColumnModal('${outline.id}')">＋ Ato</button></div><div class="outline-board">${data.columns.map(column=>{ const cards=data.cards.filter(card=>card.columnId===column.id); return `<section class="outline-column"><div class="outline-column-head"><h4>${escapeHtml(column.name)} <span style="color:var(--text-faint); font-weight:400;">${cards.length}</span></h4><div><button class="icon-btn" style="width:24px;height:24px;font-size:11px;" title="Renomear ato" onclick="openOutlineColumnModal('${outline.id}','${column.id}')">✏️</button><button class="icon-btn" style="width:24px;height:24px;font-size:11px;" title="Excluir ato" onclick="deleteOutlineColumn('${outline.id}','${column.id}')">🗑</button></div></div><div class="outline-dropzone" ondragover="outlineDragOver(event)" ondragleave="outlineDragLeave(event)" ondrop="dropOutlineCard(event,'${outline.id}','${column.id}')">${cards.map(card=>`<article class="outline-card" draggable="true" ondragstart="dragOutlineCard(event,'${outline.id}','${card.id}')" onclick="openOutlineCardModal('${outline.id}','${card.id}')"><div class="outline-card-title">${escapeHtml(card.title)}</div><div class="outline-card-summary">${escapeHtml(card.summary||card.ideas||'Sem resumo ainda.')}</div><span class="outline-status ${escapeHtml(card.status)}">${labels[card.status]||labels.todo}</span>${(card.checklist||[]).length?`<ul class="outline-checklist" onclick="event.stopPropagation()">${card.checklist.map(item=>`<li><label><input type="checkbox" ${item.done?'checked':''} onchange="toggleOutlineChecklist('${outline.id}','${card.id}','${item.id}')"> <span style="${item.done?'text-decoration:line-through; opacity:.65;':''}">${escapeHtml(item.text)}</span></label></li>`).join('')}</ul>`:''}${card.linkedNoteId?`<button class="ghost-btn outline-card-link" onclick="event.stopPropagation(); openOutlineCardNote('${outline.id}','${card.id}')">↗ Abrir capítulo</button>`:''}<input class="outline-add-topic" placeholder="＋ Adicionar tópico e Enter" onclick="event.stopPropagation()" onkeydown="addOutlineChecklistItem(event,'${outline.id}','${card.id}')"></article>`).join('')}<button class="ghost-btn" style="width:100%; font-size:12px;" onclick="openOutlineCardModal('${outline.id}',null,'${column.id}')">＋ Capítulo</button></div></section>`; }).join('')}<button class="outline-add-column" onclick="openOutlineColumnModal('${outline.id}')">＋ Adicionar ato</button></div>`;
 }
 /* --- arrastar notas/pastas pra reorganizar: soltar em cima de uma pasta move
    pra dentro dela, soltar no fundo da árvore (fora de qualquer pasta) move
@@ -8032,7 +8147,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='routine'?'active':''}" onclick="openRoutine()">🌿 Rotina</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.24.100</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.101</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -8055,7 +8170,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.24.100</span>
+        <span class="brand-version">v2026.07.25.101</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -8116,7 +8231,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.100</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.101</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
@@ -8197,7 +8312,7 @@ function getReadingStats(){
   return { month, year };
 }
 function renderNotesView(){
-  const currentNote = state.notesItems.find(n=>n.id===state.currentNoteId && n.type==='note');
+  const currentNote = state.notesItems.find(n=>n.id===state.currentNoteId && n.type!=='folder');
   const hasRootItems = state.notesItems.some(n=>n.parentId===null);
   const searchQuery = (state.notesSearch && state.notesSearch.query) || '';
   return `
@@ -8209,7 +8324,7 @@ function renderNotesView(){
         <h3 style="margin:0; font-size:15px;">📓 Notas</h3>
         <div style="display:flex; gap:4px;">
           <button class="icon-btn" title="Nova nota" onclick="openNotesCreateModal(null,'note')">📄</button>
-          <button class="icon-btn" title="Nova pasta" onclick="openNotesCreateModal(null,'folder')">📁</button>
+          <button class="icon-btn" title="Nova escaleta" onclick="openNotesCreateModal(null,'outline')">🧩</button><button class="icon-btn" title="Nova pasta" onclick="openNotesCreateModal(null,'folder')">📁</button>
         </div>
       </div>
       <div class="notes-search-bar">
@@ -8225,7 +8340,7 @@ function renderNotesView(){
     </div>
     <div class="notes-resizer" onmousedown="startNotesExplorerResize(event)"></div>
     <div class="notes-editor">
-      ${currentNote ? renderNoteEditor(currentNote) : `
+      ${currentNote ? (currentNote.type==='outline' ? renderOutlineEditor(currentNote) : renderNoteEditor(currentNote)) : `
       <div class="empty-state" style="height:60vh;">
         <div style="font-size:40px;">📓</div>
         <h2>Seu caderno de notas</h2>
@@ -8287,6 +8402,14 @@ function renderNotesTreeLevel(parentId, depth){
       ${!collapsed ? renderNotesTreeLevel(item.id, depth+1) : ''}
       `;
     }
+    if(item.type === 'outline') return `
+    <div class="notes-tree-row ${state.currentNoteId===item.id?'active':''}" style="padding-left:${depth*16+16}px;" draggable="true" ondragstart="onNoteDragStart(event,'${item.id}')">
+      <div class="notes-tree-label" onclick="openNote('${item.id}')"><span>🧩</span> ${escapeHtml(item.name)}</div>
+      <div class="notes-tree-actions">
+        <button class="icon-btn" style="width:22px;height:22px;font-size:11px;" title="Renomear" onclick="event.stopPropagation(); openNotesRenameModal('${item.id}')">✏️</button>
+        <button class="icon-btn" style="width:22px;height:22px;font-size:11px;" title="Excluir" onclick="event.stopPropagation(); deleteNoteItem('${item.id}')">🗑</button>
+      </div>
+    </div>`;
     return `
     <div class="notes-tree-row ${state.currentNoteId===item.id?'active':''}" style="padding-left:${depth*16+16}px;" draggable="true" ondragstart="onNoteDragStart(event,'${item.id}')">
       <div class="notes-tree-label" onclick="openNote('${item.id}')"><span class="note-color-dot" style="background:${escapeHtml(item.iconColor || '#F5A623')};"></span>${escapeHtml(item.name)}</div>
@@ -9613,6 +9736,13 @@ function renderRoutineCatchupModal(m){
   const from=new Date(m.from).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}), to=new Date(m.to).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
   return `<div class="modal-overlay"><div class="modal" style="width:min(520px,calc(100vw - 24px));"><h3>✨ Como foi seu tempo?</h3><p style="margin:0; color:var(--text-faint); font-size:12.5px; line-height:1.5;">Faz mais de duas horas desde o último registro. Conte o que fez entre ${from} e ${to}; a IA organizará isso como atividades concluídas na Agenda.</p><textarea rows="6" autofocus placeholder="Ex.: trabalhei até 12h, almocei e fiz uma caminhada de 20 minutos." oninput="state.modal.input=this.value">${escapeHtml(m.input||'')}</textarea><div class="modal-actions"><button class="ghost-btn" onclick="skipRoutineCatchup()">Pular por agora</button><button class="primary-btn" onclick="submitRoutineCatchup()" ${m.sending?'disabled':''}>${m.sending?'Organizando...':'Registrar com IA'}</button></div></div></div>`;
 }
+function renderOutlineColumnModal(m){
+  return `<div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal" style="width:390px;"><h3>${m.columnId?'Editar ato':'Novo ato'}</h3><div class="field"><label>NOME DO ATO / COLUNA</label><input type="text" autofocus placeholder="Ex.: Ato II — Confronto" value="${escapeHtml(m.name||'')}" oninput="state.modal.name=this.value" onkeydown="if(event.key==='Enter') confirmOutlineColumn()"></div><div class="modal-actions"><button class="ghost-btn" onclick="closeModal()">Cancelar</button><button class="primary-btn" onclick="confirmOutlineColumn()">Salvar</button></div></div></div>`;
+}
+function renderOutlineCardModal(m){
+  const notes=state.notesItems.filter(item=>item.type==='note');
+  return `<div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal" style="width:min(620px,calc(100vw - 24px)); max-height:86vh; overflow-y:auto;"><h3>${m.cardId?'Editar capítulo':'Novo capítulo'}</h3><div class="field"><label>TÍTULO DO CAPÍTULO</label><input type="text" autofocus placeholder="Ex.: A chegada à cidade" value="${escapeHtml(m.title||'')}" oninput="state.modal.title=this.value"></div><div class="field"><label>RESUMO</label><textarea rows="3" placeholder="O que acontece neste capítulo?" oninput="state.modal.summary=this.value">${escapeHtml(m.summary||'')}</textarea></div><div class="field"><label>IDEIAS / OBSERVAÇÕES</label><textarea rows="3" placeholder="Cenas, diálogos, conflitos, referências…" oninput="state.modal.ideas=this.value">${escapeHtml(m.ideas||'')}</textarea></div><div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;"><div class="field"><label>STATUS</label><select onchange="state.modal.status=this.value"><option value="todo" ${m.status==='todo'?'selected':''}>Para escrever</option><option value="writing" ${m.status==='writing'?'selected':''}>Escrevendo</option><option value="ready" ${m.status==='ready'?'selected':''}>Pronto</option></select></div><div class="field"><label>ATO</label><select onchange="state.modal.columnId=this.value">${(state.notesItems.find(item=>item.id===m.outlineId)?.outline?.columns||[]).map(column=>`<option value="${column.id}" ${m.columnId===column.id?'selected':''}>${escapeHtml(column.name)}</option>`).join('')}</select></div></div><div style="padding:10px; border:1px solid var(--border); border-radius:10px;"><div style="font-size:11px; font-weight:700; color:var(--text-faint); margin-bottom:8px;">VÍNCULO COM A NOTA</div><div class="field"><label>NOTA EM QUE O CAPÍTULO ESTÁ SENDO ESCRITO</label><select onchange="state.modal.linkedNoteId=this.value"><option value="">Não vincular agora</option>${notes.map(note=>`<option value="${note.id}" ${m.linkedNoteId===note.id?'selected':''}>${escapeHtml(note.name)}</option>`).join('')}</select></div><div class="field" style="margin-bottom:0;"><label>TEXTO INICIAL DO CAPÍTULO</label><input type="text" placeholder="Ex.: Capítulo 4 — A chegada" value="${escapeHtml(m.anchor||'')}" oninput="state.modal.anchor=this.value"><div style="font-size:10.5px; color:var(--text-faint); margin-top:4px;">Ao abrir pelo card, o Letther B buscará este texto e levará ao ponto exato.</div></div></div><div class="field"><label>TÓPICOS / CHECKLIST</label><textarea rows="5" placeholder="Um tópico por linha&#10;Apresentar a personagem&#10;Revelar o conflito" oninput="state.modal.checklistText=this.value">${escapeHtml(m.checklistText||'')}</textarea></div><div class="modal-actions">${m.cardId?`<button class="ghost-btn" style="color:var(--error); margin-right:auto;" onclick="deleteOutlineCard('${m.outlineId}','${m.cardId}'); closeModal();">Excluir</button>`:''}<button class="ghost-btn" onclick="closeModal()">Cancelar</button><button class="primary-btn" onclick="confirmOutlineCard()">Salvar capítulo</button></div></div></div>`;
+}
 function renderGlobalAiChatModal(m){
   return `<div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal" style="width:min(560px,calc(100vw - 24px)); max-height:86vh; display:flex; flex-direction:column;"><div style="display:flex; justify-content:space-between; align-items:center;"><h3>✨ Chat IA</h3><button class="icon-btn" onclick="closeModal()">✕</button></div><p style="font-size:12px; color:var(--text-faint); margin:0;">Posso ajudar com notas, agenda, leituras e baralhos.</p><div style="flex:1; min-height:220px; max-height:52vh; overflow-y:auto; display:flex; flex-direction:column; gap:9px; padding:6px 2px;">${m.messages.length?m.messages.map(msg=>`<div style="align-self:${msg.role==='user'?'flex-end':'flex-start'}; max-width:88%; padding:9px 12px; border-radius:11px; background:${msg.role==='user'?'var(--accent-soft)':'var(--surface-2)'}; color:${msg.error?'var(--error)':'var(--text)'}; white-space:pre-wrap; font-size:13px; line-height:1.45;">${escapeHtml(msg.text)}${msg.actions&&msg.actions.length?`<div style="margin-top:6px; font-size:11px; color:var(--text-muted);">${msg.actions.map(a=>`✓ ${escapeHtml(a)}`).join('<br>')}</div>`:''}</div>`).join(''):`<p style="color:var(--text-faint); text-align:center; font-size:13px;">Peça para criar uma nota, organizar sua agenda ou abrir uma área do app.</p>`}</div><div style="display:flex; gap:7px;"><textarea id="global-ai-input" rows="3" style="flex:1; resize:none; min-height:72px;" placeholder="O que você quer fazer?" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendGlobalAiMessage()}" oninput="state.modal.input=this.value">${escapeHtml(m.input||'')}</textarea><button class="primary-btn" onclick="sendGlobalAiMessage()" ${m.sending?'disabled':''}>Enviar</button></div></div></div>`;
 }
@@ -9638,6 +9768,8 @@ function renderModal(){
   if(m.type === 'agenda-suggestions') return renderAgendaSuggestionsModal(m);
   if(m.type === 'routine-action') return renderRoutineActionModal(m);
   if(m.type === 'routine-catchup') return renderRoutineCatchupModal(m);
+  if(m.type === 'outline-column') return renderOutlineColumnModal(m);
+  if(m.type === 'outline-card') return renderOutlineCardModal(m);
   if(m.type === 'global-ai-chat') return renderGlobalAiChatModal(m);
   if(m.type === 'api-key') return renderApiKeyModal(m);
   if(m.type === 'app-options') return renderAppOptionsModal();
@@ -9712,17 +9844,18 @@ function renderNewNoteItemModal(m){
   return `
   <div class="modal-overlay" onclick="if(event.target===this) closeModal()">
     <div class="modal">
-      <h3>${m.kind==='folder' ? 'Nova pasta' : 'Nova nota'}</h3>
+      <h3>${m.kind==='folder' ? 'Nova pasta' : (m.kind==='outline' ? 'Nova escaleta' : 'Nova nota')}</h3>
       <div class="field">
         <label>TIPO</label>
         <div style="display:flex; gap:8px;">
           <button type="button" class="ghost-btn" style="flex:1; ${m.kind==='note' ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="state.modal.kind='note'; render();">📄 Nota</button>
+          <button type="button" class="ghost-btn" style="flex:1; ${m.kind==='outline' ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="state.modal.kind='outline'; render();">🧩 Escaleta</button>
           <button type="button" class="ghost-btn" style="flex:1; ${m.kind==='folder' ? 'border-color:var(--accent); color:var(--accent);' : ''}" onclick="state.modal.kind='folder'; render();">📁 Pasta</button>
         </div>
       </div>
       <div class="field">
         <label>NOME</label>
-        <input type="text" autofocus placeholder="${m.kind==='folder' ? 'Ex: Anotações de espanhol' : 'Ex: Verbos irregulares'}" value="${escapeHtml(m.name)}" onkeyup="state.modal.name=this.value; if(event.key==='Enter') confirmCreateNoteItem();">
+        <input type="text" autofocus placeholder="${m.kind==='folder' ? 'Ex: Anotações de espanhol' : (m.kind==='outline' ? 'Ex: Romance — escaleta' : 'Ex: Verbos irregulares')}" value="${escapeHtml(m.name)}" onkeyup="state.modal.name=this.value; if(event.key==='Enter') confirmCreateNoteItem();">
       </div>
       <div class="modal-actions">
         <button class="ghost-btn" onclick="closeModal()">Cancelar</button>
