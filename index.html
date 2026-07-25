@@ -895,6 +895,10 @@ async function loadData(){
           if(d.booksApiKey) setBooksApiKey(d.booksApiKey);
         }
       }
+      // Faz a virada de dia logo depois de trazer os dados da conta. Assim,
+      // uma tarefa não concluída não depende de a pessoa abrir a Agenda ou de
+      // manter o aplicativo aberto até o próximo intervalo do temporizador.
+      rolloverAgendaOverdueTasks();
       break; // sucesso, não precisa repetir
     }catch(e){
       if(attempt === 0){ await sleep(600); continue; } // falha temporária: tenta mais uma vez em silêncio
@@ -2557,11 +2561,24 @@ function agendaDateFromKey(key){
   const parts=String(key||'').split('-').map(Number);
   return parts.length===3 ? new Date(parts[0],parts[1]-1,parts[2]) : new Date();
 }
+function getAgendaEventDateKey(event){
+  const raw=String(event?.date||'').trim();
+  if(/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  // Aceita também datas que possam ter sido salvas por versões antigas ou
+  // por uma ação da IA em formato brasileiro/ISO completo.
+  const br=raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if(br) return `${br[3]}-${String(br[2]).padStart(2,'0')}-${String(br[1]).padStart(2,'0')}`;
+  const parsed=Date.parse(raw);
+  return Number.isFinite(parsed)?agendaDateKey(parsed):'';
+}
 function rolloverAgendaOverdueTasks(){
   const today=agendaDateKey(new Date());
   let moved=0;
   state.agendaEvents.forEach(event=>{
-    if(!event.completedAt && event.date && event.date<today){
+    const eventDate=getAgendaEventDateKey(event);
+    // Registros concluídos são histórico e ficam no dia em que aconteceram.
+    // Apenas pendências anteriores voltam para “A fazer”.
+    if(!event.completedAt && eventDate && eventDate<today){
       event.date=null;
       event.time=null;
       event.endTime=null;
@@ -2822,11 +2839,19 @@ function confirmAgendaEvent(){
   const event=m.eventId ? state.agendaEvents.find(item=>item.id===m.eventId) : null;
   const time=m.time||null, endTime=time ? (m.endTime||addAgendaHour(time)) : null;
   if(time && endTime && endTime<=time){ showToast('O horário de término deve ser depois do início.', 'error'); return; }
-  const value={id:event?event.id:uid(),title,date:m.date||null,time,endTime,notes:m.notes||'',deckId:m.deckId||(event&&event.deckId)||null,createdAt:event?event.createdAt:Date.now(),updatedAt:Date.now()};
+  const value={id:event?event.id:uid(),title,date:m.date||null,time,endTime,notes:m.notes||'',deckId:m.deckId||(event&&event.deckId)||null,source:event?.source||null,completedAt:event?.completedAt||null,createdAt:event?event.createdAt:Date.now(),updatedAt:Date.now()};
   if(event) Object.assign(event,value); else state.agendaEvents.unshift(value);
   state.modal=null; saveData(); render();
 }
 function deleteAgendaEvent(id){ state.agendaEvents=state.agendaEvents.filter(event=>event.id!==id); saveData(); render(); }
+function setAgendaEventCompleted(id, completed){
+  const event=state.agendaEvents.find(item=>item.id===id);
+  if(!event) return;
+  event.completedAt=completed?Date.now():null;
+  event.updatedAt=Date.now();
+  state.modal=null; saveData(); render();
+  showToast(completed?`${event.title} concluído.`:`${event.title} reaberto.`);
+}
 function dragAgendaEvent(event,id){ event.dataTransfer.setData('text/plain',id); event.dataTransfer.effectAllowed='move'; }
 function dropAgendaEvent(event,date,time){ event.preventDefault(); const id=event.dataTransfer.getData('text/plain'); const item=state.agendaEvents.find(task=>task.id===id); if(!item) return; const oldStart=agendaTimeToMinutes(item.time), oldEnd=agendaTimeToMinutes(getAgendaEventEndTime(item)); const duration=oldStart!==null&&oldEnd!==null&&oldEnd>oldStart ? oldEnd-oldStart : 60; item.date=date||null; item.time=time||null; if(time){ const start=agendaTimeToMinutes(time); item.endTime=agendaMinutesToTime(start+duration); } item.updatedAt=Date.now(); saveData(); document.querySelectorAll('.agenda-drop-target').forEach(el=>el.classList.remove('agenda-drop-target')); render(); }
 function agendaDragOver(event){ event.preventDefault(); event.currentTarget.classList.add('agenda-drop-target'); }
@@ -7969,7 +7994,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='routine'?'active':''}" onclick="openRoutine()">🌿 Rotina</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.24.95</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.24.97</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -7992,7 +8017,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.24.95</span>
+        <span class="brand-version">v2026.07.24.97</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -8053,7 +8078,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.95</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.97</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
@@ -9535,7 +9560,9 @@ function closeModal(){
   render();
 }
 function renderAgendaEventModal(m){
-  return `<div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal" style="width:440px;"><h3>${m.eventId?'Editar evento':'Novo evento'}</h3><div class="field"><label>TÍTULO</label><input type="text" autofocus placeholder="Ex.: Revisar capítulo 2" value="${escapeHtml(m.title||'')}" oninput="state.modal.title=this.value"></div><div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px;"><div class="field"><label>DATA</label><input type="date" value="${escapeHtml(m.date||'')}" oninput="state.modal.date=this.value"></div><div class="field"><label>INÍCIO</label><input type="time" value="${escapeHtml(m.time||'')}" oninput="state.modal.time=this.value"></div><div class="field"><label>TÉRMINO</label><input type="time" value="${escapeHtml(m.endTime||'')}" oninput="state.modal.endTime=this.value"></div></div><div class="field"><label>OBSERVAÇÃO</label><textarea rows="3" placeholder="Detalhes opcionais" oninput="state.modal.notes=this.value">${escapeHtml(m.notes||'')}</textarea></div><p style="font-size:11.5px; color:var(--text-faint); margin:0;">Ao informar o início, o término padrão é uma hora depois. Sem data e hora, o item fica em “A fazer”.</p><div class="modal-actions">${m.eventId?`<button class="ghost-btn" style="color:var(--error); margin-right:auto;" onclick="deleteAgendaEvent('${m.eventId}'); closeModal();">Excluir</button>`:''}<button class="ghost-btn" onclick="closeModal()">Cancelar</button><button class="primary-btn" onclick="confirmAgendaEvent()">Salvar</button></div></div></div>`;
+  const event=m.eventId&&state.agendaEvents.find(item=>item.id===m.eventId);
+  const canManuallyComplete=event&&event.source!=='companion';
+  return `<div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal" style="width:440px;"><h3>${m.eventId?'Editar evento':'Novo evento'}</h3><div class="field"><label>TÍTULO</label><input type="text" autofocus placeholder="Ex.: Revisar capítulo 2" value="${escapeHtml(m.title||'')}" oninput="state.modal.title=this.value"></div><div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px;"><div class="field"><label>DATA</label><input type="date" value="${escapeHtml(m.date||'')}" oninput="state.modal.date=this.value"></div><div class="field"><label>INÍCIO</label><input type="time" value="${escapeHtml(m.time||'')}" oninput="state.modal.time=this.value"></div><div class="field"><label>TÉRMINO</label><input type="time" value="${escapeHtml(m.endTime||'')}" oninput="state.modal.endTime=this.value"></div></div><div class="field"><label>OBSERVAÇÃO</label><textarea rows="3" placeholder="Detalhes opcionais" oninput="state.modal.notes=this.value">${escapeHtml(m.notes||'')}</textarea></div><p style="font-size:11.5px; color:var(--text-faint); margin:0;">Ao informar o início, o término padrão é uma hora depois. Sem data e hora, o item fica em “A fazer”.</p><div class="modal-actions">${m.eventId?`<button class="ghost-btn" style="color:var(--error); margin-right:auto;" onclick="deleteAgendaEvent('${m.eventId}'); closeModal();">Excluir</button>`:''}${canManuallyComplete?`<button class="ghost-btn" style="color:${event.completedAt?'var(--accent)':'var(--success)'};" onclick="setAgendaEventCompleted('${m.eventId}',${event.completedAt?'false':'true'})">${event.completedAt?'↺ Reabrir':'✓ Concluir'}</button>`:''}<button class="ghost-btn" onclick="closeModal()">Cancelar</button><button class="primary-btn" onclick="confirmAgendaEvent()">Salvar</button></div></div></div>`;
 }
 function renderAgendaSuggestionsModal(m){
   const rows=(m.suggestions||[]).map(s=>{ const event=state.agendaEvents.find(item=>item.id===s.eventId); if(!event) return ''; const when=s.slot?`${agendaDateFromKey(s.slot.date).toLocaleDateString('pt-BR',{weekday:'long',day:'numeric',month:'short'})} às ${s.slot.time}`:'Nenhum horário livre nesta semana'; return `<div style="display:flex; gap:8px; align-items:center; padding:9px; border:1px solid var(--border); border-radius:9px;"><div style="flex:1; min-width:0;"><strong style="font-size:13px;">${escapeHtml(event.title)}</strong><div style="font-size:11px; color:var(--text-faint); margin-top:2px;">Sugestão: ${when}</div></div>${s.slot?`<button class="primary-btn" style="padding:6px 9px; font-size:11px;" onclick="applyAgendaSuggestion('${event.id}','${s.slot.date}','${s.slot.time}')">Agendar</button>`:''}</div>`; }).join('');
