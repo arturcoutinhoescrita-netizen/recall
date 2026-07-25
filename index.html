@@ -893,16 +893,19 @@ async function loadCompanionReports(){
   }
 }
 const COMPANION_MIN_SESSION_MS=60*1000;
-const COMPANION_IGNORED_PACKAGES=new Set(['android','com.android.systemui','com.android.settings','com.google.android.gms','com.sec.android.app.launcher','com.samsung.android.app.launcher','com.hotmart.sparkle']);
-const COMPANION_IGNORED_NAMES=new Set(['tela inicial de one ui','hotmart sparkle','com.hotmart.sparkle']);
-const COMPANION_FRIENDLY_NAMES={'com.hotmart.sparkle':'Hotmart Sparkle'};
+const COMPANION_MONITORED_PACKAGES=new Set(['com.whatsapp','com.google.android.youtube','com.android.chrome','com.amazon.kindle','com.spotify.music','com.instagram.android']);
+const COMPANION_FRIENDLY_NAMES={
+  'com.whatsapp':'WhatsApp', 'com.google.android.youtube':'YouTube',
+  'com.android.chrome':'Chrome', 'com.amazon.kindle':'Kindle',
+  'com.spotify.music':'Spotify', 'com.instagram.android':'Instagram'
+};
 function getCompanionAppName(item){
   const packageName=String(item?.packageName||'');
   return COMPANION_FRIENDLY_NAMES[packageName] || String(item?.appName||packageName||'Aplicativo');
 }
 function isMeaningfulCompanionSession(session){
   const duration=Number(session.durationMs)||((Number(session.endedAt)||0)-(Number(session.startedAt)||0));
-  return duration>=COMPANION_MIN_SESSION_MS && !COMPANION_IGNORED_PACKAGES.has(String(session.packageName||'')) && !COMPANION_IGNORED_NAMES.has(getCompanionAppName(session).toLowerCase());
+  return duration>=COMPANION_MIN_SESSION_MS && COMPANION_MONITORED_PACKAGES.has(String(session.packageName||''));
 }
 function syncCompanionSessionsToAgenda(reports){
   let changed=false;
@@ -7844,7 +7847,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='routine'?'active':''}" onclick="openRoutine()">🌿 Rotina</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.24.91</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.24.92</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -7867,7 +7870,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.24.91</span>
+        <span class="brand-version">v2026.07.24.92</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -7928,7 +7931,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.91</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.92</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
