@@ -802,6 +802,7 @@ let state = {
   sidebarAutoHide: false,
   mobileHomeSection: null,
   notesChatWidth: 340,
+  notesChatHidden: false,
   // A tela inicial permanece neutra. Estes ids só servem para retomar o
   // último conteúdo quando a pessoa escolher Baralhos ou Notas novamente.
   lastDeckId: null,
@@ -881,6 +882,7 @@ async function loadData(){
           state.notesItems = (d.notesItems || []).map(normalizeNoteItem);
           state.sidebarAutoHide = !!d.sidebarAutoHide;
           state.notesChatWidth = Math.max(280,Math.min(560,Number(d.notesChatWidth)||340));
+          state.notesChatHidden = !!d.notesChatHidden;
           state.lastDeckId = d.lastDeckId || null;
           state.lastNoteId = d.lastNoteId || null;
           migrateLegacyInlineNoteContent(d.notesItems);
@@ -905,6 +907,7 @@ async function loadData(){
           state.notesItems = (d.notesItems || []).map(normalizeNoteItem);
           state.sidebarAutoHide = !!d.sidebarAutoHide;
           state.notesChatWidth = Math.max(280,Math.min(560,Number(d.notesChatWidth)||340));
+          state.notesChatHidden = !!d.notesChatHidden;
           state.lastDeckId = d.lastDeckId || null;
           state.lastNoteId = d.lastNoteId || null;
           migrateLegacyInlineNoteContent(d.notesItems);
@@ -997,7 +1000,7 @@ function syncCompanionSessionsToAgenda(reports){
 // antigo termine depois e sobrescreva uma criação mais nova no armazenamento.
 let dataSaveQueue = Promise.resolve();
 function saveData(){
-  const payload = JSON.parse(JSON.stringify({decks: state.decks, cards: state.cards, stats: state.stats, activities: state.activities, agendaEvents: state.agendaEvents, routineActivities: state.routineActivities, routineActive: state.routineActive, routineLastCheckInAt: state.routineLastCheckInAt, globalAiMessages: state.globalAiMessages, books: state.books, notesItems: state.notesItems, sidebarAutoHide: state.sidebarAutoHide, notesChatWidth: state.notesChatWidth, lastDeckId: state.lastDeckId, lastNoteId: state.lastNoteId, geminiApiKey: getApiKey(), geminiApiKey2: getApiKey2(), booksApiKey: getBooksApiKey()}));
+  const payload = JSON.parse(JSON.stringify({decks: state.decks, cards: state.cards, stats: state.stats, activities: state.activities, agendaEvents: state.agendaEvents, routineActivities: state.routineActivities, routineActive: state.routineActive, routineLastCheckInAt: state.routineLastCheckInAt, globalAiMessages: state.globalAiMessages, books: state.books, notesItems: state.notesItems, sidebarAutoHide: state.sidebarAutoHide, notesChatWidth: state.notesChatWidth, notesChatHidden: state.notesChatHidden, lastDeckId: state.lastDeckId, lastNoteId: state.lastNoteId, geminiApiKey: getApiKey(), geminiApiKey2: getApiKey2(), booksApiKey: getBooksApiKey()}));
   const persist = async () => {
     for(let attempt=0; attempt<2; attempt++){
       try{
@@ -5029,6 +5032,11 @@ function startNotesChatResize(event){
   const up=()=>{ document.removeEventListener('mousemove',move); document.removeEventListener('mouseup',up); saveData(); };
   document.addEventListener('mousemove',move); document.addEventListener('mouseup',up);
 }
+function toggleNotesChatPanel(){
+  if(!isDesktopLayout()) return;
+  state.notesChatHidden=!state.notesChatHidden;
+  saveData(); render();
+}
 function openNotesCreateModal(parentId, kind){
   state.modal = { type:'new-note-item', kind: kind || 'note', name:'', format:'plain', parentId: parentId || null };
   render();
@@ -6011,6 +6019,22 @@ function setRichHeading(level){
   if(!['h1','h2','h3'].includes(level)) return;
   state.lastRichHeading=level;
   applyRichCommand('formatBlock',`<${level}>`);
+}
+function toggleRichHeadingMenu(){
+  state.noteHeadingMenu=state.noteHeadingMenu ? null : {savedOffset:captureRichCursorOffset()};
+  render();
+}
+function chooseRichHeading(level){
+  const menu=state.noteHeadingMenu;
+  state.noteHeadingMenu=false;
+  state.lastRichHeading=level;
+  render();
+  const editor=document.getElementById('note-editor-plain');
+  if(editor){ editor.focus(); restoreRichCursorOffset(editor,menu?.savedOffset); document.execCommand('formatBlock',false,`<${level}>`); onNoteContentInput(state.currentNoteId,editor.innerHTML); }
+}
+function renderRichHeadingMenu(){
+  if(!state.noteHeadingMenu) return '';
+  return `<div style="position:absolute; top:38px; right:0; z-index:120; display:flex; flex-direction:column; gap:3px; width:76px; padding:6px; background:var(--surface); border:1px solid var(--border); border-radius:9px; box-shadow:0 10px 24px rgba(0,0,0,.25);"><button class="ghost-btn" style="padding:6px; font-size:11px;" onmousedown="event.preventDefault()" onclick="chooseRichHeading('h1')">H1</button><button class="ghost-btn" style="padding:6px; font-size:11px;" onmousedown="event.preventDefault()" onclick="chooseRichHeading('h2')">H2</button><button class="ghost-btn" style="padding:6px; font-size:11px;" onmousedown="event.preventDefault()" onclick="chooseRichHeading('h3')">H3</button></div>`;
 }
 function setRichAlignment(alignment){
   const commands={left:'justifyLeft',center:'justifyCenter',right:'justifyRight',justify:'justifyFull'};
@@ -7178,6 +7202,7 @@ function openNoteChat(initialInput){
   const note = state.notesItems.find(n=>n.id===noteId);
   if(!note) return;
   const conversation = createNoteConversation(note, 'chat', {});
+  if(isDesktopLayout()) state.notesChatHidden=false;
   state.modal = { type:'note-chat', noteId, conversationId:conversation.id, messages:conversation.messages, input:initialInput || '', sending:false, conversationSearch:'', conversationLibraryOpen:false };
   render();
 }
@@ -8179,7 +8204,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='routine'?'active':''}" onclick="openRoutine()">🌿 Rotina</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.102</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.103</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -8202,7 +8227,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.25.102</span>
+        <span class="brand-version">v2026.07.25.103</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -8263,7 +8288,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.102</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.103</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
@@ -8356,7 +8381,7 @@ function renderNotesView(){
         <h3 style="margin:0; font-size:15px;">📓 Notas</h3>
         <div style="display:flex; gap:4px;">
           <button class="icon-btn" title="Nova nota" onclick="openNotesCreateModal(null,'note')">📄</button>
-          <button class="icon-btn" title="Nova escaleta" onclick="openNotesCreateModal(null,'outline')">🧩</button><button class="icon-btn" title="Nova pasta" onclick="openNotesCreateModal(null,'folder')">📁</button>
+          <button class="icon-btn" title="Nova escaleta" onclick="openNotesCreateModal(null,'outline')">🧩</button><button class="icon-btn" title="Nova pasta" onclick="openNotesCreateModal(null,'folder')">📁</button>${isDesktopLayout()?`<button class="icon-btn" title="${state.notesChatHidden?'Mostrar':'Ocultar'} Chat IA" onclick="toggleNotesChatPanel()">${state.notesChatHidden?'💬':'◧'}</button>`:''}
         </div>
       </div>
       <div class="notes-search-bar">
@@ -8381,7 +8406,7 @@ function renderNotesView(){
       `}
     </div>
   </div>
-  ${isDesktopLayout() && state.modal && state.modal.type==='note-chat' ? `<div class="notes-chat-resizer" onmousedown="startNotesChatResize(event)" title="Arraste para ajustar a largura do chat"></div>${renderNoteChatModal(state.modal, true)}` : ''}
+  ${isDesktopLayout() && !state.notesChatHidden && state.modal && state.modal.type==='note-chat' ? `<div class="notes-chat-resizer" onmousedown="startNotesChatResize(event)" title="Arraste para ajustar a largura do chat"></div>${renderNoteChatModal(state.modal, true)}` : ''}
   </div>
   `;
 }
@@ -8611,7 +8636,7 @@ function renderNotesToolbar(format){
     <span style="display:inline-flex; position:relative;"><button class="icon-btn" ${noSteal}title="Aplicar último destaque" onclick="applyLastRichColor('highlight')" style="font-size:14px; border-bottom:3px solid ${state.lastRichHighlight||'#F5D76E'};">🖍</button><button class="icon-btn" ${noSteal}title="Escolher cor do destaque" onclick="openRichColorMenu('highlight')" style="width:20px; font-size:10px; margin-left:-4px;">▾</button>${renderRichColorPalette('highlight')}</span>
     <select title="Fonte" style="width:auto; max-width:150px; padding:5px 7px; font-size:11px;" onchange="setRichFont(this.value)"><option value="inherit">Fonte</option><option value="Arial">Arial</option><option value="Arial Rounded">Arial Rounded</option><option value="Georgia">Georgia</option><option value="Verdana">Verdana</option><option value="Courier New">Monoespaçada</option><option value="Cinzel Decorative">Cinzel Decorative</option><option value="Great Vibes">Great Vibes</option><option value="Nickainley">Nickainley</option><option value="SangGuru">SangGuru</option><option value="Special Elite">Special Elite</option><option value="Zeyada">Zeyada</option></select>
     <select title="Tamanho da fonte" style="width:auto; max-width:84px; padding:5px 7px; font-size:11px;" onchange="setRichFontSize(this.value)"><option value="">Tamanho</option><option value="10">10 px</option><option value="12">12 px</option><option value="14">14 px</option><option value="16">16 px</option><option value="18">18 px</option><option value="20">20 px</option><option value="24">24 px</option><option value="28">28 px</option><option value="32">32 px</option><option value="36">36 px</option></select>` : ''}
-    ${!isMarkdown ? `<span style="display:inline-flex;"><button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Aplicar último título" onclick="setRichHeading('${state.lastRichHeading||'h1'}')">${String(state.lastRichHeading||'h1').toUpperCase()}</button><select title="Escolher título" style="width:25px; padding:5px 1px; font-size:10px; margin-left:-4px;" onchange="setRichHeading(this.value)"><option value="h1" ${(state.lastRichHeading||'h1')==='h1'?'selected':''}>H1</option><option value="h2" ${(state.lastRichHeading||'h1')==='h2'?'selected':''}>H2</option><option value="h3" ${(state.lastRichHeading||'h1')==='h3'?'selected':''}>H3</option></select></span>` : `<button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Título 1" onclick="applyMdLinePrefix('${id}','# ')">H1</button>`}
+    ${!isMarkdown ? `<span style="display:inline-flex; position:relative;"><button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Aplicar último título" onclick="setRichHeading('${state.lastRichHeading||'h1'}')">${String(state.lastRichHeading||'h1').toUpperCase()}</button><button class="icon-btn" style="width:20px; font-size:10px; margin-left:-4px;" ${noSteal}title="Escolher título" onclick="toggleRichHeadingMenu()">▾</button>${renderRichHeadingMenu()}</span>` : `<button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Título 1" onclick="applyMdLinePrefix('${id}','# ')">H1</button>`}
     <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Lista" onclick="${list}">•</button>
     <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Lista numerada" onclick="${olist}">1.</button>
     <button class="icon-btn" ${noSteal}title="Recuo de parágrafo (igual à tecla Tab)" onclick="${indent}">↹</button>
