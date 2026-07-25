@@ -546,6 +546,7 @@
   .usage-app{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .usage-track{ height:11px; overflow:hidden; border-radius:999px; background:var(--bg-2); }
   .usage-bar{ display:block; height:100%; min-width:4px; border-radius:inherit; background:#7186df; }
+  .usage-bar.letther{ background:var(--accent); }
   .usage-duration{ min-width:50px; color:var(--text-faint); font-variant-numeric:tabular-nums; text-align:right; }
   .routine-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(118px,1fr)); gap:10px; }
   .routine-action{ min-height:112px; padding:12px 8px; border:1px solid var(--border); border-radius:14px; background:var(--surface); color:var(--text); font:inherit; cursor:pointer; transition:transform .15s,border-color .15s,background .15s; }
@@ -2623,14 +2624,41 @@ function getCompanionUsageForPeriod(period){
   }));
   return [...totals.values()].sort((a,b)=>b.durationMs-a.durationMs);
 }
+function getLettherUsageForPeriod(period){
+  const now=Date.now();
+  const since=now-(period==='week'?7:1)*24*60*60*1000;
+  const labels={
+    writing:{name:'✍️ Escrita',key:'writing'}, reading:{name:'📖 Leitura',key:'reading'},
+    flashcards:{name:'🧠 Flashcards',key:'flashcards'}
+  };
+  const totals=new Map();
+  (state.activities||[]).forEach(activity=>{
+    const endedAt=Number(activity.endedAt)||Number(activity.at)||0;
+    const duration=Math.max(0,Number(activity.durationMs)||0);
+    const startedAt=Number(activity.startedAt)||Math.max(0,endedAt-duration);
+    if(!endedAt||endedAt<=since) return;
+    const counted=Math.max(0,endedAt-Math.max(startedAt,since));
+    if(!counted) return;
+    const label=activity.type==='routine'
+      ? {key:`routine:${activity.routineId||activity.title||'other'}`,name:`${activity.icon||'✅'} ${activity.title||'Rotina'}`}
+      : (labels[activity.type]||{key:activity.type||'other',name:'🌿 Letther B'});
+    const item=totals.get(label.key)||{name:label.name,durationMs:0};
+    item.durationMs+=counted;
+    totals.set(label.key,item);
+  });
+  return [...totals.values()].sort((a,b)=>b.durationMs-a.durationMs);
+}
 function renderAgendaReportView(){
   const period=state.agendaReportPeriod==='week'?'week':'24h';
   const usage=getCompanionUsageForPeriod(period);
-  const total=usage.reduce((sum,item)=>sum+item.durationMs,0);
+  const lettherUsage=getLettherUsageForPeriod(period);
+  const companionTotal=usage.reduce((sum,item)=>sum+item.durationMs,0);
+  const lettherTotal=lettherUsage.reduce((sum,item)=>sum+item.durationMs,0);
   const max=Math.max(...usage.map(item=>item.durationMs),1);
-  const top=usage[0];
+  const lettherMax=Math.max(...lettherUsage.map(item=>item.durationMs),1);
+  const top=[...usage,...lettherUsage].sort((a,b)=>b.durationMs-a.durationMs)[0];
   const label=period==='week'?'últimos 7 dias':'últimas 24 horas';
-  return `<div class="agenda-report"><button class="ghost-btn mobile-back-btn" onclick="backToHome()">← Menu</button><div class="deck-header" style="margin-bottom:14px;"><div><h2 style="margin:0 0 5px;">📊 Relatório</h2><p>Tempo de uso registrado pelo Letther B Companion.</p></div><div style="display:flex; gap:6px; align-items:center;"><button class="ghost-btn ${period==='24h'?'active-mode':''}" style="padding:6px 9px; font-size:12px;" onclick="setAgendaReportPeriod('24h')">24 horas</button><button class="ghost-btn ${period==='week'?'active-mode':''}" style="padding:6px 9px; font-size:12px;" onclick="setAgendaReportPeriod('week')">Semana</button><button class="ghost-btn" style="padding:6px 9px; font-size:12px;" onclick="setAgendaView('week')">Agenda</button></div></div><div class="agenda-report-summary"><div class="agenda-report-stat"><strong>${formatActivityDuration(total)}</strong><span>uso de aplicativos nas ${period==='week'?'últimas 7 dias':'últimas 24 horas'}</span></div><div class="agenda-report-stat"><strong>${usage.length}</strong><span>aplicativo${usage.length===1?'':'s'} com uso registrado</span></div><div class="agenda-report-stat"><strong>${top?escapeHtml(top.name):'—'}</strong><span>${top?formatActivityDuration(top.durationMs):'Nenhum uso registrado'}</span></div></div><section class="usage-chart"><h3>Uso por aplicativo</h3><p class="usage-chart-subtitle">${label}. Apenas os aplicativos escolhidos por você são mostrados.</p>${usage.length?usage.map(item=>`<div class="usage-row"><span class="usage-app">📱 ${escapeHtml(item.name)}</span><span class="usage-track"><i class="usage-bar" style="width:${Math.max(2,(item.durationMs/max)*100)}%"></i></span><span class="usage-duration">${formatActivityDuration(item.durationMs)}</span></div>`).join(''):`<p style="margin:0; color:var(--text-faint); font-size:13px;">Ainda não há uso sincronizado neste período. Abra o Companion e toque em “Sincronizar relatório agora”.</p>`}</section></div>`;
+  return `<div class="agenda-report"><button class="ghost-btn mobile-back-btn" onclick="backToHome()">← Menu</button><div class="deck-header" style="margin-bottom:14px;"><div><h2 style="margin:0 0 5px;">📊 Relatório</h2><p>Visão conjunta do celular e das atividades feitas no Letther B.</p></div><div style="display:flex; gap:6px; align-items:center;"><button class="ghost-btn ${period==='24h'?'active-mode':''}" style="padding:6px 9px; font-size:12px;" onclick="setAgendaReportPeriod('24h')">24 horas</button><button class="ghost-btn ${period==='week'?'active-mode':''}" style="padding:6px 9px; font-size:12px;" onclick="setAgendaReportPeriod('week')">Semana</button><button class="ghost-btn" style="padding:6px 9px; font-size:12px;" onclick="setAgendaView('week')">Agenda</button></div></div><div class="agenda-report-summary"><div class="agenda-report-stat"><strong>${formatActivityDuration(companionTotal)}</strong><span>uso no celular</span></div><div class="agenda-report-stat"><strong>${formatActivityDuration(lettherTotal)}</strong><span>atividades no Letther B</span></div><div class="agenda-report-stat"><strong>${top?escapeHtml(top.name):'—'}</strong><span>${top?formatActivityDuration(top.durationMs):'Nenhum registro'}</span></div></div><section class="usage-chart"><h3>Uso no celular</h3><p class="usage-chart-subtitle">${label}. Apenas os aplicativos escolhidos por você são mostrados.</p>${usage.length?usage.map(item=>`<div class="usage-row"><span class="usage-app">📱 ${escapeHtml(item.name)}</span><span class="usage-track"><i class="usage-bar" style="width:${Math.max(2,(item.durationMs/max)*100)}%"></i></span><span class="usage-duration">${formatActivityDuration(item.durationMs)}</span></div>`).join(''):`<p style="margin:0; color:var(--text-faint); font-size:13px;">Ainda não há uso do celular sincronizado neste período.</p>`}</section><section class="usage-chart" style="margin-top:14px;"><h3>Atividades no Letther B</h3><p class="usage-chart-subtitle">Escrita, leitura, flashcards e rotina registrados em ${label}.</p>${lettherUsage.length?lettherUsage.map(item=>`<div class="usage-row"><span class="usage-app">${escapeHtml(item.name)}</span><span class="usage-track"><i class="usage-bar letther" style="width:${Math.max(2,(item.durationMs/lettherMax)*100)}%"></i></span><span class="usage-duration">${formatActivityDuration(item.durationMs)}</span></div>`).join(''):`<p style="margin:0; color:var(--text-faint); font-size:13px;">Ainda não há atividades do Letther B registradas neste período.</p>`}</section></div>`;
 }
 /* ============ ROTINA ============ */
 const ROUTINE_CHECKIN_MS = 2 * 60 * 60 * 1000;
@@ -7903,7 +7931,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='routine'?'active':''}" onclick="openRoutine()">🌿 Rotina</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.24.93</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.24.94</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -7926,7 +7954,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.24.93</span>
+        <span class="brand-version">v2026.07.24.94</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -7987,7 +8015,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.93</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.94</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
