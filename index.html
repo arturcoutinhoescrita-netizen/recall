@@ -4892,6 +4892,25 @@ function renderEpubReaderView(){
 let noteContentCache = {};
 let noteContentLoading = {};
 let noteContentError = {};
+const noteScrollPositions = Object.create(null);
+function rememberNoteScroll(noteId){
+  if(!noteId) return;
+  const pane=document.querySelector('.notes-editor-panes');
+  const rich=document.getElementById('note-editor-plain');
+  const textarea=document.getElementById('note-editor-textarea');
+  noteScrollPositions[noteId]={pane:pane?.scrollTop||0,rich:rich?.scrollTop||0,textarea:textarea?.scrollTop||0};
+}
+function restoreNoteScroll(noteId){
+  const position=noteScrollPositions[noteId]; if(!position) return;
+  requestAnimationFrame(()=>{
+    const pane=document.querySelector('.notes-editor-panes');
+    const rich=document.getElementById('note-editor-plain');
+    const textarea=document.getElementById('note-editor-textarea');
+    if(pane) pane.scrollTop=position.pane;
+    if(rich) rich.scrollTop=position.rich;
+    if(textarea) textarea.scrollTop=position.textarea;
+  });
+}
 function getNoteContent(noteId){
   return noteContentCache[noteId] !== undefined ? noteContentCache[noteId] : '';
 }
@@ -4984,7 +5003,9 @@ function openNotes(){
   // O caderno abre sempre no explorador. Assim uma nota remota que falhou ao
   // carregar não bloqueia a aba inteira antes de a pessoa escolher o que abrir.
   state.currentNoteId = null;
-  if(state.modal?.type==='note-chat') state.modal=null;
+  // No desktop o chat é um painel fixo de trabalho: voltar ao explorador ou
+  // trocar de nota não o fecha. No celular ele continua sendo uma janela.
+  if(state.modal?.type==='note-chat' && !isDesktopLayout()) state.modal=null;
   render();
 }
 function startNotesExplorerResize(event){
@@ -5088,13 +5109,14 @@ function closeCurrentNote(){
   render();
 }
 function openNote(id){
+  rememberNoteScroll(state.currentNoteId);
   const selectedItem=state.notesItems.find(item=>item.id===id);
   if(!selectedItem) return;
   state.currentNoteId = id;
   if(selectedItem.type==='note') state.lastNoteId = id;
   state.noteFindReplace = null; // trocar de nota fecha qualquer busca/substituição aberta na anterior
   saveData();
-  if(selectedItem.type==='outline'){ render(); return; }
+  if(selectedItem.type==='outline'){ render(); restoreNoteScroll(id); return; }
   if(isDesktopLayout()) ensureNoteChatFor(id);
   if(noteContentCache[id] === undefined && !noteContentLoading[id]){
     noteContentLoading[id] = true;
@@ -5111,6 +5133,7 @@ function openNote(id){
       delete noteContentLoading[id];
       render();
       focusPendingOutlineAnchor();
+      restoreNoteScroll(id);
     }).catch(err => {
       console.error('Falha ao carregar conteúdo da nota', err);
       delete noteContentLoading[id];
@@ -5120,6 +5143,7 @@ function openNote(id){
   } else {
     render();
     focusPendingOutlineAnchor();
+    restoreNoteScroll(id);
   }
 }
 function retryLoadNoteContent(id){
@@ -6938,28 +6962,36 @@ function requestNoteCorrection(){
   if(!sel || !sel.text || (sel.source !== 'textarea' && sel.source !== 'richtext') || !note) return;
   hideNoteSelectionBar();
   const modalBase = { type:'note-correction', status:'loading', original:sel.text, corrected:'', noteId: note.id, source: sel.source, start: sel.start, end: sel.end };
-  state.modal = modalBase;
+  rememberNoteScroll(note.id);
+  const keepDesktopChat=isDesktopLayout() && state.modal?.type==='note-chat';
+  if(keepDesktopChat) state.noteCorrection=modalBase; else state.modal=modalBase;
   render();
+  restoreNoteScroll(note.id);
   generateTextCorrection(sel.text).then(corrected => {
-    if(state.modal && state.modal.type === 'note-correction'){
-      state.modal.status = 'review';
-      state.modal.corrected = corrected;
+    const correction=state.noteCorrection || state.modal;
+    if(correction && correction.type === 'note-correction'){
+      correction.status = 'review';
+      correction.corrected = corrected;
       render();
+      restoreNoteScroll(note.id);
     }
   }).catch(err => {
     console.error('Falha ao corrigir texto da nota', err);
-    if(state.modal && state.modal.type === 'note-correction'){
-      state.modal.status = 'error';
-      state.modal.error = friendlyAiErrorMsg(err);
+    const correction=state.noteCorrection || state.modal;
+    if(correction && correction.type === 'note-correction'){
+      correction.status = 'error';
+      correction.error = friendlyAiErrorMsg(err);
       render();
+      restoreNoteScroll(note.id);
     }
   });
 }
 function confirmNoteCorrection(){
-  const m = state.modal;
+  const m = state.noteCorrection || state.modal;
   if(!m || m.type !== 'note-correction') return;
   const note = state.notesItems.find(n=>n.id===m.noteId);
-  if(!note){ state.modal = null; render(); return; }
+  if(!note){ if(state.noteCorrection) state.noteCorrection=null; else state.modal=null; render(); return; }
+  rememberNoteScroll(note.id);
   const before = getNoteContent(note.id);
   if(m.source === 'richtext'){
     const el = document.getElementById('note-editor-plain');
@@ -6968,11 +7000,11 @@ function confirmNoteCorrection(){
     // modal já recriou o contenteditable (e os nós que ele apontava).
     if(el && replaceRichTextRange(el, m.start, m.end, m.corrected)){
       note.updatedAt = Date.now();
-      state.modal = null;
+      if(state.noteCorrection) state.noteCorrection=null; else state.modal = null;
       const updated = el.innerHTML;
       recordNoteHistory(note.id, before, updated);
       noteContentCache[note.id] = updated;
-      saveData(); render();
+      saveData(); render(); restoreNoteScroll(note.id);
       saveNoteContentToR2(note.id, updated);
       showToast('Texto corrigido.');
       return;
@@ -6983,8 +7015,8 @@ function confirmNoteCorrection(){
   recordNoteHistory(note.id, before, updated);
   noteContentCache[note.id] = updated;
   note.updatedAt = Date.now();
-  state.modal = null;
-  saveData(); render();
+  if(state.noteCorrection) state.noteCorrection=null; else state.modal = null;
+  saveData(); render(); restoreNoteScroll(note.id);
   saveNoteContentToR2(note.id, updated);
   showToast('Texto corrigido.');
 }
@@ -8061,7 +8093,7 @@ function render(){
         <div class="main">${renderMain()}</div>
       </div>
     </div>
-    ${state.modal && !(state.modal.type==='note-chat' && isDesktopLayout()) ? renderModal() : ''}
+    ${state.noteCorrection ? renderModal(state.noteCorrection) : (state.modal && !(state.modal.type==='note-chat' && isDesktopLayout()) ? renderModal() : '')}
     ${state.noteConversationManager ? renderNoteConversationManager(state.noteConversationManager) : ''}
     ${state.toast ? renderToast() : ''}
   `;
@@ -8147,7 +8179,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='routine'?'active':''}" onclick="openRoutine()">🌿 Rotina</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.101</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.102</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -8170,7 +8202,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.25.101</span>
+        <span class="brand-version">v2026.07.25.102</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -8231,7 +8263,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.101</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.102</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
@@ -8579,7 +8611,7 @@ function renderNotesToolbar(format){
     <span style="display:inline-flex; position:relative;"><button class="icon-btn" ${noSteal}title="Aplicar último destaque" onclick="applyLastRichColor('highlight')" style="font-size:14px; border-bottom:3px solid ${state.lastRichHighlight||'#F5D76E'};">🖍</button><button class="icon-btn" ${noSteal}title="Escolher cor do destaque" onclick="openRichColorMenu('highlight')" style="width:20px; font-size:10px; margin-left:-4px;">▾</button>${renderRichColorPalette('highlight')}</span>
     <select title="Fonte" style="width:auto; max-width:150px; padding:5px 7px; font-size:11px;" onchange="setRichFont(this.value)"><option value="inherit">Fonte</option><option value="Arial">Arial</option><option value="Arial Rounded">Arial Rounded</option><option value="Georgia">Georgia</option><option value="Verdana">Verdana</option><option value="Courier New">Monoespaçada</option><option value="Cinzel Decorative">Cinzel Decorative</option><option value="Great Vibes">Great Vibes</option><option value="Nickainley">Nickainley</option><option value="SangGuru">SangGuru</option><option value="Special Elite">Special Elite</option><option value="Zeyada">Zeyada</option></select>
     <select title="Tamanho da fonte" style="width:auto; max-width:84px; padding:5px 7px; font-size:11px;" onchange="setRichFontSize(this.value)"><option value="">Tamanho</option><option value="10">10 px</option><option value="12">12 px</option><option value="14">14 px</option><option value="16">16 px</option><option value="18">18 px</option><option value="20">20 px</option><option value="24">24 px</option><option value="28">28 px</option><option value="32">32 px</option><option value="36">36 px</option></select>` : ''}
-    ${!isMarkdown ? `<select title="Estilo de título" style="width:auto; max-width:86px; padding:5px 7px; font-size:11px;" onchange="setRichHeading(this.value)"><option value="h1" ${(state.lastRichHeading||'h1')==='h1'?'selected':''}>H1</option><option value="h2" ${(state.lastRichHeading||'h1')==='h2'?'selected':''}>H2</option><option value="h3" ${(state.lastRichHeading||'h1')==='h3'?'selected':''}>H3</option></select>` : `<button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Título 1" onclick="applyMdLinePrefix('${id}','# ')">H1</button>`}
+    ${!isMarkdown ? `<span style="display:inline-flex;"><button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Aplicar último título" onclick="setRichHeading('${state.lastRichHeading||'h1'}')">${String(state.lastRichHeading||'h1').toUpperCase()}</button><select title="Escolher título" style="width:25px; padding:5px 1px; font-size:10px; margin-left:-4px;" onchange="setRichHeading(this.value)"><option value="h1" ${(state.lastRichHeading||'h1')==='h1'?'selected':''}>H1</option><option value="h2" ${(state.lastRichHeading||'h1')==='h2'?'selected':''}>H2</option><option value="h3" ${(state.lastRichHeading||'h1')==='h3'?'selected':''}>H3</option></select></span>` : `<button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Título 1" onclick="applyMdLinePrefix('${id}','# ')">H1</button>`}
     <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Lista" onclick="${list}">•</button>
     <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Lista numerada" onclick="${olist}">1.</button>
     <button class="icon-btn" ${noSteal}title="Recuo de parágrafo (igual à tecla Tab)" onclick="${indent}">↹</button>
@@ -9715,6 +9747,7 @@ function openNewDeckModal(){ state.modal = { type:'new-deck', name:'', color: DE
 function openApiKeyModal(){ state.modal = { type:'api-key', key: getApiKey(), key2: getApiKey2(), booksKey: getBooksApiKey() }; render(); }
 function openAppOptionsModal(){ state.modal={type:'app-options'}; render(); }
 function closeModal(){
+  if(state.noteCorrection){ state.noteCorrection=null; render(); return; }
   const closingQuickCommand = state.modal?.type==='quick-command';
   state.modal = closingQuickCommand && suspendedEmbeddedNoteChat ? suspendedEmbeddedNoteChat : null;
   suspendedEmbeddedNoteChat = null;
@@ -9762,8 +9795,8 @@ function renderAppOptionsModal(){
     <div class="modal-actions"><button class="ghost-btn" onclick="closeModal()">Fechar</button></div>
   </div></div>`;
 }
-function renderModal(){
-  const m = state.modal;
+function renderModal(overrideModal){
+  const m = overrideModal || state.modal;
   if(m.type === 'agenda-event') return renderAgendaEventModal(m);
   if(m.type === 'agenda-suggestions') return renderAgendaSuggestionsModal(m);
   if(m.type === 'routine-action') return renderRoutineActionModal(m);
