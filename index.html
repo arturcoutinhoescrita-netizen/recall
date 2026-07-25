@@ -1039,6 +1039,19 @@ const ACTIVITY_HISTORY_LIMIT = 240;
 // encerradas automaticamente, evitando contabilizar uma nota abandonada.
 const WRITING_MIN_MS = 1 * 60 * 1000;
 const READING_AUTOSAVE_MS = 2 * 60 * 60 * 1000;
+let notesPresenceActivity = null;
+function startNotesPresence(noteId){
+  const title=noteId ? (state.notesItems.find(item=>item.id===noteId)?.name||'Nota') : 'Explorador de notas';
+  if(notesPresenceActivity && notesPresenceActivity.noteId===noteId) return;
+  finishNotesPresence();
+  notesPresenceActivity={noteId:noteId||null,title,startedAt:Date.now()};
+}
+function finishNotesPresence(){
+  const session=notesPresenceActivity; if(!session) return;
+  const durationMs=Date.now()-session.startedAt;
+  notesPresenceActivity=null;
+  if(durationMs>=WRITING_MIN_MS) addActivity('notes',{durationMs,noteId:session.noteId,title:session.title});
+}
 function addActivity(type, details){
   const durationMs = Math.max(0, Math.round((details.durationMs || 0) / 60000) * 60000);
   if(!durationMs && !details.count) return;
@@ -2674,7 +2687,7 @@ function getLettherUsageForPeriod(period){
   const since=now-(period==='week'?7:1)*24*60*60*1000;
   const labels={
     writing:{name:'✍️ Escrita',key:'writing'}, reading:{name:'📖 Leitura',key:'reading'},
-    flashcards:{name:'🧠 Flashcards',key:'flashcards'}
+    notes:{name:'📓 Notas',key:'notes'}, flashcards:{name:'🧠 Flashcards',key:'flashcards'}
   };
   const totals=new Map();
   (state.activities||[]).forEach(activity=>{
@@ -2925,7 +2938,7 @@ function getActivityTotals(activities){
     totals[activity.type]=(totals[activity.type]||0)+(activity.durationMs||0);
     if(activity.type==='flashcards') totals.cards+=(activity.count||0);
     return totals;
-  },{reading:0,writing:0,flashcards:0,cards:0});
+  },{reading:0,writing:0,notes:0,flashcards:0,cards:0});
 }
 function getAgendaReviewGroups(dateKey){
   const today=agendaDateKey(new Date());
@@ -2985,8 +2998,8 @@ function isToday(timestamp){
   return now.getFullYear()===date.getFullYear() && now.getMonth()===date.getMonth() && now.getDate()===date.getDate();
 }
 function renderAgendaActivity(activity){
-  const icon = activity.type === 'reading' ? '📖' : activity.type === 'writing' ? '✍️' : activity.type === 'routine' ? (activity.icon||'✅') : '🧠';
-  const label = activity.type === 'reading' ? 'Leitura' : activity.type === 'writing' ? 'Escrita' : activity.type === 'routine' ? (activity.title||'Rotina') : 'Flashcards';
+  const icon = activity.type === 'reading' ? '📖' : activity.type === 'writing' ? '✍️' : activity.type === 'notes' ? '📓' : activity.type === 'routine' ? (activity.icon||'✅') : '🧠';
+  const label = activity.type === 'reading' ? 'Leitura' : activity.type === 'writing' ? 'Escrita' : activity.type === 'notes' ? 'Notas' : activity.type === 'routine' ? (activity.title||'Rotina') : 'Flashcards';
   const detail = activity.type === 'flashcards'
     ? `${activity.count||0} cartão(ões) · ${formatActivityDuration(activity.durationMs)}`
     : formatActivityDuration(activity.durationMs);
@@ -4996,6 +5009,7 @@ function migrateLegacyInlineNoteContent(rawItems){
 }
 function openNotes(){
   finishReadingActivity();
+  finishNotesPresence();
   // O explorador começa compacto sempre que o caderno é aberto. Assim, uma
   // árvore grande não ocupa a tela inteira e cada pasta só mostra o conteúdo
   // quando a pessoa decidir expandi-la.
@@ -5006,6 +5020,7 @@ function openNotes(){
   // O caderno abre sempre no explorador. Assim uma nota remota que falhou ao
   // carregar não bloqueia a aba inteira antes de a pessoa escolher o que abrir.
   state.currentNoteId = null;
+  startNotesPresence(null);
   // No desktop o chat é um painel fixo de trabalho: voltar ao explorador ou
   // trocar de nota não o fecha. No celular ele continua sendo uma janela.
   if(state.modal?.type==='note-chat' && !isDesktopLayout()) state.modal=null;
@@ -5112,15 +5127,18 @@ function toggleNotesFolder(id){
   render();
 }
 function closeCurrentNote(){
+  finishNotesPresence();
   state.currentNoteId = null;
   state.noteFindReplace = null;
   render();
 }
 function openNote(id){
   rememberNoteScroll(state.currentNoteId);
+  finishNotesPresence();
   const selectedItem=state.notesItems.find(item=>item.id===id);
   if(!selectedItem) return;
   state.currentNoteId = id;
+  startNotesPresence(id);
   if(selectedItem.type==='note') state.lastNoteId = id;
   state.noteFindReplace = null; // trocar de nota fecha qualquer busca/substituição aberta na anterior
   saveData();
@@ -8077,6 +8095,9 @@ function fmtDue(due){
 let __lastRenderKey = null;
 let pageTransitionTimer = null;
 function render(){
+  // A navegação muda `state.view` antes de chegar aqui. Encerrar neste ponto
+  // garante que sair de Notas por qualquer menu registre o tempo acumulado.
+  if(state.view!=='notes') finishNotesPresence();
   // guarda foco e posição do cursor ANTES de recriar a tela, pra restaurar depois —
   // evita que re-renders disparados por outra coisa (ex: o toast sumindo sozinho)
   // joguem o cursor de volta pro início enquanto o usuário está digitando.
@@ -8204,7 +8225,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='routine'?'active':''}" onclick="openRoutine()">🌿 Rotina</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.103</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.104</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -8227,7 +8248,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.25.103</span>
+        <span class="brand-version">v2026.07.25.104</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -8288,7 +8309,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.103</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.104</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
