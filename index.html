@@ -531,15 +531,6 @@
   .agenda-source-legend{ display:flex; align-items:center; gap:6px; margin-top:8px; color:var(--text-faint); font-size:10px; }
   .agenda-source-legend i{ width:8px; height:8px; border-radius:50%; background:#7186df; }
   .agenda-event{ width:100%; margin-bottom:3px; padding:5px 6px; border:1px solid var(--accent-dim); border-radius:6px; background:var(--accent-soft); color:var(--text); text-align:left; font:inherit; font-size:10.5px; line-height:1.25; cursor:grab; overflow:hidden; text-overflow:ellipsis; }
-  .agenda-event-wrap{ position:relative; margin-bottom:3px; }
-  .agenda-event-wrap .agenda-event{ margin-bottom:0; padding-right:29px; }
-  .agenda-event-check, .agenda-scheduled-check{ display:grid; place-items:center; width:18px; height:18px; padding:0; border:1px solid var(--accent-dim); border-radius:50%; background:var(--surface); color:transparent; font:inherit; font-size:11px; cursor:pointer; }
-  .agenda-event-check{ position:absolute; z-index:4; top:50%; right:5px; transform:translateY(-50%); }
-  .agenda-scheduled-check{ position:absolute; z-index:4; right:4px; }
-  .agenda-event-check:hover, .agenda-scheduled-check:hover{ border-color:var(--success); color:var(--success); }
-  .agenda-event-check.is-done, .agenda-scheduled-check.is-done{ border-color:var(--success); background:var(--success); color:#fff; }
-  .agenda-event-check:disabled, .agenda-scheduled-check:disabled{ cursor:default; opacity:.8; }
-  .agenda-scheduled-event.has-check{ padding-right:25px; }
   .agenda-event.todo{ border-color:var(--border); background:var(--bg-2); cursor:grab; }
   .agenda-event.done{ border-color:var(--success); background:var(--success-soft); color:var(--success); text-decoration:line-through; cursor:default; }
   .agenda-drop-target{ outline:2px dashed var(--accent); outline-offset:-3px; background:var(--accent-soft); }
@@ -2834,7 +2825,7 @@ function renderRoutineView(){
 }
 function openAgendaEventModal(eventId){
   const event=eventId && state.agendaEvents.find(item=>item.id===eventId);
-  state.modal={type:'agenda-event',eventId:event?event.id:null,title:event?event.title:'',date:event?event.date:'',time:event?event.time:'',endTime:event?event.endTime:'',notes:event?event.notes:''}; render();
+  state.modal={type:'agenda-event',eventId:event?event.id:null,title:event?event.title:'',date:event?event.date:'',time:event?event.time:'',endTime:event?event.endTime:'',notes:event?event.notes:'',completed:!!event?.completedAt}; render();
 }
 function addAgendaHour(time){
   const parts=String(time||'').split(':').map(Number); if(parts.length!==2||parts.some(Number.isNaN)) return '';
@@ -2852,7 +2843,7 @@ function confirmAgendaEvent(){
   const event=m.eventId ? state.agendaEvents.find(item=>item.id===m.eventId) : null;
   const time=m.time||null, endTime=time ? (m.endTime||addAgendaHour(time)) : null;
   if(time && endTime && endTime<=time){ showToast('O horário de término deve ser depois do início.', 'error'); return; }
-  const value={id:event?event.id:uid(),title,date:m.date||null,time,endTime,notes:m.notes||'',deckId:m.deckId||(event&&event.deckId)||null,source:event?.source||null,completedAt:event?.completedAt||null,createdAt:event?event.createdAt:Date.now(),updatedAt:Date.now()};
+  const value={id:event?event.id:uid(),title,date:m.date||null,time,endTime,notes:m.notes||'',deckId:m.deckId||(event&&event.deckId)||null,source:event?.source||null,completedAt:m.completed?(event?.completedAt||Date.now()):null,createdAt:event?event.createdAt:Date.now(),updatedAt:Date.now()};
   if(event) Object.assign(event,value); else state.agendaEvents.unshift(value);
   state.modal=null; saveData(); render();
 }
@@ -2871,7 +2862,12 @@ function toggleAgendaEventCompleted(event,id){
   if(!item || item.source==='companion') return;
   setAgendaEventCompleted(id,!item.completedAt);
 }
-function dragAgendaEvent(event,id){ event.dataTransfer.setData('text/plain',id); event.dataTransfer.effectAllowed='move'; }
+function dragAgendaEvent(event,id){
+  event.stopPropagation();
+  event.dataTransfer.setData('text/plain',id);
+  event.dataTransfer.setData('text',id);
+  event.dataTransfer.effectAllowed='move';
+}
 function dropAgendaEvent(event,date,time){
   event.preventDefault();
   const id=event.dataTransfer.getData('text/plain');
@@ -2938,8 +2934,7 @@ function renderScheduledAgendaEvent(event){
   const range=`${event.time}–${getAgendaEventEndTime(event)}`;
   const title=`${range} · ${event.title}`;
   const companion=event.source==='companion';
-  const checkTop=top+Math.max(1,Math.min(Math.max(height-19,1),3));
-  return `<button class="agenda-scheduled-event has-check ${companion?'companion':''} ${event.completedAt&&!companion?'done':''} ${tiny?'tiny':''}" style="top:${top}px; height:${height}px;" title="${escapeHtml(title)}" draggable="${companion||event.completedAt?'false':'true'}" ${companion||event.completedAt?'':'ondragstart="dragAgendaEvent(event,\''+event.id+'\')"'} onclick="openAgendaEventModal('${event.id}')">${tiny?'':`${event.completedAt&&!companion?'✓ ':''}<strong>${range}</strong> ${escapeHtml(event.title)}`}</button><button class="agenda-scheduled-check ${event.completedAt?'is-done':''}" style="top:${checkTop}px;" title="${event.completedAt?'Concluído':'Marcar como concluído'}" aria-label="${event.completedAt?'Concluído':'Marcar como concluído'}" ${companion?'disabled':''} onclick="toggleAgendaEventCompleted(event,'${event.id}')">${event.completedAt?'✓':' '}</button>`;
+  return `<button class="agenda-scheduled-event ${companion?'companion':''} ${event.completedAt&&!companion?'done':''} ${tiny?'tiny':''}" style="top:${top}px; height:${height}px;" title="${escapeHtml(title)}" draggable="${companion||event.completedAt?'false':'true'}" ${companion||event.completedAt?'':'ondragstart="dragAgendaEvent(event,\''+event.id+'\')"'} onclick="openAgendaEventModal('${event.id}')">${tiny?'':`${event.completedAt&&!companion?'✓ ':''}<strong>${range}</strong> ${escapeHtml(event.title)}`}</button>`;
 }
 function planAgendaReview(deckId,date,count){
   const deck=state.decks.find(item=>item.id===deckId);
@@ -2981,7 +2976,7 @@ function renderAgendaWeekView(){
   const todayKey=agendaDateKey(new Date());
   const todos=state.agendaEvents.filter(event=>!event.date && !event.completedAt);
   const timeSlots=Array.from({length:36},(_,i)=>{ const minutes=360+i*30; return `${String(Math.floor(minutes/60)).padStart(2,'0')}:${String(minutes%60).padStart(2,'0')}`; });
-  const eventCard=(event, todo)=>`<div class="agenda-event-wrap"><button class="agenda-event ${todo?'todo':''} ${event.source==='companion'?'companion':''} ${event.completedAt&&event.source!=='companion'?'done':''}" draggable="${event.completedAt||event.source==='companion'?'false':'true'}" ${event.completedAt||event.source==='companion'?'':'ondragstart="dragAgendaEvent(event,\''+event.id+'\')"'} onclick="openAgendaEventModal('${event.id}')">${event.time&&!todo?`<strong>${event.time}${event.endTime?`–${event.endTime}`:''}</strong> `:''}${escapeHtml(event.title)}${event.autoReview&&!event.completedAt?` · ${event.expectedCount||0}`:''}</button><button class="agenda-event-check ${event.completedAt?'is-done':''}" title="${event.completedAt?'Concluído':'Marcar como concluído'}" aria-label="${event.completedAt?'Concluído':'Marcar como concluído'}" ${event.source==='companion'?'disabled':''} onclick="toggleAgendaEventCompleted(event,'${event.id}')">${event.completedAt?'✓':' '}</button></div>`;
+  const eventCard=(event, todo)=>`<div class="agenda-event ${todo?'todo':''} ${event.source==='companion'?'companion':''} ${event.completedAt&&event.source!=='companion'?'done':''}" role="button" tabindex="0" draggable="${event.completedAt||event.source==='companion'?'false':'true'}" ${event.completedAt||event.source==='companion'?'':'ondragstart="dragAgendaEvent(event,\''+event.id+'\')"'} onclick="openAgendaEventModal('${event.id}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openAgendaEventModal('${event.id}')}">${event.completedAt&&event.source!=='companion'?'✓ ':''}${event.time&&!todo?`<strong>${event.time}${event.endTime?`–${event.endTime}`:''}</strong> `:''}${escapeHtml(event.title)}${event.autoReview&&!event.completedAt?` · ${event.expectedCount||0}`:''}</div>`;
   const dayColumn=date=>{
     const key=agendaDateKey(date);
     const dayTasks=state.agendaEvents.filter(event=>event.date===key&&!event.time).filter(event=>!event.autoReview||event.completedAt);
@@ -8037,7 +8032,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='routine'?'active':''}" onclick="openRoutine()">🌿 Rotina</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.24.99</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.24.100</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -8060,7 +8055,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.24.99</span>
+        <span class="brand-version">v2026.07.24.100</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -8121,7 +8116,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.99</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.100</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
@@ -9604,8 +9599,8 @@ function closeModal(){
 }
 function renderAgendaEventModal(m){
   const event=m.eventId&&state.agendaEvents.find(item=>item.id===m.eventId);
-  const canManuallyComplete=event&&event.source!=='companion';
-  return `<div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal" style="width:440px;"><h3>${m.eventId?'Editar evento':'Novo evento'}</h3><div class="field"><label>TÍTULO</label><input type="text" autofocus placeholder="Ex.: Revisar capítulo 2" value="${escapeHtml(m.title||'')}" oninput="state.modal.title=this.value"></div><div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px;"><div class="field"><label>DATA</label><input type="date" value="${escapeHtml(m.date||'')}" oninput="state.modal.date=this.value"></div><div class="field"><label>INÍCIO</label><input type="time" value="${escapeHtml(m.time||'')}" oninput="state.modal.time=this.value"></div><div class="field"><label>TÉRMINO</label><input type="time" value="${escapeHtml(m.endTime||'')}" oninput="state.modal.endTime=this.value"></div></div><div class="field"><label>OBSERVAÇÃO</label><textarea rows="3" placeholder="Detalhes opcionais" oninput="state.modal.notes=this.value">${escapeHtml(m.notes||'')}</textarea></div><p style="font-size:11.5px; color:var(--text-faint); margin:0;">Ao informar o início, o término padrão é uma hora depois. Sem data e hora, o item fica em “A fazer”.</p><div class="modal-actions">${m.eventId?`<button class="ghost-btn" style="color:var(--error); margin-right:auto;" onclick="deleteAgendaEvent('${m.eventId}'); closeModal();">Excluir</button>`:''}${canManuallyComplete?`<button class="ghost-btn" style="color:${event.completedAt?'var(--accent)':'var(--success)'};" onclick="setAgendaEventCompleted('${m.eventId}',${event.completedAt?'false':'true'})">${event.completedAt?'↺ Reabrir':'✓ Concluir'}</button>`:''}<button class="ghost-btn" onclick="closeModal()">Cancelar</button><button class="primary-btn" onclick="confirmAgendaEvent()">Salvar</button></div></div></div>`;
+  const completionDisabled=event?.source==='companion';
+  return `<div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal" style="width:440px;"><h3>${m.eventId?'Editar evento':'Novo evento'}</h3><div class="field"><label>TÍTULO</label><input type="text" autofocus placeholder="Ex.: Revisar capítulo 2" value="${escapeHtml(m.title||'')}" oninput="state.modal.title=this.value"></div><div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px;"><div class="field"><label>DATA</label><input type="date" value="${escapeHtml(m.date||'')}" oninput="state.modal.date=this.value"></div><div class="field"><label>INÍCIO</label><input type="time" value="${escapeHtml(m.time||'')}" oninput="state.modal.time=this.value"></div><div class="field"><label>TÉRMINO</label><input type="time" value="${escapeHtml(m.endTime||'')}" oninput="state.modal.endTime=this.value"></div></div><div class="field"><label>OBSERVAÇÃO</label><textarea rows="3" placeholder="Detalhes opcionais" oninput="state.modal.notes=this.value">${escapeHtml(m.notes||'')}</textarea></div><label style="display:flex; align-items:center; gap:8px; padding:9px 10px; border:1px solid var(--border); border-radius:8px; font-size:12px; cursor:${completionDisabled?'default':'pointer'}; opacity:${completionDisabled?'.65':'1'};"><input type="checkbox" ${m.completed?'checked':''} ${completionDisabled?'disabled':''} onchange="state.modal.completed=this.checked"> Marcar este evento como concluído${completionDisabled?' (registrado automaticamente pelo Companion)':''}</label><p style="font-size:11.5px; color:var(--text-faint); margin:0;">Ao informar o início, o término padrão é uma hora depois. Sem data e hora, o item fica em “A fazer”.</p><div class="modal-actions">${m.eventId?`<button class="ghost-btn" style="color:var(--error); margin-right:auto;" onclick="deleteAgendaEvent('${m.eventId}'); closeModal();">Excluir</button>`:''}<button class="ghost-btn" onclick="closeModal()">Cancelar</button><button class="primary-btn" onclick="confirmAgendaEvent()">Salvar</button></div></div></div>`;
 }
 function renderAgendaSuggestionsModal(m){
   const rows=(m.suggestions||[]).map(s=>{ const event=state.agendaEvents.find(item=>item.id===s.eventId); if(!event) return ''; const when=s.slot?`${agendaDateFromKey(s.slot.date).toLocaleDateString('pt-BR',{weekday:'long',day:'numeric',month:'short'})} às ${s.slot.time}`:'Nenhum horário livre nesta semana'; return `<div style="display:flex; gap:8px; align-items:center; padding:9px; border:1px solid var(--border); border-radius:9px;"><div style="flex:1; min-width:0;"><strong style="font-size:13px;">${escapeHtml(event.title)}</strong><div style="font-size:11px; color:var(--text-faint); margin-top:2px;">Sugestão: ${when}</div></div>${s.slot?`<button class="primary-btn" style="padding:6px 9px; font-size:11px;" onclick="applyAgendaSuggestion('${event.id}','${s.slot.date}','${s.slot.time}')">Agendar</button>`:''}</div>`; }).join('');
