@@ -735,6 +735,7 @@ let state = {
   previousSession: null,
   stats: { totalPoints: 0 },
   activities: [],
+  companionReports: [],
   agendaEvents: [],
   routineActivities: [],
   routineActive: null,
@@ -877,6 +878,18 @@ async function loadData(){
     }
   }
   render();
+}
+async function loadCompanionReports(){
+  if(!hasFirebaseUser() || !db) return;
+  try{
+    const snapshot=await db.collection('users').doc(state.firebaseUser.uid).collection('companionReports').orderBy('date','desc').limit(14).get();
+    state.companionReports=snapshot.docs.map(doc=>({id:doc.id,...doc.data()}));
+  }catch(error){
+    // A integração é opcional: sem Companion ou sem regra liberada, o Letther B
+    // continua funcionando normalmente e simplesmente não recebe relatórios.
+    console.warn('Relatórios do Companion indisponíveis', error);
+    state.companionReports=[];
+  }
 }
 // Gravações podem acontecer quase ao mesmo tempo (por exemplo, uma mensagem do
 // agente, seguida de uma nota criada por ele). Enfileirar evita que um snapshot
@@ -1059,7 +1072,7 @@ function initFirebase(){
     state.authReady = true;
     state.fileHandle = null; state.pendingFileHandle = null; // não carrega o arquivo lembrado da conta anterior
     if(user){
-      loadData().then(() => tryReconnectFileHandle());
+      loadData().then(async () => { await loadCompanionReports(); tryReconnectFileHandle(); render(); });
     } else {
       state.decks = []; state.cards = {}; state.stats = { totalPoints: 0 };
       render();
@@ -6966,9 +6979,10 @@ function findAgendaEventForAgent(action){
 function getAiWorkspaceContext(){
   const agenda=state.agendaEvents.slice(0,120).map(event=>`[id:${event.id}] ${event.title}${event.completedAt?' (concluído)':''}${event.date?` | ${event.date}${event.time?` ${event.time}${event.endTime?`–${event.endTime}`:''}`:''}`:' | sem data'}`).join('\n') || '(sem eventos)';
   const activities=state.activities.slice(0,80).map(activity=>`${new Date(activity.at).toLocaleString('pt-BR')} | ${activity.type} | ${activity.title||''} | ${formatActivityDuration(activity.durationMs||0)}`).join('\n') || '(sem histórico recente)';
+  const companionUsage=(state.companionReports||[]).slice(0,14).map(report=>`${report.date}: ${(report.apps||[]).slice(0,12).map(app=>`${app.appName||app.packageName} ${Math.round((Number(app.foregroundMs)||0)/60000)} min`).join(', ')}`).join('\n') || '(nenhum relatório do Companion)';
   const actions=getRoutineActions().map(item=>`[id:${item.id}] ${item.icon} ${item.title}`).join(', ');
   const active=state.routineActive ? `${state.routineActive.icon} ${state.routineActive.title}, iniciada às ${routineTimeLabel(state.routineActive.startedAt)}` : 'nenhuma';
-  return {agenda,activities,routineActions:actions||'(nenhuma)',routineActive:active};
+  return {agenda,activities,companionUsage,routineActions:actions||'(nenhuma)',routineActive:active};
 }
 function applyAgentAgendaUpdate(event, action){
   const before={...event};
@@ -7251,7 +7265,7 @@ async function sendGlobalAiMessage(){
   const workspaceContext=getAiWorkspaceContext();
   const agenda=workspaceContext.agenda;
   const history=m.messages.slice(0,-1).map(msg=>`${msg.role==='user'?'Usuário':'IA'}: ${msg.text}`).join('\n');
-  const prompt=`Você é o assistente global do aplicativo Letther B. Você conhece as notas (${notes}), baralhos (${decks}), livros (${books}), agenda, rotina e histórico. Pode orientar e executar ações reais. AGENDA:\n${agenda}\n\nROTINA EM ANDAMENTO: ${workspaceContext.routineActive}\nATALHOS DE ROTINA: ${workspaceContext.routineActions}\nHISTÓRICO RECENTE:\n${workspaceContext.activities}\n\nResponda exclusivamente em JSON: {"reply":"texto curto","actions":[...]}. Ações: create_folder, create_note, create_flashcards, create_deck, update_deck, create_book, update_book, create_agenda_event {title,date?:'YYYY-MM-DD',time?:'HH:MM',endTime?:'HH:MM',notes?}, update_agenda_event {eventRef:'id ou título atual',newTitle?,date?,time?,endTime?,notes?}, delete_agenda_event {eventRef}, complete_agenda_event {eventRef}, reschedule_agenda_events {events:[{eventRef,date,time,endTime?}]}, start_routine {routineRef|name}, pause_routine, stop_routine, navigate {view:'notes'|'agenda'|'library'|'home'}. Para alterar ou excluir evento, use de preferência o id exibido na agenda. Use reschedule_agenda_events para realocar tarefas em massa. Só declare uma ação se ela estiver na lista.\n\n${history}\nUsuário: ${question}`;
+  const prompt=`Você é o assistente global do aplicativo Letther B. Você conhece as notas (${notes}), baralhos (${decks}), livros (${books}), agenda, rotina e histórico. Pode orientar e executar ações reais. AGENDA:\n${agenda}\n\nROTINA EM ANDAMENTO: ${workspaceContext.routineActive}\nATALHOS DE ROTINA: ${workspaceContext.routineActions}\nHISTÓRICO RECENTE:\n${workspaceContext.activities}\n\nUSO DO APARELHO (relatórios consentidos do Companion):\n${workspaceContext.companionUsage}\n\nResponda exclusivamente em JSON: {"reply":"texto curto","actions":[...]}. Ações: create_folder, create_note, create_flashcards, create_deck, update_deck, create_book, update_book, create_agenda_event {title,date?:'YYYY-MM-DD',time?:'HH:MM',endTime?:'HH:MM',notes?}, update_agenda_event {eventRef:'id ou título atual',newTitle?,date?,time?,endTime?,notes?}, delete_agenda_event {eventRef}, complete_agenda_event {eventRef}, reschedule_agenda_events {events:[{eventRef,date,time,endTime?}]}, start_routine {routineRef|name}, pause_routine, stop_routine, navigate {view:'notes'|'agenda'|'library'|'home'}. Para alterar ou excluir evento, use de preferência o id exibido na agenda. Use reschedule_agenda_events para realocar tarefas em massa. Só declare uma ação se ela estiver na lista.\n\n${history}\nUsuário: ${question}`;
   try{ const response=parseNoteAgentReply(await callGemini(prompt,{maxTokens:1600,responseMimeType:'application/json'})); const executed=await executeNoteAgentActions(response.actions,null); m.messages.push({role:'assistant',text:response.reply||'Pronto.',actions:executed}); }
   catch(error){ m.messages.push({role:'assistant',text:friendlyAiErrorMsg(error),error:true}); }
   m.sending=false; state.globalAiMessages=m.messages; saveData(); render();
@@ -7273,7 +7287,7 @@ async function sendNoteChatMessage(){
   const history = m.messages.slice(0,-1).map(msg => `${msg.role==='user'?'Usuário':'Assistente'}: ${msg.text}`).join('\n');
   const noteContent = note ? getNoteContent(note.id) : '';
   const aiContext=getAiWorkspaceContext();
-  const workspace = (state.notesItems.map(item => `${item.type==='folder'?'Pasta':'Nota'}: ${item.name}`).join('\n') || '(vazio)') + `\n\nAGENDA ATUAL:\n${aiContext.agenda}\n\nROTINA EM ANDAMENTO: ${aiContext.routineActive}\nATALHOS DE ROTINA: ${aiContext.routineActions}\nHISTÓRICO RECENTE:\n${aiContext.activities}`;
+  const workspace = (state.notesItems.map(item => `${item.type==='folder'?'Pasta':'Nota'}: ${item.name}`).join('\n') || '(vazio)') + `\n\nAGENDA ATUAL:\n${aiContext.agenda}\n\nROTINA EM ANDAMENTO: ${aiContext.routineActive}\nATALHOS DE ROTINA: ${aiContext.routineActions}\nHISTÓRICO RECENTE:\n${aiContext.activities}\n\nUSO DO APARELHO (relatórios consentidos do Companion):\n${aiContext.companionUsage}`;
   const decks = (state.decks.map(deck => deck.name).join(', ') || '(nenhum)') + `\n\nAÇÕES ADICIONAIS PERMITIDAS: create_agenda_event {title,date?,time?,endTime?,notes?}; update_agenda_event {eventRef,newTitle?,date?,time?,endTime?,notes?}; delete_agenda_event {eventRef}; complete_agenda_event {eventRef}; reschedule_agenda_events {events:[{eventRef,date,time,endTime?}]}; start_routine {routineRef|name}; pause_routine; stop_routine.`;
   const prompt = `Você é o agente de IA de um aplicativo pessoal de estudos. Você conversa normalmente e pode executar ações dentro do aplicativo quando o usuário pedir explicitamente. A nota aberta pode ser editada por inteiro ou em partes, sem confirmação adicional. Nunca diga que fez uma ação sem incluí-la em actions: o aplicativo só consegue realizar o que estiver nessa lista. Quando o usuário pedir para procurar/buscar uma imagem na internet e adicioná-la, use search_image: o aplicativo fará a busca real em uma fonte pública e inserirá a imagem com crédito.\n\nNOTA ABERTA: "${note ? note.name : ''}"\nCONTEÚDO DA NOTA (preserve o formato ao editar):\n---\n${noteContent || '(nota vazia)'}\n---\n\nITENS DO CADERNO:\n${workspace}\n\nBARALHOS DISPONÍVEIS: ${decks}\n\nAções permitidas: create_folder {type,name,parentRef?,alias?}; create_note {type,title,content,parentRef?,format?}; edit_note {type,noteRef:'current',mode:'replace'|'append'|'prepend'|'replace_text'|'replace_all',content?,find?,replace?}; create_flashcards {type,deckRef:'linked'?,deckName?,cards:[{front,back,note?}]}; create_deck {type,name,deckType?}; update_deck {type,deckRef|deckName,newName?,color?,aiEnabled?}; create_book {type,title,author?,categories?,status?}; update_book {type,bookRef|bookTitle,newTitle?,author?,status?,rating?,pagesRead?,totalPages?}; navigate {type,view:'notes'|'agenda'|'library'|'home'}; search_image {type,query,alt?,noteRef:'current'}. Para criar uma pasta e colocar notas nela, dê um alias à pasta e use o mesmo valor em parentRef. Só inclua ações solicitadas pelo usuário.\n\nResponda EXCLUSIVAMENTE com JSON válido, sem markdown: {"reply":"resposta curta e natural em português","actions":[...]}. Se não houver ação, use actions vazio.\n\n${history ? `Conversa até agora:\n${history}\n\n` : ''}Usuário: ${question}`;
 
@@ -7776,7 +7790,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='routine'?'active':''}" onclick="openRoutine()">🌿 Rotina</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.24.86</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.24.87</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -7799,7 +7813,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.24.86</span>
+        <span class="brand-version">v2026.07.24.87</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -7860,7 +7874,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.86</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.87</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
