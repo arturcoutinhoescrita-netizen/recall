@@ -763,6 +763,7 @@ let state = {
   routineActivities: [],
   routineActive: null,
   routineLastCheckInAt: null,
+  routineSearch: '',
   pwaInstallAvailable: false,
   globalAiMessages: [],
   fileHandle: null,
@@ -2737,6 +2738,28 @@ function confirmRoutineAction(){
   state.routineActivities.push({id:uid(),title:title.slice(0,60),icon:String(m.icon||'✅').trim().slice(0,4)||'✅'});
   state.modal=null; saveData(); render();
 }
+function normalizeRoutineTitle(title){ return String(title||'').trim().toLocaleLowerCase('pt-BR').replace(/\s+/g,' '); }
+function ensureRoutineShortcut(activity){
+  const title=String(activity?.title||'Atividade').trim().slice(0,60)||'Atividade';
+  const existing=getRoutineActions().find(item=>normalizeRoutineTitle(item.title)===normalizeRoutineTitle(title));
+  if(existing) return existing;
+  const created={id:uid(),title,icon:String(activity?.icon||'✅').trim().slice(0,4)||'✅'};
+  state.routineActivities.push(created);
+  return created;
+}
+function makeRoutineFallbackFromReport(report, from, to){
+  const text=String(report||'').trim();
+  const normalized=text.toLocaleLowerCase('pt-BR');
+  let title='Atividade registrada'; let icon='✅';
+  if(/desenvolv/.test(normalized)&&/(software|program|c[oó]digo|app)/.test(normalized)){ title='Desenvolver software'; icon='💻'; }
+  else if(/trabalh/.test(normalized)){ title='Trabalho'; icon='💼'; }
+  else if(/estud/.test(normalized)){ title='Estudo'; icon='📚'; }
+  else if(/leit|li /i.test(normalized)){ title='Leitura'; icon='📖'; }
+  else if(/caminh/.test(normalized)){ title='Caminhada'; icon='🚶'; }
+  else if(/exerc|academ/.test(normalized)){ title='Exercício'; icon='🏃'; }
+  else if(/almo[cç]|jantar|cafe da manh/.test(normalized)){ title='Refeição'; icon='🍽️'; }
+  return {title,icon,startedAt:from,endedAt:to};
+}
 function skipRoutineCatchup(){ state.routineLastCheckInAt=Date.now(); state.modal=null; saveData(); render(); }
 function extractRoutineJson(text){
   const clean=String(text||'').replace(/```json|```/g,'').trim();
@@ -2749,20 +2772,35 @@ async function submitRoutineCatchup(){
   try{
     const prompt=`Você organiza rotina pessoal. Converta o relato em atividades concluídas. Janela: de ${new Date(m.from).toLocaleString('pt-BR')} até ${new Date(m.to).toLocaleString('pt-BR')}. Relato: "${report}". Responda APENAS JSON: {"activities":[{"title":"atividade curta","icon":"emoji","startedAt":"ISO 8601 dentro da janela","endedAt":"ISO 8601 dentro da janela"}]}. Se horários não foram ditos, distribua estimativas razoáveis dentro da janela; no máximo 6 atividades.`;
     const parsed=extractRoutineJson(await callGemini(prompt,{maxTokens:700,responseMimeType:'application/json'}));
-    const items=Array.isArray(parsed.activities)?parsed.activities.slice(0,6):[];
+    const parsedItems=Array.isArray(parsed.activities)?parsed.activities.slice(0,6):[];
+    // O relato nunca deve desaparecer se a IA devolver uma resposta incompleta.
+    // Nesse caso registramos uma única atividade cobrindo a janela informada.
+    const items=parsedItems.length ? parsedItems : [makeRoutineFallbackFromReport(report,m.from,m.to)];
     items.forEach((item,index)=>{
       const fallbackStart=m.from+index*Math.max(60000,Math.floor((m.to-m.from)/Math.max(1,items.length)));
       const start=Date.parse(item.startedAt); const end=Date.parse(item.endedAt);
-      recordRoutineActivity({id:uid(),title:String(item.title||'Atividade').slice(0,60),icon:String(item.icon||'✅').slice(0,4)},Number.isFinite(start)?start:fallbackStart,Number.isFinite(end)?end:Math.min(m.to,fallbackStart+30*60000),'ai-checkin');
+      const activity=ensureRoutineShortcut({title:String(item.title||'Atividade').slice(0,60),icon:String(item.icon||'✅').slice(0,4)});
+      recordRoutineActivity(activity,Number.isFinite(start)?start:fallbackStart,Number.isFinite(end)?end:Math.min(m.to,fallbackStart+30*60000),'ai-checkin');
     });
     state.routineLastCheckInAt=Date.now(); state.modal=null; saveData(); render();
     showToast(items.length?`${items.length} atividade(s) registrada(s) na agenda.`:'Não encontrei atividades para registrar.');
-  }catch(err){ console.error(err); m.sending=false; render(); showToast('Não consegui interpretar o relato agora.', 'error'); }
+  }catch(err){
+    // Mesmo se a resposta estruturada da IA falhar, o relato do usuário é
+    // valioso: registramos uma atividade simples, em vez de descartá-lo.
+    console.error(err);
+    const activity=ensureRoutineShortcut(makeRoutineFallbackFromReport(report,m.from,m.to));
+    recordRoutineActivity(activity,m.from,m.to,'ai-checkin-fallback');
+    state.routineLastCheckInAt=Date.now(); state.modal=null; saveData(); render();
+    showToast(`${activity.title} foi registrado na Agenda.`);
+  }
 }
 function renderRoutineView(){
   const active=state.routineActive;
-  const history=state.activities.filter(item=>item.type==='routine').slice(0,8);
-  return `<div style="max-width:980px; margin:0 auto;"><button class="ghost-btn mobile-back-btn" onclick="backToHome()">← Menu</button><div class="deck-header" style="margin-bottom:14px;"><div><h2 style="margin:0 0 5px;">🌿 Rotina</h2><p>Toque em uma atividade para iniciar; toque novamente para encerrar e registrar na Agenda.</p></div><button class="primary-btn" onclick="openRoutineActionModal()">＋ Criar atividade</button></div>${active?`<div class="routine-active-banner"><div><strong>${escapeHtml(active.icon)} ${escapeHtml(active.title)}</strong><div style="font-size:12px; color:var(--text-muted); margin-top:3px;">Em andamento desde ${routineTimeLabel(active.startedAt)} · <span class="mono" data-routine-elapsed>${formatRoutineElapsed(active.startedAt)}</span></div></div><button class="primary-btn" onclick="stopRoutineActivity()">✓ Concluir</button></div>`:''}<div class="routine-grid">${getRoutineActions().map(item=>`<button class="routine-action ${active?.id===item.id?'active':''}" onclick="startRoutineActivity('${item.id}')"><span class="routine-action-icon">${escapeHtml(item.icon)}</span><span class="routine-action-name">${escapeHtml(item.title)}</span><span class="routine-action-time" ${active?.id===item.id?'data-routine-elapsed':''}>${active?.id===item.id?formatRoutineElapsed(active.startedAt):'Iniciar'}</span></button>`).join('')}</div><div style="margin-top:22px;"><h3 style="font-size:15px; margin:0 0 8px;">Últimos registros</h3>${history.length?`<div style="display:flex; flex-direction:column; gap:6px;">${history.map(item=>`<div class="agenda-card" style="margin:0; display:flex; justify-content:space-between; gap:10px;"><span>${escapeHtml(item.icon||'✅')} <strong>${escapeHtml(item.title||'Atividade')}</strong></span><span class="agenda-meta">${new Date(item.at).toLocaleDateString('pt-BR',{day:'2-digit',month:'short'})} · ${routineTimeLabel(item.startedAt||item.at)}–${routineTimeLabel(item.endedAt||(item.at+(item.durationMs||0)))} · ${formatActivityDuration(item.durationMs)}</span></div>`).join('')}</div>`:`<p style="color:var(--text-faint); font-size:13px;">Seus registros de rotina aparecerão aqui e na Agenda.</p>`}</div></div>`;
+  const query=normalizeRoutineTitle(state.routineSearch);
+  const matches=item=>!query||normalizeRoutineTitle(`${item.title} ${item.icon}`).includes(query);
+  const actions=getRoutineActions().filter(matches);
+  const history=state.activities.filter(item=>item.type==='routine').filter(matches).slice(0,24);
+  return `<div style="max-width:980px; margin:0 auto;"><button class="ghost-btn mobile-back-btn" onclick="backToHome()">← Menu</button><div class="deck-header" style="margin-bottom:14px;"><div><h2 style="margin:0 0 5px;">🌿 Rotina</h2><p>Toque em uma atividade para iniciar; toque novamente para encerrar e registrar na Agenda.</p></div><button class="primary-btn" onclick="openRoutineActionModal()">＋ Criar atividade</button></div>${active?`<div class="routine-active-banner"><div><strong>${escapeHtml(active.icon)} ${escapeHtml(active.title)}</strong><div style="font-size:12px; color:var(--text-muted); margin-top:3px;">Em andamento desde ${routineTimeLabel(active.startedAt)} · <span class="mono" data-routine-elapsed>${formatRoutineElapsed(active.startedAt)}</span></div></div><button class="primary-btn" onclick="stopRoutineActivity()">✓ Concluir</button></div>`:''}<div style="margin:0 0 12px;"><input type="search" value="${escapeHtml(state.routineSearch||'')}" placeholder="Pesquisar atividades e registros…" aria-label="Pesquisar atividades de rotina" oninput="state.routineSearch=this.value; render()"></div><div class="routine-grid">${actions.map(item=>`<button class="routine-action ${active?.id===item.id?'active':''}" onclick="startRoutineActivity('${item.id}')"><span class="routine-action-icon">${escapeHtml(item.icon)}</span><span class="routine-action-name">${escapeHtml(item.title)}</span><span class="routine-action-time" ${active?.id===item.id?'data-routine-elapsed':''}>${active?.id===item.id?formatRoutineElapsed(active.startedAt):'Iniciar'}</span></button>`).join('')||`<p style="color:var(--text-faint); font-size:13px;">Nenhuma atividade encontrada.</p>`}</div><div style="margin-top:22px;"><h3 style="font-size:15px; margin:0 0 8px;">Registros recentes</h3>${history.length?`<div style="display:flex; flex-direction:column; gap:6px; max-height:430px; overflow-y:auto; padding-right:3px;">${history.map(item=>`<div class="agenda-card" style="margin:0; display:flex; justify-content:space-between; gap:10px;"><span>${escapeHtml(item.icon||'✅')} <strong>${escapeHtml(item.title||'Atividade')}</strong></span><span class="agenda-meta">${new Date(item.at).toLocaleDateString('pt-BR',{day:'2-digit',month:'short'})} · ${routineTimeLabel(item.startedAt||item.at)}–${routineTimeLabel(item.endedAt||(item.at+(item.durationMs||0)))} · ${formatActivityDuration(item.durationMs)}</span></div>`).join('')}</div>`:`<p style="color:var(--text-faint); font-size:13px;">Nenhum registro encontrado.</p>`}</div></div>`;
 }
 function openAgendaEventModal(eventId){
   const event=eventId && state.agendaEvents.find(item=>item.id===eventId);
@@ -7931,7 +7969,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='routine'?'active':''}" onclick="openRoutine()">🌿 Rotina</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.24.94</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.24.95</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -7954,7 +7992,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.24.94</span>
+        <span class="brand-version">v2026.07.24.95</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -8015,7 +8053,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.94</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.95</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
