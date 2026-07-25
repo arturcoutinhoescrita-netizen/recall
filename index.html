@@ -884,12 +884,44 @@ async function loadCompanionReports(){
   try{
     const snapshot=await db.collection('users').doc(state.firebaseUser.uid).collection('companionReports').orderBy('date','desc').limit(14).get();
     state.companionReports=snapshot.docs.map(doc=>({id:doc.id,...doc.data()}));
+    syncCompanionSessionsToAgenda(state.companionReports);
   }catch(error){
     // A integração é opcional: sem Companion ou sem regra liberada, o Letther B
     // continua funcionando normalmente e simplesmente não recebe relatórios.
     console.warn('Relatórios do Companion indisponíveis', error);
     state.companionReports=[];
   }
+}
+function syncCompanionSessionsToAgenda(reports){
+  let changed=false;
+  (reports||[]).forEach(report=>{
+    (report.sessions||[]).forEach(session=>{
+      const startedAt=Number(session.startedAt), endedAt=Number(session.endedAt);
+      if(!Number.isFinite(startedAt)||!Number.isFinite(endedAt)||endedAt<=startedAt) return;
+      const sessionId=String(session.id||`${session.packageName||'app'}:${startedAt}`);
+      const existing=state.agendaEvents.find(event=>event.source==='companion'&&event.companionSessionId===sessionId);
+      const appName=String(session.appName||session.packageName||'Aplicativo');
+      const value={
+        title:`📱 ${appName}`,
+        date:agendaDateKey(startedAt),
+        time:new Date(startedAt).toTimeString().slice(0,5),
+        endTime:new Date(endedAt).toTimeString().slice(0,5),
+        notes:`Uso registrado pelo Letther B Companion · ${appName}${session.packageName?` (${session.packageName})`:''}`,
+        completedAt:endedAt,
+        source:'companion', companionSessionId:sessionId,
+        companionPackage:String(session.packageName||''),
+        companionActive:!!session.isActive,
+        createdAt:existing?.createdAt||endedAt, updatedAt:Date.now()
+      };
+      if(existing){
+        // Sessões ainda em andamento chegam novamente a cada sincronização com
+        // um horário final maior; persiste essa atualização na agenda.
+        if(existing.endTime!==value.endTime || existing.companionActive!==value.companionActive || existing.completedAt!==value.completedAt) changed=true;
+        Object.assign(existing,value);
+      }else { state.agendaEvents.unshift({id:uid(),...value}); changed=true; }
+    });
+  });
+  if(changed) saveData();
 }
 // Gravações podem acontecer quase ao mesmo tempo (por exemplo, uma mensagem do
 // agente, seguida de uma nota criada por ele). Enfileirar evita que um snapshot
@@ -6979,7 +7011,11 @@ function findAgendaEventForAgent(action){
 function getAiWorkspaceContext(){
   const agenda=state.agendaEvents.slice(0,120).map(event=>`[id:${event.id}] ${event.title}${event.completedAt?' (concluído)':''}${event.date?` | ${event.date}${event.time?` ${event.time}${event.endTime?`–${event.endTime}`:''}`:''}`:' | sem data'}`).join('\n') || '(sem eventos)';
   const activities=state.activities.slice(0,80).map(activity=>`${new Date(activity.at).toLocaleString('pt-BR')} | ${activity.type} | ${activity.title||''} | ${formatActivityDuration(activity.durationMs||0)}`).join('\n') || '(sem histórico recente)';
-  const companionUsage=(state.companionReports||[]).slice(0,14).map(report=>`${report.date}: ${(report.apps||[]).slice(0,12).map(app=>`${app.appName||app.packageName} ${Math.round((Number(app.foregroundMs)||0)/60000)} min`).join(', ')}`).join('\n') || '(nenhum relatório do Companion)';
+  const companionUsage=(state.companionReports||[]).slice(0,14).map(report=>{
+    const sessions=(report.sessions||[]).slice(-40).map(session=>`${new Date(Number(session.startedAt)).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}–${new Date(Number(session.endedAt)).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})} ${session.appName||session.packageName}`).join('; ');
+    const totals=(report.apps||[]).slice(0,12).map(app=>`${app.appName||app.packageName} ${Math.round((Number(app.foregroundMs)||0)/60000)} min`).join(', ');
+    return `${report.date}: sessões: ${sessions||'(nenhuma)'} | totais: ${totals||'(nenhum)'}`;
+  }).join('\n') || '(nenhum relatório do Companion)';
   const actions=getRoutineActions().map(item=>`[id:${item.id}] ${item.icon} ${item.title}`).join(', ');
   const active=state.routineActive ? `${state.routineActive.icon} ${state.routineActive.title}, iniciada às ${routineTimeLabel(state.routineActive.startedAt)}` : 'nenhuma';
   return {agenda,activities,companionUsage,routineActions:actions||'(nenhuma)',routineActive:active};
@@ -7790,7 +7826,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='routine'?'active':''}" onclick="openRoutine()">🌿 Rotina</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.24.87</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.24.88</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -7813,7 +7849,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.24.87</span>
+        <span class="brand-version">v2026.07.24.88</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -7874,7 +7910,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.87</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.88</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
