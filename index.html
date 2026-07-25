@@ -892,15 +892,32 @@ async function loadCompanionReports(){
     state.companionReports=[];
   }
 }
+const COMPANION_MIN_SESSION_MS=60*1000;
+const COMPANION_IGNORED_PACKAGES=new Set(['android','com.android.systemui','com.android.settings','com.google.android.gms','com.sec.android.app.launcher','com.samsung.android.app.launcher','com.hotmart.sparkle']);
+const COMPANION_IGNORED_NAMES=new Set(['tela inicial de one ui','hotmart sparkle','com.hotmart.sparkle']);
+const COMPANION_FRIENDLY_NAMES={'com.hotmart.sparkle':'Hotmart Sparkle'};
+function getCompanionAppName(item){
+  const packageName=String(item?.packageName||'');
+  return COMPANION_FRIENDLY_NAMES[packageName] || String(item?.appName||packageName||'Aplicativo');
+}
+function isMeaningfulCompanionSession(session){
+  const duration=Number(session.durationMs)||((Number(session.endedAt)||0)-(Number(session.startedAt)||0));
+  return duration>=COMPANION_MIN_SESSION_MS && !COMPANION_IGNORED_PACKAGES.has(String(session.packageName||'')) && !COMPANION_IGNORED_NAMES.has(getCompanionAppName(session).toLowerCase());
+}
 function syncCompanionSessionsToAgenda(reports){
   let changed=false;
+  // Recria somente os eventos automáticos do Companion a partir dos relatórios
+  // filtrados. Eventos criados manualmente pelo usuário não são tocados.
+  const beforeCleanup=state.agendaEvents.length;
+  state.agendaEvents=state.agendaEvents.filter(event=>event.source!=='companion');
+  if(state.agendaEvents.length!==beforeCleanup) changed=true;
   (reports||[]).forEach(report=>{
     (report.sessions||[]).forEach(session=>{
       const startedAt=Number(session.startedAt), endedAt=Number(session.endedAt);
-      if(!Number.isFinite(startedAt)||!Number.isFinite(endedAt)||endedAt<=startedAt) return;
+      if(!Number.isFinite(startedAt)||!Number.isFinite(endedAt)||endedAt<=startedAt||!isMeaningfulCompanionSession(session)) return;
       const sessionId=String(session.id||`${session.packageName||'app'}:${startedAt}`);
       const existing=state.agendaEvents.find(event=>event.source==='companion'&&event.companionSessionId===sessionId);
-      const appName=String(session.appName||session.packageName||'Aplicativo');
+      const appName=getCompanionAppName(session);
       const value={
         title:`📱 ${appName}`,
         date:agendaDateKey(startedAt),
@@ -910,6 +927,7 @@ function syncCompanionSessionsToAgenda(reports){
         completedAt:endedAt,
         source:'companion', companionSessionId:sessionId,
         companionPackage:String(session.packageName||''),
+        companionDurationMs:Math.max(0,endedAt-startedAt),
         companionActive:!!session.isActive,
         createdAt:existing?.createdAt||endedAt, updatedAt:Date.now()
       };
@@ -7012,8 +7030,8 @@ function getAiWorkspaceContext(){
   const agenda=state.agendaEvents.slice(0,120).map(event=>`[id:${event.id}] ${event.title}${event.completedAt?' (concluído)':''}${event.date?` | ${event.date}${event.time?` ${event.time}${event.endTime?`–${event.endTime}`:''}`:''}`:' | sem data'}`).join('\n') || '(sem eventos)';
   const activities=state.activities.slice(0,80).map(activity=>`${new Date(activity.at).toLocaleString('pt-BR')} | ${activity.type} | ${activity.title||''} | ${formatActivityDuration(activity.durationMs||0)}`).join('\n') || '(sem histórico recente)';
   const companionUsage=(state.companionReports||[]).slice(0,14).map(report=>{
-    const sessions=(report.sessions||[]).slice(-40).map(session=>`${new Date(Number(session.startedAt)).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}–${new Date(Number(session.endedAt)).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})} ${session.appName||session.packageName}`).join('; ');
-    const totals=(report.apps||[]).slice(0,12).map(app=>`${app.appName||app.packageName} ${Math.round((Number(app.foregroundMs)||0)/60000)} min`).join(', ');
+    const sessions=(report.sessions||[]).slice(-40).map(session=>`${new Date(Number(session.startedAt)).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}–${new Date(Number(session.endedAt)).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})} ${getCompanionAppName(session)}`).join('; ');
+    const totals=(report.apps||[]).slice(0,12).map(app=>`${getCompanionAppName(app)} ${Math.round((Number(app.foregroundMs)||0)/60000)} min`).join(', ');
     return `${report.date}: sessões: ${sessions||'(nenhuma)'} | totais: ${totals||'(nenhum)'}`;
   }).join('\n') || '(nenhum relatório do Companion)';
   const actions=getRoutineActions().map(item=>`[id:${item.id}] ${item.icon} ${item.title}`).join(', ');
@@ -7826,7 +7844,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='routine'?'active':''}" onclick="openRoutine()">🌿 Rotina</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.24.88</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.24.91</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -7849,7 +7867,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.24.88</span>
+        <span class="brand-version">v2026.07.24.91</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -7910,7 +7928,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.88</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.24.91</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
