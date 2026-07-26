@@ -1172,8 +1172,17 @@ function ensureAgendaReviewTasks(){
     if(!task){
       state.agendaEvents.unshift({id:uid(),title:`Revisar ${deck.name}`,date:targetDate,time:null,endTime:null,notes:'Criado automaticamente pela revisão espaçada.',deckId:deck.id,autoReview:true,source:null,completedAt:null,createdAt:Date.now(),updatedAt:Date.now()});
       changed=true;
-    }else if(task.title!==`Revisar ${deck.name}`){
-      task.title=`Revisar ${deck.name}`; task.updatedAt=Date.now(); changed=true;
+    }else{
+      let taskChanged=false;
+      if(task.title!==`Revisar ${deck.name}`){ task.title=`Revisar ${deck.name}`; taskChanged=true; }
+      // um lembrete sem horário definido nunca foi "agendado manualmente" pelo
+      // usuário -- reprojeta a data dele sempre que ela não bater com o alvo
+      // calculado agora. Sem isso, um lembrete que rolou pra "A fazer" (data
+      // null) ficava PRESO lá pra sempre: essa função só criava um novo quando
+      // não existia nenhum, nunca corrigia a data de um já existente -- e como
+      // ele nunca aparecia em nenhum dia específico, o baralho sumia da Agenda.
+      if(!task.time && task.date!==targetDate){ task.date=targetDate; taskChanged=true; }
+      if(taskChanged){ task.updatedAt=Date.now(); changed=true; }
     }
   });
   if(changed) saveData();
@@ -8421,7 +8430,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='routine'?'active':''}" onclick="openRoutine()">🌿 Rotina</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.115</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.116</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -8444,7 +8453,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.25.115</span>
+        <span class="brand-version">v2026.07.25.116</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -8505,7 +8514,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.115</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.116</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
