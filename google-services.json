@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "272502529779",
+    "project_id": "recall-flashcards-172ff",
+    "storage_bucket": "recall-flashcards-172ff.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:272502529779:android:5ed68f5e1c39ed84e6a186",
+        "android_client_info": {
+          "package_name": "com.lettherb.companion"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "272502529779-0ed0kplpim4ker6v1ehq37if10blqfjm.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDt3RHpWa0C0FEJ5urdLi3drWsD5pwUWFs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "272502529779-0ed0kplpim4ker6v1ehq37if10blqfjm.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
