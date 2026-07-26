@@ -3108,7 +3108,16 @@ function renderScheduledAgendaEvent(event){
   const companion=event.source==='companion';
   const draggable=!(companion||event.completedAt);
   const label=tiny ? escapeHtml(event.title) : `${event.completedAt&&!companion?'✓ ':''}<strong>${range}</strong> ${escapeHtml(event.title)}`;
-  return `<button class="agenda-scheduled-event ${companion?'companion':''} ${event.completedAt&&!companion?'done':''} ${tiny?'tiny':''}" style="top:${top}px; height:${height}px;" title="${escapeHtml(title)}" ${draggable?`onpointerdown="agendaPointerDown(event,'${event.id}')"`:''} onclick="if(Date.now()<suppressAgendaClickUntil) return; openAgendaEventModal('${event.id}')">${label}</button>`;
+  // .agenda-scheduled-event fica posicionado por cima do .agenda-slot (são irmãos
+  // no HTML, não pai/filho — o evento flutua em position:absolute por cima da
+  // grade) — então soltar um arraste bem em cima de um evento JÁ existente (até um
+  // concluído, ou do Companion) fazia o ponto do dedo/mouse "bater" nesse botão em
+  // vez do slot embaixo, e como o botão não tinha os atributos de alvo de soltar,
+  // o arraste falhava calado. Repetir esses atributos aqui, calculando o horário
+  // mais próximo (arredondado pra baixo, de 30 em 30min), resolve isso.
+  const dayKey=getAgendaEventDateKey(event);
+  const slotTime=agendaMinutesToTime(Math.floor(start/30)*30);
+  return `<button class="agenda-scheduled-event ${companion?'companion':''} ${event.completedAt&&!companion?'done':''} ${tiny?'tiny':''}" style="top:${top}px; height:${height}px;" title="${escapeHtml(title)}" data-agenda-drop="1" data-agenda-date="${dayKey}" data-agenda-time="${slotTime}" ${draggable?`onpointerdown="agendaPointerDown(event,'${event.id}')"`:''} onclick="if(Date.now()<suppressAgendaClickUntil) return; openAgendaEventModal('${event.id}')">${label}</button>`;
 }
 function planAgendaReview(deckId,date,count){
   const deck=state.decks.find(item=>item.id===deckId);
@@ -8387,7 +8396,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='routine'?'active':''}" onclick="openRoutine()">🌿 Rotina</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.109</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.110</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -8410,7 +8419,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.25.109</span>
+        <span class="brand-version">v2026.07.25.110</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -8471,7 +8480,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.109</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.110</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
