@@ -2985,27 +2985,12 @@ let agendaDragCandidate = null;
 let agendaDragState = null;
 let suppressAgendaClickUntil = 0;
 const AGENDA_DRAG_THRESHOLD = 6;
-// --- diagnóstico TEMPORÁRIO, só pra descobrir em qual etapa o arraste está
-// falhando de verdade no aparelho de quem está usando (o console do navegador
-// não é fácil de ver no celular). Mostra uma etiqueta fixa no canto da tela com
-// o estado atual. Pra remover depois: apagar esta função e as chamadas a ela. ---
-function agendaDebugLog(msg){
-  let badge=document.getElementById('agenda-drag-debug');
-  if(!badge){
-    badge=document.createElement('div');
-    badge.id='agenda-drag-debug';
-    badge.style.cssText='position:fixed; left:8px; bottom:8px; z-index:99999; background:rgba(0,0,0,0.88); color:#7CFC7C; font:11px/1.4 ui-monospace,monospace; padding:8px 11px; border-radius:8px; max-width:92vw; white-space:pre-wrap; pointer-events:none; box-shadow:0 4px 14px rgba(0,0,0,0.4);';
-    document.body.appendChild(badge);
-  }
-  badge.textContent='🔧 debug arraste (temporário): '+msg;
-}
 function agendaPointerDown(event, id){
-  agendaDebugLog(`pointerdown recebido (tipo:${event.pointerType}, botão:${event.button})`);
-  if(event.pointerType==='mouse' && event.button!==0){ agendaDebugLog('ignorado: não foi o botão esquerdo do mouse'); return; }
+  if(event.pointerType==='mouse' && event.button!==0){ return; }
   const item=state.agendaEvents.find(task=>task.id===id);
-  if(!item){ agendaDebugLog('ignorado: evento não encontrado no estado'); return; }
-  if(item.completedAt){ agendaDebugLog('ignorado: evento já concluído (não arrastável de propósito)'); return; }
-  if(item.source==='companion'){ agendaDebugLog('ignorado: evento do Companion (não arrastável de propósito)'); return; }
+  if(!item){ return; }
+  if(item.completedAt){ return; }
+  if(item.source==='companion'){ return; }
   agendaDragCandidate={ id, startX:event.clientX, startY:event.clientY, title:item.title };
   window.addEventListener('pointermove', agendaPointerMoveCheck);
   window.addEventListener('pointerup', agendaPointerUpCancel, {once:true});
@@ -3013,7 +2998,6 @@ function agendaPointerDown(event, id){
   // (não arraste) e manda pointercancel em vez de pointerup — sem tratar isso,
   // o estado ficava "preso" pensando que ainda havia um candidato a arrastar.
   window.addEventListener('pointercancel', agendaPointerUpCancel, {once:true});
-  agendaDebugLog('candidato registrado — mova o dedo/mouse mais de 6px pra virar arraste');
 }
 function agendaPointerMoveCheck(event){
   const c=agendaDragCandidate;
@@ -3023,14 +3007,12 @@ function agendaPointerMoveCheck(event){
   window.removeEventListener('pointermove', agendaPointerMoveCheck);
   window.removeEventListener('pointerup', agendaPointerUpCancel);
   window.removeEventListener('pointercancel', agendaPointerUpCancel);
-  agendaDebugLog(`limiar ultrapassado (${dist.toFixed(1)}px) — iniciando arraste`);
   startAgendaDrag(event, c);
 }
 function agendaPointerUpCancel(){
   window.removeEventListener('pointermove', agendaPointerMoveCheck);
   window.removeEventListener('pointerup', agendaPointerUpCancel);
   window.removeEventListener('pointercancel', agendaPointerUpCancel);
-  if(agendaDragCandidate) agendaDebugLog('soltou sem mover 6px — tratado como toque/clique simples (abre o modal)');
   agendaDragCandidate=null;
 }
 function startAgendaDrag(event, candidate){
@@ -3063,7 +3045,6 @@ function moveAgendaDrag(event){
   if(drag.lastTarget && drag.lastTarget!==target) drag.lastTarget.classList.remove('agenda-drop-target');
   if(target) target.classList.add('agenda-drop-target');
   drag.lastTarget=target||null;
-  agendaDebugLog(target ? `arrastando — em cima de: ${target.dataset.agendaDate||'(sem data)'} ${target.dataset.agendaTime||'(sem hora)'}` : 'arrastando — SEM alvo válido embaixo do dedo/cursor agora');
 }
 function endAgendaDrag(event){
   const drag=agendaDragState;
@@ -3085,10 +3066,9 @@ function endAgendaDrag(event){
   drag.ghost.remove();
   const target=(elAtDrop && elAtDrop.closest ? elAtDrop.closest('[data-agenda-drop]') : null) || drag.lastTarget;
   suppressAgendaClickUntil=Date.now()+300; // evita abrir o modal do evento logo depois de soltar
-  if(!target){ agendaDebugLog('SOLTOU SEM ALVO — nada mudou (esse é o problema, se acontecer)'); return; }
+  if(!target){ return; }
   const date=target.dataset.agendaDate||null, time=target.dataset.agendaTime||null;
   if(target.classList) target.classList.remove('agenda-drop-target');
-  agendaDebugLog(`soltou em: ${date||'(A fazer)'} ${time||''} — aplicando`);
   moveAgendaEventTo(drag.id, date, time);
 }
 function cancelAgendaDrag(){
@@ -3099,7 +3079,6 @@ function cancelAgendaDrag(){
   agendaDragState=null;
   drag.ghost.remove();
   if(drag.lastTarget) drag.lastTarget.classList.remove('agenda-drop-target');
-  agendaDebugLog('pointercancel — o navegador interrompeu o gesto (achou que era rolagem?)');
 }
 function moveAgendaEventTo(id, date, time){
   const item=state.agendaEvents.find(task=>task.id===id);
@@ -8430,7 +8409,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='routine'?'active':''}" onclick="openRoutine()">🌿 Rotina</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.116</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.117</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -8453,7 +8432,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.25.116</span>
+        <span class="brand-version">v2026.07.25.117</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -8514,7 +8493,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.116</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.117</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
