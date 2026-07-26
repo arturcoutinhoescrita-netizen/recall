@@ -533,7 +533,6 @@
   .agenda-week-title{ font-size:12px; font-weight:700; text-align:center; padding:3px 0 8px; }
   .agenda-day-tasks{ margin:-2px 0 7px; padding:6px; border-radius:8px; background:var(--bg-2); max-height:134px; overflow-y:auto; flex:0 0 auto; }
   .agenda-day-tasks-label{ display:block; margin-bottom:4px; color:var(--text-faint); font-size:9px; font-weight:700; letter-spacing:.05em; }
-  .agenda-review-task{ width:100%; margin:3px 0; padding:5px 6px; border:1px solid var(--accent-dim); border-radius:6px; background:var(--accent-soft); color:var(--text); text-align:left; font:inherit; font-size:10px; line-height:1.25; cursor:pointer; }
   .agenda-day-hours{ flex:1 1 auto; min-height:0; overflow-y:auto; border-top:1px solid var(--border); position:relative; }
   .agenda-slot{ height:32px; min-height:32px; border-top:1px solid var(--border); padding:0 2px 0 30px; position:relative; z-index:1; }
   .agenda-day-hours .agenda-slot:first-child{ border-top:0; }
@@ -1068,10 +1067,13 @@ function addActivity(type, details){
 function makeLettherActivityAgendaEvent(activity){
   // Cada sessão do próprio Letther B também é um registro concluído na Agenda.
   // Assim o calendário mostra tanto o planejamento quanto o que foi feito de fato.
-  if(!activity || !Number(activity.durationMs)) return null;
+  // flashcards fica de fora: completeAgendaReviewTask já converte o próprio
+  // lembrete "Revisar {baralho}" pendente no registro com horário real —
+  // criar também um evento genérico aqui duplicaria a mesma sessão na Agenda.
+  if(!activity || !Number(activity.durationMs) || activity.type==='flashcards') return null;
   const presentation={
     notes:{icon:'📓',label:'Notas'}, writing:{icon:'✍️',label:'Escrita'},
-    reading:{icon:'📖',label:'Leitura'}, flashcards:{icon:'🧠',label:'Flashcards'}
+    reading:{icon:'📖',label:'Leitura'}
   }[activity.type];
   if(!presentation) return null;
   const durationMs=Math.max(0,Number(activity.durationMs)||0);
@@ -1135,52 +1137,73 @@ function recordStudyActivity(session){
   session.activityRecorded = true;
   const deck = state.decks.find(d=>d.id===session.deckId);
   addActivity('flashcards', { durationMs:Date.now() - session.startTime, count, deckId:session.deckId, title:deck ? deck.name : 'Flashcards' });
-  ensureAgendaReviewTasks();
+  completeAgendaReviewTask(session.deckId, session.startTime, Date.now());
 }
-/* Cada CARTÃO vencido vira seu próprio lembrete na Agenda (não mais um único
-   "Revisar {baralho} · N" agregado) — assim o usuário vê exatamente quais
-   cartões faltam, e cada um se conclui sozinho assim que aquele cartão
-   específico deixa de estar vencido (foi revisado, marcado como aprendido, ou
-   apagado), sem esperar o baralho inteiro zerar. */
+function agendaTimeFromTimestamp(ts){
+  const d=new Date(ts);
+  return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+}
+/* O fluxo da Agenda para revisão espaçada é sobre o BARALHO, não sobre cartões
+   individuais -- um evento por cartão vencido virava uma lista enorme e
+   inviável de usar. Cada baralho tem NO MÁXIMO um lembrete de revisão ativo
+   por vez, projetado automaticamente para o dia em que o próximo cartão vence
+   (hoje, se já estiver vencido; um dia futuro, se ainda não). O usuário não
+   precisa agendar nada manualmente -- a Agenda projeta e mantém isso sozinha. */
 function ensureAgendaReviewTasks(){
   const today=agendaDateKey(new Date());
+  const now=Date.now();
   let changed=false;
   const archivedIds=new Set(state.decks.filter(deck=>deck.archived).map(deck=>deck.id));
   const before=state.agendaEvents.length;
   state.agendaEvents=state.agendaEvents.filter(event=>!(event.autoReview&&archivedIds.has(event.deckId)&&!event.completedAt));
   if(state.agendaEvents.length!==before) changed=true;
-  // migração do formato antigo (agregado por baralho, sem cardId): descarta só
-  // os que essa função criava sozinha (hoje, sem horário) — um agregado com
-  // horário foi um lembrete futuro agendado manualmente (materializeAgendaReview)
-  // e continua intocado, mesmo que a data dele já tenha virado hoje.
+  // migração do formato por-cartão (usado numa versão anterior desta função):
+  // descarta os pendentes -- a revisão volta a ser UM lembrete por baralho.
   const beforeMigration=state.agendaEvents.length;
-  state.agendaEvents=state.agendaEvents.filter(event=>!(event.autoReview&&!event.cardId&&!event.time&&event.date===today&&!event.completedAt));
+  state.agendaEvents=state.agendaEvents.filter(event=>!(event.autoReview&&event.cardId&&!event.completedAt));
   if(state.agendaEvents.length!==beforeMigration) changed=true;
-  const activeByCard=new Map();
-  state.agendaEvents.forEach(event=>{ if(event.autoReview&&event.cardId&&!event.completedAt) activeByCard.set(event.cardId,event); });
-  const dueCardIds=new Set();
   state.decks.forEach(deck=>{
     if(deck.archived) return;
-    getDueCards(deck.id).forEach(card=>{
-      dueCardIds.add(card.id);
-      if(!activeByCard.has(card.id)){
-        const front=String(card.front||'').trim();
-        const label=front ? (front.length>40 ? `${front.slice(0,40)}…` : front) : 'cartão sem texto';
-        const event={id:uid(),title:`Revisar: ${label}`,date:today,time:null,notes:'Criado automaticamente porque este cartão está vencido.',deckId:deck.id,cardId:card.id,autoReview:true,source:null,completedAt:null,createdAt:Date.now(),updatedAt:Date.now()};
-        state.agendaEvents.unshift(event);
-        activeByCard.set(card.id,event);
-        changed=true;
-      }
-    });
-  });
-  activeByCard.forEach((event,cardId)=>{
-    if(!dueCardIds.has(cardId)){
-      event.completedAt=Date.now();
-      event.updatedAt=Date.now();
+    const pool=getStudyPool(deck.id);
+    if(!pool.length) return;
+    const nextDue=Math.min(...pool.map(card=>card.due||0));
+    const targetDate=nextDue<=now ? today : agendaDateKey(new Date(nextDue));
+    const task=state.agendaEvents.find(event=>event.autoReview&&event.deckId===deck.id&&!event.completedAt);
+    if(!task){
+      state.agendaEvents.unshift({id:uid(),title:`Revisar ${deck.name}`,date:targetDate,time:null,endTime:null,notes:'Criado automaticamente pela revisão espaçada.',deckId:deck.id,autoReview:true,source:null,completedAt:null,createdAt:Date.now(),updatedAt:Date.now()});
       changed=true;
+    }else if(task.title!==`Revisar ${deck.name}`){
+      task.title=`Revisar ${deck.name}`; task.updatedAt=Date.now(); changed=true;
     }
   });
   if(changed) saveData();
+}
+/* Quando a sessão de estudo termina, o lembrete pendente do baralho (esteja
+   ele hoje, num dia futuro, ou já ter rolado pra "A fazer") não é só marcado
+   como concluído: ele vira o registro real da sessão, com o horário em que
+   ela de fato começou e terminou, hoje. Isso cobre também o caso de o usuário
+   adiantar um baralho que só venceria num dia futuro -- a revisão feita hoje
+   fica registrada hoje, com o horário real, não presa na data antiga. Depois,
+   projeta o próximo lembrete a partir dos cartões que sobraram. */
+function completeAgendaReviewTask(deckId, startedAt, endedAt){
+  const deck=state.decks.find(item=>item.id===deckId);
+  if(deck?.archived) return;
+  const today=agendaDateKey(new Date());
+  let task=state.agendaEvents.find(event=>event.autoReview&&event.deckId===deckId&&!event.completedAt);
+  if(!task){
+    task={id:uid(),deckId,autoReview:true,source:null,createdAt:Date.now()};
+    state.agendaEvents.unshift(task);
+  }
+  task.title=`Revisar ${deck?deck.name:'baralho'}`;
+  task.date=today;
+  task.time=agendaTimeFromTimestamp(startedAt);
+  task.endTime=agendaTimeFromTimestamp(endedAt);
+  if(task.endTime<=task.time) task.endTime=agendaMinutesToTime(agendaTimeToMinutes(task.time)+1);
+  task.notes='Registrado automaticamente pela sessão de flashcards.';
+  task.completedAt=Date.now();
+  task.updatedAt=Date.now();
+  saveData();
+  ensureAgendaReviewTasks();
 }
 function maintainActivityTimers(){
   const now = Date.now();
@@ -2923,7 +2946,7 @@ function confirmAgendaEvent(){
   const event=m.eventId ? state.agendaEvents.find(item=>item.id===m.eventId) : null;
   const time=m.time||null, endTime=time ? (m.endTime||addAgendaHour(time)) : null;
   if(time && endTime && endTime<=time){ showToast('O horário de término deve ser depois do início.', 'error'); return; }
-  const value={id:event?event.id:uid(),title,date:m.date||null,time,endTime,notes:m.notes||'',deckId:m.deckId||(event&&event.deckId)||null,source:event?.source||null,autoReview:event?!!event.autoReview:false,expectedCount:event?event.expectedCount:null,completedAt:m.completed?(event?.completedAt||Date.now()):null,createdAt:event?event.createdAt:Date.now(),updatedAt:Date.now()};
+  const value={id:event?event.id:uid(),title,date:m.date||null,time,endTime,notes:m.notes||'',deckId:m.deckId||(event&&event.deckId)||null,source:event?.source||null,autoReview:event?!!event.autoReview:false,completedAt:m.completed?(event?.completedAt||Date.now()):null,createdAt:event?event.createdAt:Date.now(),updatedAt:Date.now()};
   if(event) Object.assign(event,value); else state.agendaEvents.unshift(value);
   state.modal=null; saveData(); render();
 }
@@ -3100,17 +3123,6 @@ function getActivityTotals(activities){
     return totals;
   },{reading:0,writing:0,notes:0,flashcards:0,cards:0});
 }
-function getAgendaReviewGroups(dateKey){
-  const today=agendaDateKey(new Date());
-  return state.decks.filter(deck=>!deck.archived).map(deck=>{
-    const count=(state.cards[deck.id]||[]).filter(card=>{
-      if(card.learned) return false;
-      const dueKey=agendaDateKey(card.due||Date.now());
-      return dateKey===today ? dueKey<=today : dueKey===dateKey;
-    }).length;
-    return count ? {deckId:deck.id,name:deck.name,count} : null;
-  }).filter(Boolean);
-}
 function agendaTimeToMinutes(time){
   const parts=String(time||'').split(':').map(Number);
   return parts.length===2 && parts.every(Number.isFinite) ? parts[0]*60+parts[1] : null;
@@ -3145,27 +3157,6 @@ function renderScheduledAgendaEvent(event){
   const dayKey=getAgendaEventDateKey(event);
   const slotTime=agendaMinutesToTime(Math.floor(start/30)*30);
   return `<button class="agenda-scheduled-event ${companion?'companion':''} ${event.completedAt&&!companion?'done':''} ${tiny?'tiny':''}" style="top:${top}px; height:${height}px;" title="${escapeHtml(title)}" data-agenda-drop="1" data-agenda-date="${dayKey}" data-agenda-time="${slotTime}" ${draggable?`onpointerdown="agendaPointerDown(event,'${event.id}')"`:''} onclick="if(Date.now()<suppressAgendaClickUntil) return; openAgendaEventModal('${event.id}')">${label}</button>`;
-}
-// O card "Revisar X" que aparece em dias futuros (🧠) é só uma PREVISÃO — calculada
-// a partir da data de vencimento dos cartões, sem nenhum evento de verdade por trás.
-// Por isso ele nunca tinha onpointerdown: não tinha o que arrastar. Isso fazia o
-// toque nele parecer travado ("não gruda no cursor"), e o clique simples (via
-// planAgendaReview, que sempre criava um evento NOVO sem eventId) podia gerar um
-// evento solto sem autoReview:true — invisível pro sistema de deduplicação — que,
-// ao ser arrastado pra outro dia, deixava a previsão original reaparecer como se
-// tivesse "duplicado" o card. materializeAgendaReview resolve isso: cria (ou
-// reaproveita, se já existir uma para esse baralho) uma tarefa de verdade com
-// autoReview:true assim que o dedo/mouse toca o card — aí ele já é o mesmo tipo de
-// evento arrastável e clicável que os outros, sem nunca duplicar.
-function materializeAgendaReview(deckId,date,count){
-  let event=state.agendaEvents.find(item=>item.autoReview&&item.deckId===deckId&&!item.completedAt);
-  if(!event){
-    const deck=state.decks.find(item=>item.id===deckId);
-    event={id:uid(),title:`Revisar ${deck?deck.name:'flashcards'}`,date,time:null,endTime:null,notes:'Planejamento de revisão sugerido pela Agenda.',deckId,autoReview:true,expectedCount:count,source:null,completedAt:null,createdAt:Date.now(),updatedAt:Date.now()};
-    state.agendaEvents.unshift(event);
-    saveData();
-  }
-  return event.id;
 }
 function openAgendaSuggestions(){
   const start=agendaDateFromKey(state.agendaWeekStart||agendaDateKey(new Date()));
@@ -3210,28 +3201,13 @@ function renderAgendaWeekView(){
   const timeSlots=Array.from({length:36},(_,i)=>{ const minutes=360+i*30; return `${String(Math.floor(minutes/60)).padStart(2,'0')}:${String(minutes%60).padStart(2,'0')}`; });
   const eventCard=(event, todo)=>{
     const draggable=!(event.completedAt||event.source==='companion');
-    return `<div class="agenda-event ${todo?'todo':''} ${event.source==='companion'?'companion':''} ${event.completedAt&&event.source!=='companion'?'done':''}" role="button" tabindex="0" ${draggable?`onpointerdown="agendaPointerDown(event,'${event.id}')"`:''} onclick="if(Date.now()<suppressAgendaClickUntil) return; openAgendaEventModal('${event.id}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openAgendaEventModal('${event.id}')}">${event.completedAt&&event.source!=='companion'?'✓ ':''}${event.time&&!todo?`<strong>${event.time}${event.endTime?`–${event.endTime}`:''}</strong> `:''}${escapeHtml(event.title)}${event.autoReview&&!event.cardId&&!event.completedAt?` · ${event.expectedCount||0}`:''}</div>`;
+    return `<div class="agenda-event ${todo?'todo':''} ${event.source==='companion'?'companion':''} ${event.completedAt&&event.source!=='companion'?'done':''}" role="button" tabindex="0" ${draggable?`onpointerdown="agendaPointerDown(event,'${event.id}')"`:''} onclick="if(Date.now()<suppressAgendaClickUntil) return; openAgendaEventModal('${event.id}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openAgendaEventModal('${event.id}')}">${event.completedAt&&event.source!=='companion'?'✓ ':''}${event.time&&!todo?`<strong>${event.time}${event.endTime?`–${event.endTime}`:''}</strong> `:''}${escapeHtml(event.title)}</div>`;
   };
   const dayColumn=date=>{
     const key=agendaDateKey(date);
-    // as revisões de flashcard pendentes (autoReview) já viram um evento de
-    // verdade em state.agendaEvents (criado por ensureAgendaReviewTasks) — antes
-    // esse filtro escondia esse evento de dayTasks até ele ser concluído, então
-    // ele só aparecia pelo card "reviews" abaixo, que é só um botão informativo
-    // sem onpointerdown nenhum. Resultado: essas tarefas nunca foram arrastáveis,
-    // por mais recentes ou antigas que fossem — pareciam "travadas" sempre.
     const dayTasks=state.agendaEvents.filter(event=>getAgendaEventDateKey(event)===key&&!event.time);
-    // esse card "reviews" continua existindo só pra dias sem o evento de verdade
-    // ainda criado (ex: dias passados, ou antes de ensureAgendaReviewTasks rodar) —
-    // vira um preview informativo, não interativo, que soma cartões vencidos.
-    // só pode existir UMA tarefa de revisão ativa por baralho (mesma regra de
-    // ensureAgendaReviewTasks) — por isso essa checagem não compara mais a data:
-    // comparar só o dia fazia a previsão de um dia reaparecer assim que a tarefa
-    // de verdade daquele baralho era arrastada pra outro lugar, criando a
-    // impressão de card duplicado.
-    const reviews=getAgendaReviewGroups(key).filter(review=>!state.agendaEvents.some(event=>event.autoReview&&event.deckId===review.deckId&&!event.completedAt));
     const scheduled=state.agendaEvents.filter(event=>getAgendaEventDateKey(event)===key&&event.time);
-    return `<div class="agenda-week-day ${key===todayKey?'today':''}"><div class="agenda-week-title">${date.toLocaleDateString('pt-BR',{weekday:'short'}).replace('.','')}<br><span style="color:var(--text-faint);">${date.getDate()}</span></div><div class="agenda-day-tasks" data-agenda-drop="1" data-agenda-date="${key}" data-agenda-time=""><span class="agenda-day-tasks-label">TAREFAS DO DIA</span>${dayTasks.map(event=>eventCard(event,true)).join('')}${reviews.map(review=>`<button class="agenda-review-task" onpointerdown="agendaPointerDown(event, materializeAgendaReview('${review.deckId}','${key}',${review.count}))" onclick="if(Date.now()<suppressAgendaClickUntil) return; openAgendaEventModal(materializeAgendaReview('${review.deckId}','${key}',${review.count}))">🧠 Revisar ${escapeHtml(review.name)} · ${review.count}</button>`).join('')}${!dayTasks.length&&!reviews.length?`<span style="font-size:10px; color:var(--text-faint);">Solte uma tarefa aqui</span>`:''}</div><div class="agenda-day-hours">${timeSlots.map(time=>`<div class="agenda-slot" data-agenda-drop="1" data-agenda-date="${key}" data-agenda-time="${time}" oncontextmenu="openAgendaEventAt(event,'${key}','${time}')"><span class="agenda-slot-time ${time.endsWith(':30')?'half':''}">${time}</span></div>`).join('')}${scheduled.map(renderScheduledAgendaEvent).join('')}</div></div>`;
+    return `<div class="agenda-week-day ${key===todayKey?'today':''}"><div class="agenda-week-title">${date.toLocaleDateString('pt-BR',{weekday:'short'}).replace('.','')}<br><span style="color:var(--text-faint);">${date.getDate()}</span></div><div class="agenda-day-tasks" data-agenda-drop="1" data-agenda-date="${key}" data-agenda-time=""><span class="agenda-day-tasks-label">TAREFAS DO DIA</span>${dayTasks.map(event=>eventCard(event,true)).join('')}${!dayTasks.length?`<span style="font-size:10px; color:var(--text-faint);">Solte uma tarefa aqui</span>`:''}</div><div class="agenda-day-hours">${timeSlots.map(time=>`<div class="agenda-slot" data-agenda-drop="1" data-agenda-date="${key}" data-agenda-time="${time}" oncontextmenu="openAgendaEventAt(event,'${key}','${time}')"><span class="agenda-slot-time ${time.endsWith(':30')?'half':''}">${time}</span></div>`).join('')}${scheduled.map(renderScheduledAgendaEvent).join('')}</div></div>`;
   };
   return `<div style="max-width:1400px; margin:0 auto;"><button class="ghost-btn mobile-back-btn" onclick="backToHome()">← Menu</button><div class="deck-header" style="margin-bottom:14px;"><div><h2 style="margin:0 0 5px;">🗓️ Agenda</h2><p>Arraste pendências entre “A fazer”, tarefas do dia e horários.</p></div><button class="primary-btn" onclick="openAgendaEventModal()">＋ Novo evento</button></div><div class="agenda-week-toolbar"><div class="agenda-week-navigation"><button class="icon-btn" aria-label="Semana anterior" title="Semana anterior" onclick="changeAgendaWeek(-1)">‹</button><button class="ghost-btn" style="padding:6px 9px; font-size:12px;" onclick="goToAgendaToday()">Hoje</button><button class="icon-btn" aria-label="Próxima semana" title="Próxima semana" onclick="changeAgendaWeek(1)">›</button></div><strong class="agenda-week-period">${start.toLocaleDateString('pt-BR',{day:'2-digit',month:'short'})} — ${week[6].toLocaleDateString('pt-BR',{day:'2-digit',month:'short',year:'numeric'})}</strong><div class="agenda-week-actions"><button class="ghost-btn" style="padding:6px 9px; font-size:12px;" onclick="openAgendaSuggestions()">✨ Sugerir</button><button class="icon-btn" title="Chat IA da Agenda" aria-label="Chat IA da Agenda" onclick="openGlobalAiChat()">💬</button><button class="ghost-btn active-mode" style="padding:6px 9px; font-size:12px;" onclick="setAgendaView('week')">Semana</button><button class="ghost-btn" style="padding:6px 9px; font-size:12px;" onclick="setAgendaView('month')">Mês</button><button class="ghost-btn" style="padding:6px 9px; font-size:12px;" onclick="setAgendaView('report')">Relatório</button></div></div><div class="agenda-source-legend"><i></i> Azul: uso registrado no celular pelo Companion</div><div class="agenda-week-layout"><aside class="agenda-todo" data-agenda-drop="1" data-agenda-date="" data-agenda-time=""><div style="display:flex; justify-content:space-between; align-items:center;"><h3 style="margin:0; font-size:15px;">📌 A fazer</h3><span style="font-size:11px; color:var(--text-faint);">${todos.length}</span></div><p style="font-size:11.5px; color:var(--text-faint);">Solte aqui uma pendência sem dia ou horário.</p>${todos.map(event=>eventCard(event,true)).join('') || `<p style="font-size:12px; color:var(--text-faint);">Arraste para um dia ou horário quando decidir.</p>`}</aside><section class="agenda-week">${week.map(dayColumn).join('')}</section></div></div>`;
 }
@@ -8445,7 +8421,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='routine'?'active':''}" onclick="openRoutine()">🌿 Rotina</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.114</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.115</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -8468,7 +8444,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.25.114</span>
+        <span class="brand-version">v2026.07.25.115</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -8529,7 +8505,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.114</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.115</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
