@@ -2654,7 +2654,7 @@ function makeBook(title, author){
   return {
     id: uid(), title: (title||'').trim(), author: (author||'').trim(), categories:[], coverUrl:'', rating:0,
     quotes:[], linkedDeckId:null, addedAt: Date.now(),
-    status:'quero-ler', dateFinished:null, totalPages:0, pagesRead:0,
+    status:'quero-ler', dateFinished:null, rereads:[], totalPages:0, pagesRead:0,
     isEnglish:false, epub:null
   };
 }
@@ -2674,6 +2674,7 @@ function normalizeBook(b){
     addedAt: b.addedAt || Date.now(),
     status: b.status || 'quero-ler',
     dateFinished: b.dateFinished || null,
+    rereads: Array.isArray(b.rereads) ? b.rereads : [],
     totalPages: b.totalPages || 0,
     pagesRead: b.pagesRead || 0,
     isEnglish: b.isEnglish || false,
@@ -3377,6 +3378,29 @@ function setBookDateFinished(id, value){
   if(!book) return;
   book.dateFinished = value || null;
   saveData();
+}
+function addBookReread(id){
+  const book = state.books.find(b=>b.id===id);
+  if(!book) return;
+  book.rereads = book.rereads || [];
+  book.rereads.push(todayStr());
+  saveData(); render();
+}
+// sem render() aqui de propósito -- mesmo motivo do campo DATA DE CONCLUSÃO:
+// um <input type="date"> já preenchido dispara "change" a cada dígito
+// digitado por cima, e redesenhar a página a cada tecla recria o campo do
+// zero, resetando o segmento (dia/mês/ano) que o navegador estava editando.
+function setBookRereadDate(id, index, value){
+  const book = state.books.find(b=>b.id===id);
+  if(!book || !Array.isArray(book.rereads) || index<0 || index>=book.rereads.length) return;
+  book.rereads[index] = value || todayStr();
+  saveData();
+}
+function removeBookReread(id, index){
+  const book = state.books.find(b=>b.id===id);
+  if(!book || !Array.isArray(book.rereads)) return;
+  book.rereads.splice(index,1);
+  saveData(); render();
 }
 function setBookPages(id, field, value){
   const book = state.books.find(b=>b.id===id);
@@ -8482,7 +8506,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='routine'?'active':''}" onclick="openRoutine()">🌿 Rotina</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.120</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.121</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -8505,7 +8529,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.25.120</span>
+        <span class="brand-version">v2026.07.25.121</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -8566,7 +8590,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.120</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.121</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
@@ -9028,6 +9052,17 @@ function renderBookDetailView(){
       <div class="field">
         <label style="font-size:10px;">DATA DE CONCLUSÃO</label>
         <input type="date" value="${book.dateFinished||''}" onchange="setBookDateFinished('${book.id}', this.value);">
+      </div>
+      <div class="field">
+        <label style="font-size:10px;">RELEITURAS</label>
+        <div style="display:flex; flex-direction:column; gap:6px;">
+          ${(book.rereads||[]).map((date,i)=>`
+          <div style="display:flex; gap:6px; align-items:center;">
+            <input type="date" value="${date||''}" style="flex:1;" onchange="setBookRereadDate('${book.id}',${i},this.value);">
+            <button type="button" class="ghost-btn" style="padding:6px 9px; color:var(--error); border-color:var(--error);" title="Remover releitura" onclick="removeBookReread('${book.id}',${i})">✕</button>
+          </div>`).join('') || `<p style="font-size:11.5px; color:var(--text-faint); margin:0;">Nenhuma releitura registrada ainda.</p>`}
+          <button type="button" class="ghost-btn" style="align-self:flex-start;" onclick="addBookReread('${book.id}')">＋ Adicionar releitura</button>
+        </div>
       </div>` : ''}
       <div style="display:flex; gap:14px; flex-wrap:wrap;">
         <div class="field" style="flex:1; min-width:120px;">
