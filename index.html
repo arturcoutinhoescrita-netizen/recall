@@ -197,6 +197,9 @@
   .deck-header{ display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:8px; }
   .deck-header h2{ font-size:30px; margin:0 0 6px 0; }
   .deck-header p{ color:var(--text-muted); font-size:14px; margin:0; max-width:520px; }
+  .deck-name-input{ font-size:30px; font-weight:700; font-family:inherit; margin:0 0 6px -7px; padding:2px 6px; width:100%; max-width:520px; background:transparent; color:var(--text); border:1px solid transparent; border-radius:6px; }
+  .deck-name-input:hover{ border-color:var(--border); }
+  .deck-name-input:focus{ border-color:var(--accent); background:var(--bg-2); outline:none; }
   .icon-btn{
     background:var(--surface); border:1px solid var(--border); color:var(--text-muted);
     width:34px; height:34px; border-radius:8px; display:flex; align-items:center; justify-content:center;
@@ -1593,6 +1596,21 @@ function toggleDeckAi(deckId){
   const deck = state.decks.find(d=>d.id===deckId);
   if(!deck) return;
   deck.aiEnabled = !isAiEnabled(deck);
+  saveData(); render();
+}
+// sem render() no keyup, mesmo motivo do campo DATA DE CONCLUSÃO: redesenhar a
+// página a cada tecla recria o <input>, perdendo o foco e a posição do cursor
+// no meio da digitação. O ajuste final (trim, nome vazio) só acontece no blur.
+function updateDeckName(id, value){
+  const deck = state.decks.find(d=>d.id===id);
+  if(!deck) return;
+  deck.name = value;
+  saveData();
+}
+function finalizeDeckName(id, value){
+  const deck = state.decks.find(d=>d.id===id);
+  if(!deck) return;
+  deck.name = String(value||'').trim() || deck.name.trim() || 'Baralho sem nome';
   saveData(); render();
 }
 function toggleDeckFavorite(deckId){
@@ -6377,7 +6395,7 @@ function applyRichPaletteColor(kind, color){
   }
 }
 function applyLastRichColor(kind){
-  applyRichCommand(kind === 'text' ? 'foreColor' : 'hiliteColor', kind === 'text' ? (state.lastRichTextColor || '#F5A623') : (state.lastRichHighlight || '#F5D76E'));
+  applyRichCommand(kind === 'text' ? 'foreColor' : 'hiliteColor', kind === 'text' ? (state.lastRichTextColor || '#000000') : (state.lastRichHighlight || '#F5D76E'));
 }
 function toggleNotePageView(){
   state.notesPageView = !state.notesPageView;
@@ -8506,7 +8524,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='routine'?'active':''}" onclick="openRoutine()">🌿 Rotina</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.121</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.122</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -8529,7 +8547,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.25.121</span>
+        <span class="brand-version">v2026.07.25.122</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -8590,7 +8608,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.121</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.122</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
@@ -8902,11 +8920,11 @@ function renderRichColorPalette(kind){
   const menu = state.noteColorMenu;
   if(!menu || menu.kind !== kind) return '';
   const colors = kind === 'text'
-    ? ['#F4F1EA','#F5A623','#FB7185','#A78BFA','#60A5FA','#34D399']
+    ? ['#000000','#F4F1EA','#F5A623','#FB7185','#A78BFA','#60A5FA','#34D399']
     : ['#F5D76E','#F9A8D4','#A7F3D0','#BFDBFE','#DDD6FE','#FED7AA'];
   const noColor = kind === 'text' ? 'inherit' : 'transparent';
   return `<div style="position:absolute; top:38px; left:0; z-index:120; display:flex; gap:6px; flex-wrap:wrap; width:176px; padding:9px; background:var(--surface); border:1px solid var(--border); border-radius:10px; box-shadow:0 10px 24px rgba(0,0,0,.25);">
-    ${colors.map(color=>`<button type="button" title="${color}" onmousedown="event.preventDefault()" onclick="applyRichPaletteColor('${kind}','${color}')" style="width:22px; height:22px; border-radius:50%; border:1px solid var(--border); background:${color};"></button>`).join('')}
+    ${colors.map(color=>`<button type="button" title="${color}" onmousedown="event.preventDefault()" onclick="applyRichPaletteColor('${kind}','${color}')" style="width:22px; height:22px; border-radius:50%; border:1px solid ${color==='#000000'?'rgba(255,255,255,0.35)':'var(--border)'}; background:${color};"></button>`).join('')}
     <button type="button" class="ghost-btn" onmousedown="event.preventDefault()" onclick="applyRichPaletteColor('${kind}','${noColor}')" style="width:100%; padding:5px 7px; font-size:10px;">Sem cor</button>
   </div>`;
 }
@@ -8934,7 +8952,7 @@ function renderNotesToolbar(format){
     <span style="width:1px; background:var(--border); margin:2px 2px;"></span>
     <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Negrito" onclick="${bold}"><strong>B</strong></button>
     <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Itálico" onclick="${italic}"><em>I</em></button>
-    ${!isMarkdown ? `<span style="display:inline-flex; position:relative;"><button class="icon-btn" ${noSteal}title="Aplicar última cor de texto" onclick="applyLastRichColor('text')" style="font-size:13px; border-bottom:3px solid ${state.lastRichTextColor||'#F5A623'};">A</button><button class="icon-btn" ${noSteal}title="Escolher cor do texto" onclick="openRichColorMenu('text')" style="width:20px; font-size:10px; margin-left:-4px;">▾</button>${renderRichColorPalette('text')}</span>
+    ${!isMarkdown ? `<span style="display:inline-flex; position:relative;"><button class="icon-btn" ${noSteal}title="Aplicar última cor de texto" onclick="applyLastRichColor('text')" style="font-size:13px; border-bottom:3px solid ${state.lastRichTextColor||'#000000'};">A</button><button class="icon-btn" ${noSteal}title="Escolher cor do texto" onclick="openRichColorMenu('text')" style="width:20px; font-size:10px; margin-left:-4px;">▾</button>${renderRichColorPalette('text')}</span>
     <span style="display:inline-flex; position:relative;"><button class="icon-btn" ${noSteal}title="Aplicar último destaque" onclick="applyLastRichColor('highlight')" style="font-size:14px; border-bottom:3px solid ${state.lastRichHighlight||'#F5D76E'};">🖍</button><button class="icon-btn" ${noSteal}title="Escolher cor do destaque" onclick="openRichColorMenu('highlight')" style="width:20px; font-size:10px; margin-left:-4px;">▾</button>${renderRichColorPalette('highlight')}</span>
     <select title="Fonte" style="width:auto; max-width:150px; padding:5px 7px; font-size:11px;" onchange="setRichFont(this.value)"><option value="inherit">Fonte</option><option value="Arial">Arial</option><option value="Arial Rounded">Arial Rounded</option><option value="Georgia">Georgia</option><option value="Verdana">Verdana</option><option value="Courier New">Monoespaçada</option><option value="Cinzel Decorative">Cinzel Decorative</option><option value="Great Vibes">Great Vibes</option><option value="Nickainley">Nickainley</option><option value="SangGuru">SangGuru</option><option value="Special Elite">Special Elite</option><option value="Zeyada">Zeyada</option></select>
     <select title="Tamanho da fonte" style="width:auto; max-width:84px; padding:5px 7px; font-size:11px;" onchange="setRichFontSize(this.value)"><option value="">Tamanho</option><option value="10">10 px</option><option value="12">12 px</option><option value="14">14 px</option><option value="16">16 px</option><option value="18">18 px</option><option value="20">20 px</option><option value="24">24 px</option><option value="28">28 px</option><option value="32">32 px</option><option value="36">36 px</option></select>` : ''}
@@ -9153,8 +9171,11 @@ function renderDeckView(){
   return `
   <button class="ghost-btn mobile-back-btn" onclick="backToHome()">← Baralhos</button>
   <div class="deck-header">
-    <div>
-      <h2>${escapeHtml(deck.name)}${deck.archived?' <span style="font-size:12px; font-weight:600; color:var(--text-faint); vertical-align:middle;">📦 Arquivado</span>':''}</h2>
+    <div style="flex:1; min-width:0;">
+      <div style="display:flex; align-items:center; gap:9px; flex-wrap:wrap;">
+        <input type="text" class="deck-name-input" value="${escapeHtml(deck.name)}" title="Clique para renomear o baralho" onkeyup="updateDeckName('${deck.id}', this.value)" onchange="finalizeDeckName('${deck.id}', this.value)">
+        ${deck.archived?'<span style="font-size:12px; font-weight:600; color:var(--text-faint);">📦 Arquivado</span>':''}
+      </div>
       <p>${cards.length} cartão(ões) neste baralho${deck.archived?' · fora da agenda, disponível para estudo manual':''}</p>
     </div>
     <div style="display:flex; gap:7px; flex-wrap:wrap; justify-content:flex-end;">
