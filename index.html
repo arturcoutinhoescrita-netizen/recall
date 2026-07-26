@@ -1135,8 +1135,13 @@ function recordStudyActivity(session){
   session.activityRecorded = true;
   const deck = state.decks.find(d=>d.id===session.deckId);
   addActivity('flashcards', { durationMs:Date.now() - session.startTime, count, deckId:session.deckId, title:deck ? deck.name : 'Flashcards' });
-  updateAgendaReviewTask(session.deckId);
+  ensureAgendaReviewTasks();
 }
+/* Cada CARTÃO vencido vira seu próprio lembrete na Agenda (não mais um único
+   "Revisar {baralho} · N" agregado) — assim o usuário vê exatamente quais
+   cartões faltam, e cada um se conclui sozinho assim que aquele cartão
+   específico deixa de estar vencido (foi revisado, marcado como aprendido, ou
+   apagado), sem esperar o baralho inteiro zerar. */
 function ensureAgendaReviewTasks(){
   const today=agendaDateKey(new Date());
   let changed=false;
@@ -1144,53 +1149,38 @@ function ensureAgendaReviewTasks(){
   const before=state.agendaEvents.length;
   state.agendaEvents=state.agendaEvents.filter(event=>!(event.autoReview&&archivedIds.has(event.deckId)&&!event.completedAt));
   if(state.agendaEvents.length!==before) changed=true;
-  // só pode existir UM lembrete de revisão ativo por baralho. Antes, a busca abaixo
-  // exigia event.date===today — no dia seguinte, um lembrete que tinha "rolado" pra
-  // "A fazer" (rolloverAgendaOverdueTasks zera a data dele) deixava de bater com
-  // essa condição, e um lembrete NOVO era criado, empilhando duplicatas dia após
-  // dia. Também consolida aqui as duplicatas que essa versão anterior já criou:
-  // mantém só o mais recente (o array já fica com os mais novos primeiro) e
-  // descarta o resto.
-  const seenActiveDeck=new Set();
-  const beforeDedupe=state.agendaEvents.length;
-  state.agendaEvents=state.agendaEvents.filter(event=>{
-    if(!event.autoReview || event.completedAt) return true;
-    if(seenActiveDeck.has(event.deckId)) return false;
-    seenActiveDeck.add(event.deckId);
-    return true;
-  });
-  if(state.agendaEvents.length!==beforeDedupe) changed=true;
+  // migração do formato antigo (agregado por baralho, sem cardId): descarta só
+  // os que essa função criava sozinha (hoje, sem horário) — um agregado com
+  // horário foi um lembrete futuro agendado manualmente (materializeAgendaReview)
+  // e continua intocado, mesmo que a data dele já tenha virado hoje.
+  const beforeMigration=state.agendaEvents.length;
+  state.agendaEvents=state.agendaEvents.filter(event=>!(event.autoReview&&!event.cardId&&!event.time&&event.date===today&&!event.completedAt));
+  if(state.agendaEvents.length!==beforeMigration) changed=true;
+  const activeByCard=new Map();
+  state.agendaEvents.forEach(event=>{ if(event.autoReview&&event.cardId&&!event.completedAt) activeByCard.set(event.cardId,event); });
+  const dueCardIds=new Set();
   state.decks.forEach(deck=>{
     if(deck.archived) return;
-    const due=getDueCards(deck.id).length;
-    const task=state.agendaEvents.find(event=>event.autoReview && event.deckId===deck.id && !event.completedAt);
-    if(due>0 && !task){
-      state.agendaEvents.unshift({id:uid(),title:`Revisar ${deck.name}`,date:today,time:null,notes:'Criada automaticamente a partir dos cartões vencidos.',deckId:deck.id,autoReview:true,expectedCount:due,createdAt:Date.now(),updatedAt:Date.now()}); changed=true;
-    }else if(task && task.expectedCount!==due){ task.expectedCount=due; task.title=`Revisar ${deck.name}`; task.updatedAt=Date.now(); changed=true; }
+    getDueCards(deck.id).forEach(card=>{
+      dueCardIds.add(card.id);
+      if(!activeByCard.has(card.id)){
+        const front=String(card.front||'').trim();
+        const label=front ? (front.length>40 ? `${front.slice(0,40)}…` : front) : 'cartão sem texto';
+        const event={id:uid(),title:`Revisar: ${label}`,date:today,time:null,notes:'Criado automaticamente porque este cartão está vencido.',deckId:deck.id,cardId:card.id,autoReview:true,source:null,completedAt:null,createdAt:Date.now(),updatedAt:Date.now()};
+        state.agendaEvents.unshift(event);
+        activeByCard.set(card.id,event);
+        changed=true;
+      }
+    });
+  });
+  activeByCard.forEach((event,cardId)=>{
+    if(!dueCardIds.has(cardId)){
+      event.completedAt=Date.now();
+      event.updatedAt=Date.now();
+      changed=true;
+    }
   });
   if(changed) saveData();
-}
-function updateAgendaReviewTask(deckId){
-  const deck=state.decks.find(item=>item.id===deckId);
-  if(deck?.archived){
-    const before=state.agendaEvents.length;
-    state.agendaEvents=state.agendaEvents.filter(event=>!(event.autoReview&&event.deckId===deckId&&!event.completedAt));
-    if(state.agendaEvents.length!==before) saveData();
-    return;
-  }
-  const today=agendaDateKey(new Date());
-  // mesma correção: não exige mais event.date===today, senão um lembrete que já
-  // tinha rolado pra "A fazer" ficava invisível pra essa função também.
-  let task=state.agendaEvents.find(event=>event.autoReview && event.deckId===deckId && !event.completedAt);
-  const remaining=getDueCards(deckId).length;
-  if(!task && remaining===0){
-    task={id:uid(),title:`Revisar ${deck?deck.name:'baralho'}`,date:today,time:null,notes:'Concluída automaticamente após a sessão de flashcards.',deckId,autoReview:true,expectedCount:0,completedAt:Date.now(),createdAt:Date.now(),updatedAt:Date.now()};
-    state.agendaEvents.unshift(task); saveData(); return;
-  }
-  if(!task) return;
-  task.expectedCount=remaining;
-  if(remaining===0) task.completedAt=Date.now();
-  task.updatedAt=Date.now(); saveData();
 }
 function maintainActivityTimers(){
   const now = Date.now();
@@ -3220,7 +3210,7 @@ function renderAgendaWeekView(){
   const timeSlots=Array.from({length:36},(_,i)=>{ const minutes=360+i*30; return `${String(Math.floor(minutes/60)).padStart(2,'0')}:${String(minutes%60).padStart(2,'0')}`; });
   const eventCard=(event, todo)=>{
     const draggable=!(event.completedAt||event.source==='companion');
-    return `<div class="agenda-event ${todo?'todo':''} ${event.source==='companion'?'companion':''} ${event.completedAt&&event.source!=='companion'?'done':''}" role="button" tabindex="0" ${draggable?`onpointerdown="agendaPointerDown(event,'${event.id}')"`:''} onclick="if(Date.now()<suppressAgendaClickUntil) return; openAgendaEventModal('${event.id}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openAgendaEventModal('${event.id}')}">${event.completedAt&&event.source!=='companion'?'✓ ':''}${event.time&&!todo?`<strong>${event.time}${event.endTime?`–${event.endTime}`:''}</strong> `:''}${escapeHtml(event.title)}${event.autoReview&&!event.completedAt?` · ${event.expectedCount||0}`:''}</div>`;
+    return `<div class="agenda-event ${todo?'todo':''} ${event.source==='companion'?'companion':''} ${event.completedAt&&event.source!=='companion'?'done':''}" role="button" tabindex="0" ${draggable?`onpointerdown="agendaPointerDown(event,'${event.id}')"`:''} onclick="if(Date.now()<suppressAgendaClickUntil) return; openAgendaEventModal('${event.id}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openAgendaEventModal('${event.id}')}">${event.completedAt&&event.source!=='companion'?'✓ ':''}${event.time&&!todo?`<strong>${event.time}${event.endTime?`–${event.endTime}`:''}</strong> `:''}${escapeHtml(event.title)}${event.autoReview&&!event.cardId&&!event.completedAt?` · ${event.expectedCount||0}`:''}</div>`;
   };
   const dayColumn=date=>{
     const key=agendaDateKey(date);
@@ -8455,7 +8445,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='routine'?'active':''}" onclick="openRoutine()">🌿 Rotina</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.113</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.114</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -8478,7 +8468,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.25.113</span>
+        <span class="brand-version">v2026.07.25.114</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -8539,7 +8529,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.113</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.114</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
