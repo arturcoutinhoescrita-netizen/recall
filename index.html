@@ -535,24 +535,25 @@
   .agenda-day-tasks-label{ display:block; margin-bottom:4px; color:var(--text-faint); font-size:9px; font-weight:700; letter-spacing:.05em; }
   .agenda-review-task{ width:100%; margin:3px 0; padding:5px 6px; border:1px solid var(--accent-dim); border-radius:6px; background:var(--accent-soft); color:var(--text); text-align:left; font:inherit; font-size:10px; line-height:1.25; cursor:pointer; }
   .agenda-day-hours{ flex:1 1 auto; min-height:0; overflow-y:auto; border-top:1px solid var(--border); position:relative; }
-  .agenda-slot{ height:26px; min-height:26px; border-top:1px solid var(--border); padding:0 2px 0 25px; position:relative; z-index:1; }
+  .agenda-slot{ height:32px; min-height:32px; border-top:1px solid var(--border); padding:0 2px 0 30px; position:relative; z-index:1; }
   .agenda-day-hours .agenda-slot:first-child{ border-top:0; }
-  .agenda-slot-time{ position:absolute; left:1px; top:4px; font-size:8.5px; color:var(--text-faint); }
+  .agenda-slot-time{ position:absolute; left:1px; top:5px; font-size:9.5px; color:var(--text-faint); }
   .agenda-slot-time.half{ opacity:.65; }
-  .agenda-scheduled-event{ position:absolute; left:25px; right:2px; z-index:2; min-height:2px; padding:3px 5px; border:1px solid var(--accent-dim); border-radius:5px; background:var(--accent-soft); color:var(--text); font:inherit; font-size:10px; line-height:1.15; text-align:left; overflow:hidden; cursor:grab; }
-  .agenda-scheduled-event.tiny{ padding:0; border-radius:2px; font-size:0; min-height:2px; }
+  .agenda-scheduled-event{ position:absolute; left:30px; right:2px; z-index:2; min-height:2px; padding:2px 5px; border:1px solid var(--accent-dim); border-radius:5px; background:var(--accent-soft); color:var(--text); font:inherit; font-size:10.5px; line-height:1.2; text-align:left; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; cursor:grab; touch-action:none; }
+  .agenda-scheduled-event.tiny{ padding:0 5px; border-radius:3px; font-size:9px; line-height:1; display:flex; align-items:center; }
   .agenda-scheduled-event.done{ border-color:var(--success); background:var(--success-soft); color:var(--success); cursor:default; }
   /* Registros importados pelo Companion ficam visualmente separados das
      tarefas, estudos e compromissos criados dentro do Letther B. */
   .agenda-scheduled-event.companion, .agenda-event.companion{ border-color:#8094e8; background:#e9edff; color:#40529f; }
   .agenda-scheduled-event.companion{ cursor:default; }
-  .agenda-scheduled-event.companion.tiny{ background:#7186df; border-color:#6076d4; }
+  .agenda-scheduled-event.companion.tiny{ background:#7186df; border-color:#6076d4; color:#fff; }
   .agenda-source-legend{ display:flex; align-items:center; gap:6px; margin-top:8px; color:var(--text-faint); font-size:10px; }
   .agenda-source-legend i{ width:8px; height:8px; border-radius:50%; background:#7186df; }
-  .agenda-event{ width:100%; margin-bottom:3px; padding:5px 6px; border:1px solid var(--accent-dim); border-radius:6px; background:var(--accent-soft); color:var(--text); text-align:left; font:inherit; font-size:10.5px; line-height:1.25; cursor:grab; overflow:hidden; text-overflow:ellipsis; }
+  .agenda-event{ width:100%; margin-bottom:3px; padding:5px 6px; border:1px solid var(--accent-dim); border-radius:6px; background:var(--accent-soft); color:var(--text); text-align:left; font:inherit; font-size:11px; line-height:1.3; cursor:grab; overflow:hidden; text-overflow:ellipsis; touch-action:none; }
   .agenda-event.todo{ border-color:var(--border); background:var(--bg-2); cursor:grab; }
   .agenda-event.done{ border-color:var(--success); background:var(--success-soft); color:var(--success); text-decoration:line-through; cursor:default; }
   .agenda-drop-target{ outline:2px dashed var(--accent); outline-offset:-3px; background:var(--accent-soft); }
+  .agenda-drag-ghost{ position:fixed; z-index:999; pointer-events:none; max-width:220px; padding:6px 11px; border-radius:8px; background:var(--accent); color:#fff; font-size:12px; font-weight:600; box-shadow:0 8px 20px rgba(0,0,0,0.35); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .agenda-report{ max-width:1040px; margin:0 auto; }
   .agenda-report-summary{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin:14px 0 18px; }
   .agenda-report-stat{ padding:14px; border:1px solid var(--border); border-radius:12px; background:var(--surface); }
@@ -2933,15 +2934,79 @@ function toggleAgendaEventCompleted(event,id){
   if(!item || item.source==='companion') return;
   setAgendaEventCompleted(id,!item.completedAt);
 }
-function dragAgendaEvent(event,id){
-  event.stopPropagation();
-  event.dataTransfer.setData('text/plain',id);
-  event.dataTransfer.setData('text',id);
-  event.dataTransfer.effectAllowed='move';
+/* --- arrastar eventos da Agenda: a Drag and Drop nativa do HTML5 (draggable=""/
+   ondragstart/ondrop) simplesmente NÃO funciona em toque — é como a maioria abre
+   o app no celular, então o recurso parecia quebrado. Pointer Events resolvem
+   mouse e toque com o mesmo código (é o mesmo truque já usado pra redimensionar
+   imagem nas notas). Só vira um "arraste de verdade" depois que o ponteiro se
+   move além de um limiar — assim um toque/clique simples continua abrindo o
+   modal do evento normalmente, sem confundir com um arraste. */
+let agendaDragCandidate = null;
+let agendaDragState = null;
+let suppressAgendaClickUntil = 0;
+const AGENDA_DRAG_THRESHOLD = 6;
+function agendaPointerDown(event, id){
+  if(event.pointerType==='mouse' && event.button!==0) return;
+  const item=state.agendaEvents.find(task=>task.id===id);
+  if(!item || item.completedAt || item.source==='companion') return;
+  agendaDragCandidate={ id, startX:event.clientX, startY:event.clientY, title:item.title };
+  window.addEventListener('pointermove', agendaPointerMoveCheck);
+  window.addEventListener('pointerup', agendaPointerUpCancel, {once:true});
 }
-function dropAgendaEvent(event,date,time){
+function agendaPointerMoveCheck(event){
+  const c=agendaDragCandidate;
+  if(!c) return;
+  if(Math.hypot(event.clientX-c.startX, event.clientY-c.startY) < AGENDA_DRAG_THRESHOLD) return;
+  window.removeEventListener('pointermove', agendaPointerMoveCheck);
+  window.removeEventListener('pointerup', agendaPointerUpCancel);
+  startAgendaDrag(event, c);
+}
+function agendaPointerUpCancel(){
+  window.removeEventListener('pointermove', agendaPointerMoveCheck);
+  agendaDragCandidate=null;
+}
+function startAgendaDrag(event, candidate){
+  agendaDragCandidate=null;
   event.preventDefault();
-  const id=event.dataTransfer.getData('text/plain');
+  const ghost=document.createElement('div');
+  ghost.className='agenda-drag-ghost';
+  ghost.textContent=candidate.title;
+  document.body.appendChild(ghost);
+  agendaDragState={ id:candidate.id, ghost, lastTarget:null };
+  positionAgendaGhost(event);
+  window.addEventListener('pointermove', moveAgendaDrag);
+  window.addEventListener('pointerup', endAgendaDrag, {once:true});
+}
+function positionAgendaGhost(event){
+  const drag=agendaDragState;
+  if(!drag) return;
+  drag.ghost.style.left=`${event.clientX+14}px`;
+  drag.ghost.style.top=`${event.clientY+14}px`;
+}
+function moveAgendaDrag(event){
+  const drag=agendaDragState;
+  if(!drag) return;
+  positionAgendaGhost(event);
+  drag.ghost.style.display='none'; // não deixa o fantasma ser "achado" no lugar do alvo real embaixo dele
+  const el=document.elementFromPoint(event.clientX, event.clientY);
+  drag.ghost.style.display='';
+  const target=el && el.closest ? el.closest('[data-agenda-drop]') : null;
+  if(drag.lastTarget && drag.lastTarget!==target) drag.lastTarget.classList.remove('agenda-drop-target');
+  if(target) target.classList.add('agenda-drop-target');
+  drag.lastTarget=target||null;
+}
+function endAgendaDrag(event){
+  const drag=agendaDragState;
+  window.removeEventListener('pointermove', moveAgendaDrag);
+  if(!drag) return;
+  agendaDragState=null;
+  drag.ghost.remove();
+  suppressAgendaClickUntil=Date.now()+300; // evita abrir o modal do evento logo depois de soltar
+  if(!drag.lastTarget) return;
+  drag.lastTarget.classList.remove('agenda-drop-target');
+  moveAgendaEventTo(drag.id, drag.lastTarget.dataset.agendaDate||null, drag.lastTarget.dataset.agendaTime||null);
+}
+function moveAgendaEventTo(id, date, time){
   const item=state.agendaEvents.find(task=>task.id===id);
   if(!item || item.completedAt || item.source==='companion') return;
   const oldStart=agendaTimeToMinutes(item.time), oldEnd=agendaTimeToMinutes(getAgendaEventEndTime(item));
@@ -2957,11 +3022,8 @@ function dropAgendaEvent(event,date,time){
   }
   item.updatedAt=Date.now();
   saveData();
-  document.querySelectorAll('.agenda-drop-target').forEach(el=>el.classList.remove('agenda-drop-target'));
   render();
 }
-function agendaDragOver(event){ event.preventDefault(); event.currentTarget.classList.add('agenda-drop-target'); }
-function agendaDragLeave(event){ event.currentTarget.classList.remove('agenda-drop-target'); }
 function getAgendaWeekNumber(date){
   const d=new Date(Date.UTC(date.getFullYear(),date.getMonth(),date.getDate()));
   const day=d.getUTCDay() || 7; d.setUTCDate(d.getUTCDate()+4-day);
@@ -2999,13 +3061,18 @@ function renderScheduledAgendaEvent(event){
   const start=agendaTimeToMinutes(event.time), end=agendaTimeToMinutes(getAgendaEventEndTime(event));
   if(start===null || end===null || start<360 || start>=1440) return '';
   const displayedEnd=Math.max(start+1,end);
-  const top=((start-360)/30)*26;
-  const height=Math.max(2,((displayedEnd-start)/30)*26-2);
-  const tiny=height<18;
+  const top=((start-360)/30)*32;
+  // altura mínima de 14px (em vez de 2px) garante que até um evento de 5 minutos
+  // continue com espaço pra mostrar o título — antes disso ficava um risco sem
+  // nenhum texto (font-size:0), como se o evento simplesmente não existisse.
+  const height=Math.max(14,((displayedEnd-start)/30)*32-2);
+  const tiny=height<24;
   const range=`${event.time}–${getAgendaEventEndTime(event)}`;
   const title=`${range} · ${event.title}`;
   const companion=event.source==='companion';
-  return `<button class="agenda-scheduled-event ${companion?'companion':''} ${event.completedAt&&!companion?'done':''} ${tiny?'tiny':''}" style="top:${top}px; height:${height}px;" title="${escapeHtml(title)}" draggable="${companion||event.completedAt?'false':'true'}" ${companion||event.completedAt?'':'ondragstart="dragAgendaEvent(event,\''+event.id+'\')"'} onclick="openAgendaEventModal('${event.id}')">${tiny?'':`${event.completedAt&&!companion?'✓ ':''}<strong>${range}</strong> ${escapeHtml(event.title)}`}</button>`;
+  const draggable=!(companion||event.completedAt);
+  const label=tiny ? escapeHtml(event.title) : `${event.completedAt&&!companion?'✓ ':''}<strong>${range}</strong> ${escapeHtml(event.title)}`;
+  return `<button class="agenda-scheduled-event ${companion?'companion':''} ${event.completedAt&&!companion?'done':''} ${tiny?'tiny':''}" style="top:${top}px; height:${height}px;" title="${escapeHtml(title)}" ${draggable?`onpointerdown="agendaPointerDown(event,'${event.id}')"`:''} onclick="if(Date.now()<suppressAgendaClickUntil) return; openAgendaEventModal('${event.id}')">${label}</button>`;
 }
 function planAgendaReview(deckId,date,count){
   const deck=state.decks.find(item=>item.id===deckId);
@@ -3014,11 +3081,11 @@ function planAgendaReview(deckId,date,count){
 function openAgendaSuggestions(){
   const start=agendaDateFromKey(state.agendaWeekStart||agendaDateKey(new Date()));
   start.setDate(start.getDate()-((start.getDay()+6)%7));
-  const todos=state.agendaEvents.filter(event=>!event.date&&!event.completedAt).slice(0,5);
+  const todos=state.agendaEvents.filter(event=>!getAgendaEventDateKey(event)&&!event.completedAt).slice(0,5);
   const slots=[];
   for(let day=0;day<7;day++) for(const time of ['09:00','14:00','19:00']){
     const date=new Date(start); date.setDate(start.getDate()+day); const key=agendaDateKey(date);
-    if(!state.agendaEvents.some(event=>event.date===key&&event.time===time)) slots.push({date:key,time});
+    if(!state.agendaEvents.some(event=>getAgendaEventDateKey(event)===key&&event.time===time)) slots.push({date:key,time});
   }
   state.modal={type:'agenda-suggestions',suggestions:todos.map((event,index)=>({eventId:event.id,slot:slots[index]||null}))}; render();
 }
@@ -3045,17 +3112,25 @@ function renderAgendaWeekView(){
   start.setDate(start.getDate()-((start.getDay()+6)%7));
   const week=Array.from({length:7},(_,index)=>{ const date=new Date(start); date.setDate(start.getDate()+index); return date; });
   const todayKey=agendaDateKey(new Date());
-  const todos=state.agendaEvents.filter(event=>!event.date && !event.completedAt);
+  // usa getAgendaEventDateKey (não event.date direto): eventos vindos da IA, do
+  // Companion ou de uma sincronização antiga podem guardar a data num formato
+  // diferente de "YYYY-MM-DD" (Timestamp do Firestore, data por extenso etc.) —
+  // comparar o campo cru fazia esses eventos sumirem de toda a Agenda, mesmo
+  // existindo normalmente na lista.
+  const todos=state.agendaEvents.filter(event=>!getAgendaEventDateKey(event) && !event.completedAt);
   const timeSlots=Array.from({length:36},(_,i)=>{ const minutes=360+i*30; return `${String(Math.floor(minutes/60)).padStart(2,'0')}:${String(minutes%60).padStart(2,'0')}`; });
-  const eventCard=(event, todo)=>`<div class="agenda-event ${todo?'todo':''} ${event.source==='companion'?'companion':''} ${event.completedAt&&event.source!=='companion'?'done':''}" role="button" tabindex="0" draggable="${event.completedAt||event.source==='companion'?'false':'true'}" ${event.completedAt||event.source==='companion'?'':'ondragstart="dragAgendaEvent(event,\''+event.id+'\')"'} onclick="openAgendaEventModal('${event.id}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openAgendaEventModal('${event.id}')}">${event.completedAt&&event.source!=='companion'?'✓ ':''}${event.time&&!todo?`<strong>${event.time}${event.endTime?`–${event.endTime}`:''}</strong> `:''}${escapeHtml(event.title)}${event.autoReview&&!event.completedAt?` · ${event.expectedCount||0}`:''}</div>`;
+  const eventCard=(event, todo)=>{
+    const draggable=!(event.completedAt||event.source==='companion');
+    return `<div class="agenda-event ${todo?'todo':''} ${event.source==='companion'?'companion':''} ${event.completedAt&&event.source!=='companion'?'done':''}" role="button" tabindex="0" ${draggable?`onpointerdown="agendaPointerDown(event,'${event.id}')"`:''} onclick="if(Date.now()<suppressAgendaClickUntil) return; openAgendaEventModal('${event.id}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openAgendaEventModal('${event.id}')}">${event.completedAt&&event.source!=='companion'?'✓ ':''}${event.time&&!todo?`<strong>${event.time}${event.endTime?`–${event.endTime}`:''}</strong> `:''}${escapeHtml(event.title)}${event.autoReview&&!event.completedAt?` · ${event.expectedCount||0}`:''}</div>`;
+  };
   const dayColumn=date=>{
     const key=agendaDateKey(date);
-    const dayTasks=state.agendaEvents.filter(event=>event.date===key&&!event.time).filter(event=>!event.autoReview||event.completedAt);
-    const reviews=getAgendaReviewGroups(key).filter(review=>!state.agendaEvents.some(event=>event.date===key&&event.deckId===review.deckId&&!event.autoReview));
-    const scheduled=state.agendaEvents.filter(event=>event.date===key&&event.time);
-    return `<div class="agenda-week-day ${key===todayKey?'today':''}"><div class="agenda-week-title">${date.toLocaleDateString('pt-BR',{weekday:'short'}).replace('.','')}<br><span style="color:var(--text-faint);">${date.getDate()}</span></div><div class="agenda-day-tasks" ondragover="agendaDragOver(event)" ondragleave="agendaDragLeave(event)" ondrop="dropAgendaEvent(event,'${key}',null)"><span class="agenda-day-tasks-label">TAREFAS DO DIA</span>${dayTasks.map(event=>eventCard(event,true)).join('')}${reviews.map(review=>`<button class="agenda-review-task" onclick="planAgendaReview('${review.deckId}','${key}',${review.count})">🧠 Revisar ${escapeHtml(review.name)} · ${review.count}</button>`).join('')}${!dayTasks.length&&!reviews.length?`<span style="font-size:10px; color:var(--text-faint);">Solte uma tarefa aqui</span>`:''}</div><div class="agenda-day-hours">${timeSlots.map(time=>`<div class="agenda-slot" ondragover="agendaDragOver(event)" ondragleave="agendaDragLeave(event)" ondrop="dropAgendaEvent(event,'${key}','${time}')" oncontextmenu="openAgendaEventAt(event,'${key}','${time}')"><span class="agenda-slot-time ${time.endsWith(':30')?'half':''}">${time}</span></div>`).join('')}${scheduled.map(renderScheduledAgendaEvent).join('')}</div></div>`;
+    const dayTasks=state.agendaEvents.filter(event=>getAgendaEventDateKey(event)===key&&!event.time).filter(event=>!event.autoReview||event.completedAt);
+    const reviews=getAgendaReviewGroups(key).filter(review=>!state.agendaEvents.some(event=>getAgendaEventDateKey(event)===key&&event.deckId===review.deckId&&!event.autoReview));
+    const scheduled=state.agendaEvents.filter(event=>getAgendaEventDateKey(event)===key&&event.time);
+    return `<div class="agenda-week-day ${key===todayKey?'today':''}"><div class="agenda-week-title">${date.toLocaleDateString('pt-BR',{weekday:'short'}).replace('.','')}<br><span style="color:var(--text-faint);">${date.getDate()}</span></div><div class="agenda-day-tasks" data-agenda-drop="1" data-agenda-date="${key}" data-agenda-time=""><span class="agenda-day-tasks-label">TAREFAS DO DIA</span>${dayTasks.map(event=>eventCard(event,true)).join('')}${reviews.map(review=>`<button class="agenda-review-task" onclick="planAgendaReview('${review.deckId}','${key}',${review.count})">🧠 Revisar ${escapeHtml(review.name)} · ${review.count}</button>`).join('')}${!dayTasks.length&&!reviews.length?`<span style="font-size:10px; color:var(--text-faint);">Solte uma tarefa aqui</span>`:''}</div><div class="agenda-day-hours">${timeSlots.map(time=>`<div class="agenda-slot" data-agenda-drop="1" data-agenda-date="${key}" data-agenda-time="${time}" oncontextmenu="openAgendaEventAt(event,'${key}','${time}')"><span class="agenda-slot-time ${time.endsWith(':30')?'half':''}">${time}</span></div>`).join('')}${scheduled.map(renderScheduledAgendaEvent).join('')}</div></div>`;
   };
-  return `<div style="max-width:1400px; margin:0 auto;"><button class="ghost-btn mobile-back-btn" onclick="backToHome()">← Menu</button><div class="deck-header" style="margin-bottom:14px;"><div><h2 style="margin:0 0 5px;">🗓️ Agenda</h2><p>Arraste pendências entre “A fazer”, tarefas do dia e horários.</p></div><button class="primary-btn" onclick="openAgendaEventModal()">＋ Novo evento</button></div><div class="agenda-week-toolbar"><div class="agenda-week-navigation"><button class="icon-btn" aria-label="Semana anterior" title="Semana anterior" onclick="changeAgendaWeek(-1)">‹</button><button class="ghost-btn" style="padding:6px 9px; font-size:12px;" onclick="goToAgendaToday()">Hoje</button><button class="icon-btn" aria-label="Próxima semana" title="Próxima semana" onclick="changeAgendaWeek(1)">›</button></div><strong class="agenda-week-period">${start.toLocaleDateString('pt-BR',{day:'2-digit',month:'short'})} — ${week[6].toLocaleDateString('pt-BR',{day:'2-digit',month:'short',year:'numeric'})}</strong><div class="agenda-week-actions"><button class="ghost-btn" style="padding:6px 9px; font-size:12px;" onclick="openAgendaSuggestions()">✨ Sugerir</button><button class="icon-btn" title="Chat IA da Agenda" aria-label="Chat IA da Agenda" onclick="openGlobalAiChat()">💬</button><button class="ghost-btn active-mode" style="padding:6px 9px; font-size:12px;" onclick="setAgendaView('week')">Semana</button><button class="ghost-btn" style="padding:6px 9px; font-size:12px;" onclick="setAgendaView('month')">Mês</button><button class="ghost-btn" style="padding:6px 9px; font-size:12px;" onclick="setAgendaView('report')">Relatório</button></div></div><div class="agenda-source-legend"><i></i> Azul: uso registrado no celular pelo Companion</div><div class="agenda-week-layout"><aside class="agenda-todo" ondragover="agendaDragOver(event)" ondragleave="agendaDragLeave(event)" ondrop="dropAgendaEvent(event,null,null)"><div style="display:flex; justify-content:space-between; align-items:center;"><h3 style="margin:0; font-size:15px;">📌 A fazer</h3><span style="font-size:11px; color:var(--text-faint);">${todos.length}</span></div><p style="font-size:11.5px; color:var(--text-faint);">Solte aqui uma pendência sem dia ou horário.</p>${todos.map(event=>eventCard(event,true)).join('') || `<p style="font-size:12px; color:var(--text-faint);">Arraste para um dia ou horário quando decidir.</p>`}</aside><section class="agenda-week">${week.map(dayColumn).join('')}</section></div></div>`;
+  return `<div style="max-width:1400px; margin:0 auto;"><button class="ghost-btn mobile-back-btn" onclick="backToHome()">← Menu</button><div class="deck-header" style="margin-bottom:14px;"><div><h2 style="margin:0 0 5px;">🗓️ Agenda</h2><p>Arraste pendências entre “A fazer”, tarefas do dia e horários.</p></div><button class="primary-btn" onclick="openAgendaEventModal()">＋ Novo evento</button></div><div class="agenda-week-toolbar"><div class="agenda-week-navigation"><button class="icon-btn" aria-label="Semana anterior" title="Semana anterior" onclick="changeAgendaWeek(-1)">‹</button><button class="ghost-btn" style="padding:6px 9px; font-size:12px;" onclick="goToAgendaToday()">Hoje</button><button class="icon-btn" aria-label="Próxima semana" title="Próxima semana" onclick="changeAgendaWeek(1)">›</button></div><strong class="agenda-week-period">${start.toLocaleDateString('pt-BR',{day:'2-digit',month:'short'})} — ${week[6].toLocaleDateString('pt-BR',{day:'2-digit',month:'short',year:'numeric'})}</strong><div class="agenda-week-actions"><button class="ghost-btn" style="padding:6px 9px; font-size:12px;" onclick="openAgendaSuggestions()">✨ Sugerir</button><button class="icon-btn" title="Chat IA da Agenda" aria-label="Chat IA da Agenda" onclick="openGlobalAiChat()">💬</button><button class="ghost-btn active-mode" style="padding:6px 9px; font-size:12px;" onclick="setAgendaView('week')">Semana</button><button class="ghost-btn" style="padding:6px 9px; font-size:12px;" onclick="setAgendaView('month')">Mês</button><button class="ghost-btn" style="padding:6px 9px; font-size:12px;" onclick="setAgendaView('report')">Relatório</button></div></div><div class="agenda-source-legend"><i></i> Azul: uso registrado no celular pelo Companion</div><div class="agenda-week-layout"><aside class="agenda-todo" data-agenda-drop="1" data-agenda-date="" data-agenda-time=""><div style="display:flex; justify-content:space-between; align-items:center;"><h3 style="margin:0; font-size:15px;">📌 A fazer</h3><span style="font-size:11px; color:var(--text-faint);">${todos.length}</span></div><p style="font-size:11.5px; color:var(--text-faint);">Solte aqui uma pendência sem dia ou horário.</p>${todos.map(event=>eventCard(event,true)).join('') || `<p style="font-size:12px; color:var(--text-faint);">Arraste para um dia ou horário quando decidir.</p>`}</aside><section class="agenda-week">${week.map(dayColumn).join('')}</section></div></div>`;
 }
 function renderAgendaView(){
   // Garante a migração também para sessões antigas que ficaram abertas ou
@@ -7758,8 +7833,12 @@ async function sendNoteChatMessage(){
   const noteContent = note ? getNoteContent(note.id) : '';
   const aiContext=getAiWorkspaceContext();
   const workspace = (state.notesItems.map(item => `${item.type==='folder'?'Pasta':'Nota'}: ${item.name}`).join('\n') || '(vazio)') + `\n\nAGENDA ATUAL:\n${aiContext.agenda}\n\nROTINA EM ANDAMENTO: ${aiContext.routineActive}\nATALHOS DE ROTINA: ${aiContext.routineActions}\nHISTÓRICO RECENTE:\n${aiContext.activities}\n\nUSO DO APARELHO (relatórios consentidos do Companion):\n${aiContext.companionUsage}`;
-  const decks = (state.decks.map(deck => deck.name).join(', ') || '(nenhum)') + `\n\nAÇÕES ADICIONAIS PERMITIDAS: create_agenda_event {title,date?,time?,endTime?,notes?}; update_agenda_event {eventRef,newTitle?,date?,time?,endTime?,notes?}; delete_agenda_event {eventRef}; complete_agenda_event {eventRef}; reschedule_agenda_events {events:[{eventRef,date,time,endTime?}]}; start_routine {routineRef|name}; pause_routine; stop_routine.`;
-  const prompt = `Você é o agente de IA de um aplicativo pessoal de estudos. Você conversa normalmente e pode executar ações dentro do aplicativo quando o usuário pedir explicitamente. A nota aberta pode ser editada por inteiro ou em partes, sem confirmação adicional. Nunca diga que fez uma ação sem incluí-la em actions: o aplicativo só consegue realizar o que estiver nessa lista. Quando o usuário pedir para procurar/buscar uma imagem na internet e adicioná-la, use search_image: o aplicativo fará a busca real em uma fonte pública e inserirá a imagem com crédito.\n\nNOTA ABERTA: "${note ? note.name : ''}"\nCONTEÚDO DA NOTA (preserve o formato ao editar):\n---\n${noteContent || '(nota vazia)'}\n---\n\nITENS DO CADERNO:\n${workspace}\n\nBARALHOS DISPONÍVEIS: ${decks}\n\nAções permitidas: create_folder {type,name,parentRef?,alias?}; create_note {type,title,content,parentRef?,format?}; edit_note {type,noteRef:'current',mode:'replace'|'append'|'prepend'|'replace_text'|'replace_all',content?,find?,replace?}; create_flashcards {type,deckRef:'linked'?,deckName?,cards:[{front,back,note?}]}; create_deck {type,name,deckType?}; update_deck {type,deckRef|deckName,newName?,color?,aiEnabled?}; create_book {type,title,author?,categories?,status?}; update_book {type,bookRef|bookTitle,newTitle?,author?,status?,rating?,pagesRead?,totalPages?}; navigate {type,view:'notes'|'agenda'|'library'|'home'}; search_image {type,query,alt?,noteRef:'current'}. Para criar uma pasta e colocar notas nela, dê um alias à pasta e use o mesmo valor em parentRef. Só inclua ações solicitadas pelo usuário.\n\nResponda EXCLUSIVAMENTE com JSON válido, sem markdown: {"reply":"resposta curta e natural em português","actions":[...]}. Se não houver ação, use actions vazio.\n\n${history ? `Conversa até agora:\n${history}\n\n` : ''}Usuário: ${question}`;
+  const decks = state.decks.map(deck => deck.name).join(', ') || '(nenhum)';
+  // As ações de agenda/rotina ficavam num parágrafo à parte, bem depois da lista
+  // principal — o modelo tendia a ignorá-las por não parecerem "a lista oficial".
+  // Agora tudo vive numa lista só, então "gerenciar a agenda" pelo chat da nota
+  // funciona igual ao chat global da Agenda.
+  const prompt = `Você é o agente de IA de um aplicativo pessoal de estudos. Você conversa normalmente e pode executar ações dentro do aplicativo quando o usuário pedir explicitamente. A nota aberta pode ser editada por inteiro ou em partes, sem confirmação adicional. Nunca diga que fez uma ação sem incluí-la em actions: o aplicativo só consegue realizar o que estiver nessa lista. Quando o usuário pedir para procurar/buscar uma imagem na internet e adicioná-la, use search_image: o aplicativo fará a busca real em uma fonte pública e inserirá a imagem com crédito. Você também tem liberdade total pra gerenciar a Agenda (criar, editar, concluir, excluir e redistribuir eventos) e a Rotina sempre que o usuário pedir.\n\nNOTA ABERTA: "${note ? note.name : ''}"\nCONTEÚDO DA NOTA (preserve o formato ao editar):\n---\n${noteContent || '(nota vazia)'}\n---\n\nITENS DO CADERNO:\n${workspace}\n\nBARALHOS DISPONÍVEIS: ${decks}\n\nAções permitidas: create_folder {type,name,parentRef?,alias?}; create_note {type,title,content,parentRef?,format?}; edit_note {type,noteRef:'current',mode:'replace'|'append'|'prepend'|'replace_text'|'replace_all',content?,find?,replace?}; create_flashcards {type,deckRef:'linked'?,deckName?,cards:[{front,back,note?}]}; create_deck {type,name,deckType?}; update_deck {type,deckRef|deckName,newName?,color?,aiEnabled?}; create_book {type,title,author?,categories?,status?}; update_book {type,bookRef|bookTitle,newTitle?,author?,status?,rating?,pagesRead?,totalPages?}; navigate {type,view:'notes'|'agenda'|'library'|'home'}; search_image {type,query,alt?,noteRef:'current'}; create_agenda_event {type,title,date?:'YYYY-MM-DD',time?:'HH:MM',endTime?:'HH:MM',notes?}; update_agenda_event {type,eventRef:'id ou título atual',newTitle?,date?,time?,endTime?,notes?}; delete_agenda_event {type,eventRef}; complete_agenda_event {type,eventRef}; reschedule_agenda_events {type,events:[{eventRef,date,time,endTime?}]}; start_routine {type,routineRef|name}; pause_routine {type}; stop_routine {type}. Para alterar ou excluir um evento da agenda, prefira usar o id mostrado em AGENDA ATUAL. Para criar uma pasta e colocar notas nela, dê um alias à pasta e use o mesmo valor em parentRef. Só inclua ações solicitadas pelo usuário.\n\nResponda EXCLUSIVAMENTE com JSON válido, sem markdown: {"reply":"resposta curta e natural em português","actions":[...]}. Se não houver ação, use actions vazio.\n\n${history ? `Conversa até agora:\n${history}\n\n` : ''}Usuário: ${question}`;
 
   try{
     const agentResponse = parseNoteAgentReply(await callGemini(prompt, { maxTokens: 1800, responseMimeType:'application/json' }));
