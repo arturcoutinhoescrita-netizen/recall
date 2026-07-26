@@ -1144,13 +1144,29 @@ function ensureAgendaReviewTasks(){
   const before=state.agendaEvents.length;
   state.agendaEvents=state.agendaEvents.filter(event=>!(event.autoReview&&archivedIds.has(event.deckId)&&!event.completedAt));
   if(state.agendaEvents.length!==before) changed=true;
+  // só pode existir UM lembrete de revisão ativo por baralho. Antes, a busca abaixo
+  // exigia event.date===today — no dia seguinte, um lembrete que tinha "rolado" pra
+  // "A fazer" (rolloverAgendaOverdueTasks zera a data dele) deixava de bater com
+  // essa condição, e um lembrete NOVO era criado, empilhando duplicatas dia após
+  // dia. Também consolida aqui as duplicatas que essa versão anterior já criou:
+  // mantém só o mais recente (o array já fica com os mais novos primeiro) e
+  // descarta o resto.
+  const seenActiveDeck=new Set();
+  const beforeDedupe=state.agendaEvents.length;
+  state.agendaEvents=state.agendaEvents.filter(event=>{
+    if(!event.autoReview || event.completedAt) return true;
+    if(seenActiveDeck.has(event.deckId)) return false;
+    seenActiveDeck.add(event.deckId);
+    return true;
+  });
+  if(state.agendaEvents.length!==beforeDedupe) changed=true;
   state.decks.forEach(deck=>{
     if(deck.archived) return;
     const due=getDueCards(deck.id).length;
-    const task=state.agendaEvents.find(event=>event.autoReview && event.deckId===deck.id && event.date===today);
+    const task=state.agendaEvents.find(event=>event.autoReview && event.deckId===deck.id && !event.completedAt);
     if(due>0 && !task){
       state.agendaEvents.unshift({id:uid(),title:`Revisar ${deck.name}`,date:today,time:null,notes:'Criada automaticamente a partir dos cartões vencidos.',deckId:deck.id,autoReview:true,expectedCount:due,createdAt:Date.now(),updatedAt:Date.now()}); changed=true;
-    }else if(task && !task.completedAt){ task.expectedCount=due; task.title=`Revisar ${deck.name}`; task.updatedAt=Date.now(); changed=true; }
+    }else if(task && task.expectedCount!==due){ task.expectedCount=due; task.title=`Revisar ${deck.name}`; task.updatedAt=Date.now(); changed=true; }
   });
   if(changed) saveData();
 }
@@ -1163,7 +1179,9 @@ function updateAgendaReviewTask(deckId){
     return;
   }
   const today=agendaDateKey(new Date());
-  let task=state.agendaEvents.find(event=>event.autoReview && event.deckId===deckId && event.date===today && !event.completedAt);
+  // mesma correção: não exige mais event.date===today, senão um lembrete que já
+  // tinha rolado pra "A fazer" ficava invisível pra essa função também.
+  let task=state.agendaEvents.find(event=>event.autoReview && event.deckId===deckId && !event.completedAt);
   const remaining=getDueCards(deckId).length;
   if(!task && remaining===0){
     task={id:uid(),title:`Revisar ${deck?deck.name:'baralho'}`,date:today,time:null,notes:'Concluída automaticamente após a sessão de flashcards.',deckId,autoReview:true,expectedCount:0,completedAt:Date.now(),createdAt:Date.now(),updatedAt:Date.now()};
@@ -8369,7 +8387,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='routine'?'active':''}" onclick="openRoutine()">🌿 Rotina</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.108</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.109</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -8392,7 +8410,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.25.108</span>
+        <span class="brand-version">v2026.07.25.109</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -8453,7 +8471,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.108</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.109</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
