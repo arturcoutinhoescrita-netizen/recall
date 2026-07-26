@@ -3143,8 +3143,17 @@ function renderAgendaWeekView(){
   };
   const dayColumn=date=>{
     const key=agendaDateKey(date);
-    const dayTasks=state.agendaEvents.filter(event=>getAgendaEventDateKey(event)===key&&!event.time).filter(event=>!event.autoReview||event.completedAt);
-    const reviews=getAgendaReviewGroups(key).filter(review=>!state.agendaEvents.some(event=>getAgendaEventDateKey(event)===key&&event.deckId===review.deckId&&!event.autoReview));
+    // as revisões de flashcard pendentes (autoReview) já viram um evento de
+    // verdade em state.agendaEvents (criado por ensureAgendaReviewTasks) — antes
+    // esse filtro escondia esse evento de dayTasks até ele ser concluído, então
+    // ele só aparecia pelo card "reviews" abaixo, que é só um botão informativo
+    // sem onpointerdown nenhum. Resultado: essas tarefas nunca foram arrastáveis,
+    // por mais recentes ou antigas que fossem — pareciam "travadas" sempre.
+    const dayTasks=state.agendaEvents.filter(event=>getAgendaEventDateKey(event)===key&&!event.time);
+    // esse card "reviews" continua existindo só pra dias sem o evento de verdade
+    // ainda criado (ex: dias passados, ou antes de ensureAgendaReviewTasks rodar) —
+    // vira um preview informativo, não interativo, que soma cartões vencidos.
+    const reviews=getAgendaReviewGroups(key).filter(review=>!state.agendaEvents.some(event=>getAgendaEventDateKey(event)===key&&event.deckId===review.deckId));
     const scheduled=state.agendaEvents.filter(event=>getAgendaEventDateKey(event)===key&&event.time);
     return `<div class="agenda-week-day ${key===todayKey?'today':''}"><div class="agenda-week-title">${date.toLocaleDateString('pt-BR',{weekday:'short'}).replace('.','')}<br><span style="color:var(--text-faint);">${date.getDate()}</span></div><div class="agenda-day-tasks" data-agenda-drop="1" data-agenda-date="${key}" data-agenda-time=""><span class="agenda-day-tasks-label">TAREFAS DO DIA</span>${dayTasks.map(event=>eventCard(event,true)).join('')}${reviews.map(review=>`<button class="agenda-review-task" onclick="planAgendaReview('${review.deckId}','${key}',${review.count})">🧠 Revisar ${escapeHtml(review.name)} · ${review.count}</button>`).join('')}${!dayTasks.length&&!reviews.length?`<span style="font-size:10px; color:var(--text-faint);">Solte uma tarefa aqui</span>`:''}</div><div class="agenda-day-hours">${timeSlots.map(time=>`<div class="agenda-slot" data-agenda-drop="1" data-agenda-date="${key}" data-agenda-time="${time}" oncontextmenu="openAgendaEventAt(event,'${key}','${time}')"><span class="agenda-slot-time ${time.endsWith(':30')?'half':''}">${time}</span></div>`).join('')}${scheduled.map(renderScheduledAgendaEvent).join('')}</div></div>`;
   };
@@ -8360,7 +8369,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='routine'?'active':''}" onclick="openRoutine()">🌿 Rotina</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.107</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.108</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -8383,7 +8392,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.25.107</span>
+        <span class="brand-version">v2026.07.25.108</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -8444,7 +8453,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.107</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.108</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
