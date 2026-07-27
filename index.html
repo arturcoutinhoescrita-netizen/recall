@@ -428,6 +428,21 @@
   .outline-card-link{ margin-top:8px; width:100%; padding:5px 7px; font-size:10.5px; }
   .outline-add-topic{ width:100%; box-sizing:border-box; margin-top:7px; padding:5px 7px; border:1px solid var(--border); border-radius:7px; background:var(--surface-2); color:var(--text); font:inherit; font-size:10.5px; }
   .outline-add-column{ width:290px; min-width:180px; min-height:42px; border:1px dashed var(--accent-dim); border-radius:12px; background:transparent; color:var(--accent); font:inherit; cursor:pointer; }
+
+  /* visualização de leitura da escaleta ativa -- lista vertical, sem o
+     scroll horizontal do quadro kanban (usada no painel do desktop e no
+     modo tela cheia do celular) */
+  .active-outline-act{ margin-bottom:20px; }
+  .active-outline-act h4{ margin:0 0 9px; font-size:13.5px; }
+  .active-outline-chapter{ padding:9px 10px; border:1px solid var(--border); border-radius:9px; background:var(--surface); margin-bottom:7px; }
+  .active-outline-chapter[role="button"]{ cursor:pointer; }
+  .active-outline-chapter[role="button"]:hover{ border-color:var(--accent-dim); }
+  .active-outline-chapter-title{ font-size:12.5px; font-weight:700; line-height:1.35; }
+  .active-outline-chapter-summary{ margin-top:5px; color:var(--text-muted); font-size:11px; line-height:1.4; white-space:pre-wrap; }
+  .active-outline-view{ position:fixed; inset:0; z-index:60; background:var(--bg); display:flex; flex-direction:column; }
+  .active-outline-view-header{ display:flex; align-items:center; justify-content:space-between; gap:10px; padding:14px 16px; border-bottom:1px solid var(--border); flex-shrink:0; }
+  .active-outline-view-header strong{ font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .active-outline-view-scroll{ flex:1; min-height:0; overflow-y:auto; padding:16px; }
   .notes-editor-header{ display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; }
   .note-writing-stats{ font-size:11px; color:var(--text-faint); margin-top:3px; font-variant-numeric:tabular-nums; }
   .notes-mode-toggle{ display:flex; gap:6px; }
@@ -858,7 +873,15 @@ let state = {
   // tela do app (baralho, agenda, etc.) enquanto a aba estiver aberta.
   floatingNotes: [], // [{noteId,x,y,width,height,opacity,z}]
   floatingColorMenuFor: null, // id da nota flutuante com o popup de cor aberto (só estado de UI)
-  notesHighlightId: null // pisca a linha da nota na árvore depois de "Localizar no gerenciador" (só estado de UI)
+  notesHighlightId: null, // pisca a linha da nota na árvore depois de "Localizar no gerenciador" (só estado de UI)
+  // modo escaleta ativa: só uma por vez, pra consultar sem sair da nota que
+  // está sendo escrita. activeOutlineId é a designação durável (persiste);
+  // activeOutlinePanelOpen é só o estado de "o painel do desktop está
+  // mostrando a escaleta agora, em vez do chat" (não persiste, como o resto
+  // do modo de exibição das notas).
+  activeOutlineId: null,
+  activeOutlineScroll: {outlineId:null, top:0}, // lembra onde parou de ler no celular
+  activeOutlinePanelOpen: false
 };
 
 function uid(){ return Math.random().toString(36).slice(2,10); }
@@ -946,6 +969,9 @@ async function loadData(){
             opacity: Math.min(1, Math.max(0.2, Number(f.opacity)||1)),
             z: Number(f.z)||10
           }));
+          // limpa a escaleta ativa se ela foi excluída em outro aparelho enquanto este ficou fechado
+          state.activeOutlineId = (d.activeOutlineId && state.notesItems.some(n=>n.id===d.activeOutlineId && n.type==='outline')) ? d.activeOutlineId : null;
+          state.activeOutlineScroll = (d.activeOutlineScroll && d.activeOutlineScroll.outlineId) ? { outlineId: d.activeOutlineScroll.outlineId, top: Number(d.activeOutlineScroll.top)||0 } : {outlineId:null, top:0};
           migrateLegacyInlineNoteContent(d.notesItems);
           if(d.geminiApiKey) setApiKey(d.geminiApiKey);
           if(d.geminiApiKey2) setApiKey2(d.geminiApiKey2);
@@ -980,6 +1006,9 @@ async function loadData(){
             opacity: Math.min(1, Math.max(0.2, Number(f.opacity)||1)),
             z: Number(f.z)||10
           }));
+          // limpa a escaleta ativa se ela foi excluída em outro aparelho enquanto este ficou fechado
+          state.activeOutlineId = (d.activeOutlineId && state.notesItems.some(n=>n.id===d.activeOutlineId && n.type==='outline')) ? d.activeOutlineId : null;
+          state.activeOutlineScroll = (d.activeOutlineScroll && d.activeOutlineScroll.outlineId) ? { outlineId: d.activeOutlineScroll.outlineId, top: Number(d.activeOutlineScroll.top)||0 } : {outlineId:null, top:0};
           migrateLegacyInlineNoteContent(d.notesItems);
           // sincroniza a chave do Gemini entre aparelhos logados na mesma conta —
           // assim não precisa configurar de novo em cada navegador/celular.
@@ -1070,7 +1099,7 @@ function syncCompanionSessionsToAgenda(reports){
 // antigo termine depois e sobrescreva uma criação mais nova no armazenamento.
 let dataSaveQueue = Promise.resolve();
 function saveData(){
-  const payload = JSON.parse(JSON.stringify({decks: state.decks, cards: state.cards, stats: state.stats, activities: state.activities, agendaEvents: state.agendaEvents, routineActivities: state.routineActivities, routineActive: state.routineActive, routineLastCheckInAt: state.routineLastCheckInAt, globalAiMessages: state.globalAiMessages, books: state.books, notesItems: state.notesItems, sidebarAutoHide: state.sidebarAutoHide, notesChatWidth: state.notesChatWidth, notesChatHidden: state.notesChatHidden, lastDeckId: state.lastDeckId, lastNoteId: state.lastNoteId, floatingNotes: state.floatingNotes, geminiApiKey: getApiKey(), geminiApiKey2: getApiKey2(), booksApiKey: getBooksApiKey()}));
+  const payload = JSON.parse(JSON.stringify({decks: state.decks, cards: state.cards, stats: state.stats, activities: state.activities, agendaEvents: state.agendaEvents, routineActivities: state.routineActivities, routineActive: state.routineActive, routineLastCheckInAt: state.routineLastCheckInAt, globalAiMessages: state.globalAiMessages, books: state.books, notesItems: state.notesItems, sidebarAutoHide: state.sidebarAutoHide, notesChatWidth: state.notesChatWidth, notesChatHidden: state.notesChatHidden, lastDeckId: state.lastDeckId, lastNoteId: state.lastNoteId, floatingNotes: state.floatingNotes, activeOutlineId: state.activeOutlineId, activeOutlineScroll: state.activeOutlineScroll, geminiApiKey: getApiKey(), geminiApiKey2: getApiKey2(), booksApiKey: getBooksApiKey()}));
   const persist = async () => {
     for(let attempt=0; attempt<2; attempt++){
       try{
@@ -5623,6 +5652,90 @@ function focusPendingOutlineAnchor(){
   if(!pending.anchor){ showToast('Nota aberta. Informe o texto inicial do capítulo no vínculo para ir ao ponto exato.'); return; }
   setTimeout(()=>{ try{ if(!window.find(pending.anchor,false,false,true,false,false,false)) showToast('Nota aberta, mas não encontrei o texto inicial do capítulo.'); }catch(e){} },80);
 }
+/* ============ MODO ESCALETA ATIVA ============
+   Só uma escaleta pode estar ativa por vez -- activeOutlineId é um valor
+   único, então ativar uma nova já desativa a anterior sozinho, sem precisar
+   de nenhuma limpeza extra. */
+function toggleActiveOutline(outlineId){
+  const outline = state.notesItems.find(n=>n.id===outlineId && n.type==='outline');
+  if(!outline) return;
+  const wasActive = state.activeOutlineId === outlineId;
+  state.activeOutlineId = wasActive ? null : outlineId;
+  if(!state.activeOutlineId) state.activeOutlinePanelOpen = false; // desativou -- sai do modo painel também
+  saveData(); render();
+  showToast(wasActive ? `"${outline.name}" desativada.` : `"${outline.name}" ativada como escaleta ativa.`);
+}
+/* Visualização de LEITURA da escaleta ativa (não é a mesma tela do quadro
+   kanban): lista vertical dos atos em ordem, cada um com seus capítulos —
+   pensada pra consultar rapidamente enquanto se escreve outra nota, sem o
+   scroll horizontal do quadro. Clicar num capítulo com nota vinculada abre
+   essa nota (reaproveita openOutlineCardNote, mesmo comportamento do quadro). */
+function renderActiveOutlineReadView(outline){
+  const data = getOutlineData(outline);
+  const labels = {todo:'Para escrever', writing:'Escrevendo', ready:'Pronto'};
+  return `<div class="active-outline-acts">${data.columns.map(column=>{
+    const cards = data.cards.filter(card=>card.columnId===column.id);
+    return `<section class="active-outline-act">
+      <h4>${escapeHtml(column.name)} <span style="color:var(--text-faint); font-weight:400;">${cards.length}</span></h4>
+      ${cards.length ? cards.map(card=>`
+      <div class="active-outline-chapter" ${card.linkedNoteId?`onclick="openOutlineCardNote('${outline.id}','${card.id}')" role="button" tabindex="0"`:''} title="${card.linkedNoteId?'Abrir capítulo vinculado':''}">
+        <div class="active-outline-chapter-title">${escapeHtml(card.title)}${card.linkedNoteId?' ↗':''}</div>
+        <span class="outline-status ${escapeHtml(card.status)}">${labels[card.status]||labels.todo}</span>
+        ${card.summary ? `<div class="active-outline-chapter-summary">${escapeHtml(card.summary)}</div>` : ''}
+      </div>`).join('') : `<p style="font-size:11.5px; color:var(--text-faint); margin:0 0 10px;">Nenhum capítulo neste ato ainda.</p>`}
+    </section>`;
+  }).join('')}</div>`;
+}
+/* Abre a visualização da escaleta ativa: no celular, um modal em tela cheia
+   (memoriza a posição de leitura pra reabrir no mesmo ponto); no desktop, o
+   MESMO botão alterna o painel lateral entre o Chat da IA e a escaleta (ver
+   renderActiveOutlinePanel() no shell do render()). */
+function toggleActiveOutlineView(){
+  if(!state.activeOutlineId){ showToast('Nenhuma escaleta ativa. Ative uma pela árvore de notas (ícone 🎯).', 'error'); return; }
+  const outline = state.notesItems.find(n=>n.id===state.activeOutlineId && n.type==='outline');
+  if(!outline){ showToast('A escaleta ativa não existe mais.', 'error'); state.activeOutlineId=null; saveData(); render(); return; }
+  if(isDesktopLayout()){
+    state.activeOutlinePanelOpen = !state.activeOutlinePanelOpen;
+    if(state.activeOutlinePanelOpen) state.notesChatHidden = false; // garante que o painel fique visível
+    render();
+    return;
+  }
+  state.modal = {type:'active-outline-view', outlineId: outline.id};
+  render(); // a restauração da posição de leitura acontece dentro do próprio render()
+}
+function closeActiveOutlineView(){
+  const m = state.modal;
+  if(m && m.type==='active-outline-view'){
+    const el = document.querySelector('.active-outline-view-scroll');
+    state.activeOutlineScroll = { outlineId: m.outlineId, top: el ? el.scrollTop : 0 };
+  }
+  state.modal = null;
+  saveData(); render();
+}
+function renderActiveOutlineViewModal(m){
+  const outline = state.notesItems.find(n=>n.id===m.outlineId && n.type==='outline');
+  return `<div class="active-outline-view">
+    <div class="active-outline-view-header">
+      <strong>🧩 ${escapeHtml(outline ? outline.name : 'Escaleta')}</strong>
+      <button class="icon-btn" title="Fechar" onclick="closeActiveOutlineView()">✕</button>
+    </div>
+    <div class="active-outline-view-scroll">${outline ? renderActiveOutlineReadView(outline) : `<p style="color:var(--text-faint); font-size:13px;">Essa escaleta não existe mais.</p>`}</div>
+  </div>`;
+}
+function renderActiveOutlinePanel(){
+  const outline = state.notesItems.find(n=>n.id===state.activeOutlineId && n.type==='outline');
+  if(!outline){
+    state.activeOutlineId = null; state.activeOutlinePanelOpen = false;
+    return `<div style="padding:16px; font-size:12.5px; color:var(--text-faint);">A escaleta ativa não existe mais.</div>`;
+  }
+  return `<div style="display:flex; flex-direction:column; height:100%; margin:-14px; width:calc(100% + 28px);">
+    <div class="active-outline-view-header" style="padding:10px 14px;">
+      <strong style="font-size:12.5px;">🧩 ${escapeHtml(outline.name)}</strong>
+      <button class="icon-btn" style="width:24px; height:24px; font-size:11px;" title="Voltar ao chat" onclick="toggleActiveOutlineView()">✕</button>
+    </div>
+    <div class="active-outline-view-scroll" style="padding:14px;">${renderActiveOutlineReadView(outline)}</div>
+  </div>`;
+}
 function renderOutlineEditor(outline){
   const data=getOutlineData(outline);
   const labels={todo:'Para escrever',writing:'Escrevendo',ready:'Pronto'};
@@ -5911,6 +6024,8 @@ function deleteNoteItem(id){
     state.notesItems = state.notesItems.filter(n => !toRemove.has(n.id));
     toRemove.forEach(rid => { delete noteContentCache[rid]; delete noteContentLoading[rid]; delete noteContentError[rid]; });
     if(toRemove.has(state.currentNoteId)) state.currentNoteId = null;
+    state.floatingNotes = state.floatingNotes.filter(f=>!toRemove.has(f.noteId));
+    if(toRemove.has(state.activeOutlineId)){ state.activeOutlineId = null; state.activeOutlinePanelOpen = false; }
     saveData(); render();
     showToast('Excluído.');
   }, 'Excluir');
@@ -8690,6 +8805,10 @@ function render(){
   if(prevAgendaHourScrolls.length){
     document.querySelectorAll('.agenda-day-hours').forEach((el,index)=>{ el.scrollTop=prevAgendaHourScrolls[index]||0; });
   }
+  if(state.modal?.type==='active-outline-view' && state.activeOutlineScroll.outlineId===state.modal.outlineId){
+    const outlineScrollEl = document.querySelector('.active-outline-view-scroll');
+    if(outlineScrollEl) outlineScrollEl.scrollTop = state.activeOutlineScroll.top;
+  }
   if(state.pageTransition){
     if(pageTransitionTimer) clearTimeout(pageTransitionTimer);
     pageTransitionTimer=setTimeout(()=>{ state.pageTransition=false; app.classList.remove('page-transition'); },280);
@@ -8765,7 +8884,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='routine'?'active':''}" onclick="openRoutine()">🌿 Rotina</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.123</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.124</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -8788,7 +8907,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.25.123</span>
+        <span class="brand-version">v2026.07.25.124</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -8849,7 +8968,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.123</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.124</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
@@ -8967,7 +9086,7 @@ function renderNotesView(){
       `}
     </div>
   </div>
-  ${isDesktopLayout() && !state.notesChatHidden && state.modal && state.modal.type==='note-chat' ? `<div class="notes-chat-resizer" onmousedown="startNotesChatResize(event)" title="Arraste para ajustar a largura do chat"></div>${renderNoteChatModal(state.modal, true)}` : ''}
+  ${isDesktopLayout() && !state.notesChatHidden && state.activeOutlinePanelOpen ? `<div class="notes-chat-resizer" onmousedown="startNotesChatResize(event)" title="Arraste para ajustar a largura do painel"></div><aside class="desktop-note-chat" style="width:${state.notesChatWidth||340}px;">${renderActiveOutlinePanel()}</aside>` : (isDesktopLayout() && !state.notesChatHidden && state.modal && state.modal.type==='note-chat' ? `<div class="notes-chat-resizer" onmousedown="startNotesChatResize(event)" title="Arraste para ajustar a largura do chat"></div>${renderNoteChatModal(state.modal, true)}` : '')}
   </div>
   `;
 }
@@ -9081,6 +9200,7 @@ function renderNotesTreeLevel(parentId, depth){
     <div class="notes-tree-row ${state.currentNoteId===item.id?'active':''}" style="padding-left:${depth*16+16}px;" draggable="true" ondragstart="onNoteDragStart(event,'${item.id}')">
       <div class="notes-tree-label" onclick="openNote('${item.id}')"><span>🧩</span> ${escapeHtml(item.name)}</div>
       <div class="notes-tree-actions">
+        <button class="icon-btn ${state.activeOutlineId===item.id?'active':''}" style="width:22px;height:22px;font-size:11px;" title="${state.activeOutlineId===item.id?'Desativar escaleta ativa':'Ativar como escaleta ativa'}" onclick="event.stopPropagation(); toggleActiveOutline('${item.id}')">🎯</button>
         <button class="icon-btn" style="width:22px;height:22px;font-size:11px;" title="Renomear" onclick="event.stopPropagation(); openNotesRenameModal('${item.id}')">✏️</button>
         <button class="icon-btn" style="width:22px;height:22px;font-size:11px;" title="Excluir" onclick="event.stopPropagation(); deleteNoteItem('${item.id}')">🗑</button>
       </div>
@@ -9177,6 +9297,7 @@ function renderNoteEditor(note){
     <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
       <button class="icon-btn" style="${note.favorite?'color:#F5A623;':''}" title="${note.favorite?'Remover dos favoritos':'Adicionar aos favoritos'}" onclick="toggleNoteFavorite('${note.id}')">${note.favorite?'★':'☆'}</button>
       ${isDesktopLayout() ? `<button class="icon-btn ${state.floatingNotes.some(f=>f.noteId===note.id)?'active':''}" title="Transformar em nota flutuante (post-it) — atalho: Ctrl+Shift+P" onclick="toggleFloatingNote('${note.id}')">📌</button>` : ''}
+      <button class="icon-btn ${state.activeOutlinePanelOpen?'active':''}" style="${state.activeOutlineId?'':'opacity:.45;'}" title="${state.activeOutlineId?`Ver escaleta ativa: ${escapeHtml(state.notesItems.find(n=>n.id===state.activeOutlineId)?.name||'')}`:'Nenhuma escaleta ativa — ative uma pela árvore de notas'}" onclick="toggleActiveOutlineView()">🎬</button>
       <button class="icon-btn" title="Exportar esta nota como arquivo HTML" onclick="exportNoteAsHtml('${note.id}')">⇩</button>
       <button class="icon-btn" title="Sumário (títulos H1/H2/H3)" onclick="openNoteTocModal()">📑</button>
       <button class="icon-btn" title="Configuração de página" onclick="openNotePageSettings()">⚙️</button>
@@ -10457,6 +10578,7 @@ function renderAppOptionsModal(){
 function renderModal(overrideModal){
   const m = overrideModal || state.modal;
   if(m.type === 'spaced-repetition') return renderSpacedRepetitionModal(m);
+  if(m.type === 'active-outline-view') return renderActiveOutlineViewModal(m);
   if(m.type === 'agenda-event') return renderAgendaEventModal(m);
   if(m.type === 'agenda-suggestions') return renderAgendaSuggestionsModal(m);
   if(m.type === 'routine-action') return renderRoutineActionModal(m);
