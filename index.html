@@ -207,6 +207,7 @@
   }
   .icon-btn:hover{ color:var(--error); border-color:var(--error); }
   .icon-btn:active{ transform:scale(0.92); color:var(--error); border-color:var(--error); }
+  .icon-btn.active{ color:var(--accent); border-color:var(--accent); }
 
   .stat-row{ display:flex; gap:10px; margin:22px 0 26px 0; }
   .stat-chip{
@@ -402,6 +403,8 @@
   .notes-find-count{ font-size:11.5px; color:var(--text-faint); white-space:nowrap; min-width:36px; text-align:center; }
   .notes-tree-row.active{ background:var(--accent-soft); }
   .notes-tree-row.active .notes-tree-label{ color:var(--accent); font-weight:600; }
+  .notes-tree-row-flash{ animation:notes-tree-row-flash 1.8s ease-out; }
+  @keyframes notes-tree-row-flash{ 0%,35%{ background:var(--accent-soft); } 100%{ background:transparent; } }
   .notes-tree-label{ flex:1; font-size:13px; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:flex; align-items:center; gap:6px; }
   .notes-tree-actions{ display:flex; gap:3px; flex-shrink:0; }
   .note-color-dot{ width:11px; height:11px; border-radius:50%; flex-shrink:0; box-shadow:0 0 0 1px rgba(255,255,255,.16); }
@@ -428,6 +431,47 @@
   .notes-editor-header{ display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; }
   .note-writing-stats{ font-size:11px; color:var(--text-faint); margin-top:3px; font-variant-numeric:tabular-nums; }
   .notes-mode-toggle{ display:flex; gap:6px; }
+
+  /* notas flutuantes ("post-it") — só desktop */
+  .floating-note{
+    position:fixed; display:flex; flex-direction:column; min-width:220px; min-height:180px;
+    background:var(--surface); border:2px solid var(--accent); border-radius:14px;
+    box-shadow:0 14px 34px rgba(0,0,0,0.38); overflow:hidden; z-index:10;
+  }
+  .floating-note-header{
+    display:flex; align-items:center; gap:2px; padding:5px 6px; flex-shrink:0;
+    background:var(--bg-2); border-bottom:1px solid var(--border); cursor:move; user-select:none;
+  }
+  .floating-note-header .icon-btn{ width:24px; height:24px; font-size:12px; flex-shrink:0; }
+  .floating-note-header .icon-btn.active{ color:var(--accent); }
+  .floating-note-opacity{
+    width:54px; margin-left:auto; accent-color:var(--accent); cursor:pointer; flex-shrink:0;
+  }
+  .floating-note-title{
+    padding:6px 10px 2px; font-size:12px; font-weight:700; white-space:nowrap; overflow:hidden;
+    text-overflow:ellipsis; flex-shrink:0; cursor:move; user-select:none;
+  }
+  .floating-note-body{
+    flex:1; min-height:0; overflow-y:auto; padding:4px 10px 10px; font-size:13px; line-height:1.5;
+    background:transparent; color:var(--text); border:none; outline:none; resize:none; font-family:inherit;
+  }
+  .floating-note-color-menu{
+    position:absolute; top:28px; left:0; z-index:10; display:flex; gap:6px; flex-wrap:wrap; width:150px;
+    padding:8px; background:var(--surface); border:1px solid var(--border); border-radius:10px;
+    box-shadow:0 10px 24px rgba(0,0,0,.25);
+  }
+  .floating-note-color-menu button{ width:20px; height:20px; border-radius:50%; border:1px solid var(--border); cursor:pointer; }
+  /* alças de redimensionar: finas nas bordas, quadradinho maior nos cantos — invisíveis
+     até o hover, pra manter o visual minimalista pedido. */
+  .floating-note-resize{ position:absolute; }
+  .floating-note-resize-e{ top:6px; right:-3px; bottom:6px; width:7px; cursor:ew-resize; }
+  .floating-note-resize-w{ top:6px; left:-3px; bottom:6px; width:7px; cursor:ew-resize; }
+  .floating-note-resize-s{ left:6px; right:6px; bottom:-3px; height:7px; cursor:ns-resize; }
+  .floating-note-resize-n{ left:6px; right:6px; top:-3px; height:7px; cursor:ns-resize; }
+  .floating-note-resize-se{ right:-3px; bottom:-3px; width:12px; height:12px; cursor:nwse-resize; }
+  .floating-note-resize-nw{ left:-3px; top:-3px; width:12px; height:12px; cursor:nwse-resize; }
+  .floating-note-resize-ne{ right:-3px; top:-3px; width:12px; height:12px; cursor:nesw-resize; }
+  .floating-note-resize-sw{ left:-3px; bottom:-3px; width:12px; height:12px; cursor:nesw-resize; }
   .notes-mode-toggle .ghost-btn{ padding:6px 12px; font-size:12px; }
   .notes-mode-toggle .ghost-btn.active-mode{ color:var(--accent); border-color:var(--accent-dim); background:var(--accent-soft); }
   .notes-toolbar{ display:flex; gap:6px; flex-wrap:wrap; background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:6px; flex-shrink:0; }
@@ -809,7 +853,12 @@ let state = {
   // A tela inicial permanece neutra. Estes ids só servem para retomar o
   // último conteúdo quando a pessoa escolher Baralhos ou Notas novamente.
   lastDeckId: null,
-  lastNoteId: null
+  lastNoteId: null,
+  // notas flutuantes ("post-it"): só no desktop, ficam por cima de qualquer
+  // tela do app (baralho, agenda, etc.) enquanto a aba estiver aberta.
+  floatingNotes: [], // [{noteId,x,y,width,height,opacity,z}]
+  floatingColorMenuFor: null, // id da nota flutuante com o popup de cor aberto (só estado de UI)
+  notesHighlightId: null // pisca a linha da nota na árvore depois de "Localizar no gerenciador" (só estado de UI)
 };
 
 function uid(){ return Math.random().toString(36).slice(2,10); }
@@ -888,6 +937,15 @@ async function loadData(){
           state.notesChatHidden = !!d.notesChatHidden;
           state.lastDeckId = d.lastDeckId || null;
           state.lastNoteId = d.lastNoteId || null;
+          // descarta notas flutuantes de notas que foram excluídas em outro
+          // aparelho enquanto este ficou fechado.
+          state.floatingNotes = (Array.isArray(d.floatingNotes) ? d.floatingNotes : []).filter(f=>f && f.noteId && state.notesItems.some(n=>n.id===f.noteId)).map(f=>({
+            noteId: f.noteId,
+            x: Number(f.x)||80, y: Number(f.y)||90,
+            width: Math.max(220, Number(f.width)||300), height: Math.max(180, Number(f.height)||320),
+            opacity: Math.min(1, Math.max(0.2, Number(f.opacity)||1)),
+            z: Number(f.z)||10
+          }));
           migrateLegacyInlineNoteContent(d.notesItems);
           if(d.geminiApiKey) setApiKey(d.geminiApiKey);
           if(d.geminiApiKey2) setApiKey2(d.geminiApiKey2);
@@ -913,6 +971,15 @@ async function loadData(){
           state.notesChatHidden = !!d.notesChatHidden;
           state.lastDeckId = d.lastDeckId || null;
           state.lastNoteId = d.lastNoteId || null;
+          // descarta notas flutuantes de notas que foram excluídas em outro
+          // aparelho enquanto este ficou fechado.
+          state.floatingNotes = (Array.isArray(d.floatingNotes) ? d.floatingNotes : []).filter(f=>f && f.noteId && state.notesItems.some(n=>n.id===f.noteId)).map(f=>({
+            noteId: f.noteId,
+            x: Number(f.x)||80, y: Number(f.y)||90,
+            width: Math.max(220, Number(f.width)||300), height: Math.max(180, Number(f.height)||320),
+            opacity: Math.min(1, Math.max(0.2, Number(f.opacity)||1)),
+            z: Number(f.z)||10
+          }));
           migrateLegacyInlineNoteContent(d.notesItems);
           // sincroniza a chave do Gemini entre aparelhos logados na mesma conta —
           // assim não precisa configurar de novo em cada navegador/celular.
@@ -1003,7 +1070,7 @@ function syncCompanionSessionsToAgenda(reports){
 // antigo termine depois e sobrescreva uma criação mais nova no armazenamento.
 let dataSaveQueue = Promise.resolve();
 function saveData(){
-  const payload = JSON.parse(JSON.stringify({decks: state.decks, cards: state.cards, stats: state.stats, activities: state.activities, agendaEvents: state.agendaEvents, routineActivities: state.routineActivities, routineActive: state.routineActive, routineLastCheckInAt: state.routineLastCheckInAt, globalAiMessages: state.globalAiMessages, books: state.books, notesItems: state.notesItems, sidebarAutoHide: state.sidebarAutoHide, notesChatWidth: state.notesChatWidth, notesChatHidden: state.notesChatHidden, lastDeckId: state.lastDeckId, lastNoteId: state.lastNoteId, geminiApiKey: getApiKey(), geminiApiKey2: getApiKey2(), booksApiKey: getBooksApiKey()}));
+  const payload = JSON.parse(JSON.stringify({decks: state.decks, cards: state.cards, stats: state.stats, activities: state.activities, agendaEvents: state.agendaEvents, routineActivities: state.routineActivities, routineActive: state.routineActive, routineLastCheckInAt: state.routineLastCheckInAt, globalAiMessages: state.globalAiMessages, books: state.books, notesItems: state.notesItems, sidebarAutoHide: state.sidebarAutoHide, notesChatWidth: state.notesChatWidth, notesChatHidden: state.notesChatHidden, lastDeckId: state.lastDeckId, lastNoteId: state.lastNoteId, floatingNotes: state.floatingNotes, geminiApiKey: getApiKey(), geminiApiKey2: getApiKey2(), booksApiKey: getBooksApiKey()}));
   const persist = async () => {
     for(let attempt=0; attempt<2; attempt++){
       try{
@@ -5203,6 +5270,10 @@ function renderEpubReaderView(){
 let noteContentCache = {};
 let noteContentLoading = {};
 let noteContentError = {};
+// base 10: fica acima do conteúdo normal da página, mas abaixo do modal-overlay
+// (z-index 50) e do toast (z-index 100) -- uma nota flutuante nunca deve tampar
+// uma caixa de confirmação nem um aviso.
+let floatingNoteZCounter = 10;
 const noteScrollPositions = Object.create(null);
 function rememberNoteScroll(noteId){
   if(!noteId) return;
@@ -5647,6 +5718,175 @@ function toggleNoteFavorite(id){
   const item = state.notesItems.find(n=>n.id===id && n.type==='note');
   if(!item) return;
   item.favorite = !item.favorite; item.updatedAt=Date.now(); saveData(); render();
+}
+/* ============ NOTAS FLUTUANTES ("post-it") — só desktop ============
+   Ficam por cima de qualquer tela do app (baralho, agenda, etc.) enquanto a
+   aba estiver aberta. De propósito NÃO tocam em state.currentNoteId: abrir
+   uma nota flutuante não pode fechar/trocar o Chat da IA, que continua preso
+   à nota normal aberta no editor principal. */
+function toggleFloatingNote(noteId){
+  if(!isDesktopLayout()){ showToast('Notas flutuantes só estão disponíveis no desktop.', 'error'); return; }
+  const note = state.notesItems.find(n=>n.id===noteId && n.type==='note');
+  if(!note) return;
+  if(state.floatingNotes.some(f=>f.noteId===noteId)){ closeFloatingNote(noteId); return; }
+  floatingNoteZCounter++;
+  // cascata leve pra notas abertas em sequência não nascerem todas empilhadas
+  // exatamente no mesmo lugar, escondendo uma atrás da outra.
+  const cascade = state.floatingNotes.length % 6;
+  state.floatingNotes.push({ noteId, x:90+cascade*28, y:90+cascade*24, width:300, height:320, opacity:1, z:floatingNoteZCounter });
+  ensureFloatingNoteContentLoaded(noteId);
+  saveData(); render();
+}
+function ensureFloatingNoteContentLoaded(id){
+  if(noteContentCache[id] !== undefined || noteContentLoading[id]) return;
+  noteContentLoading[id] = true;
+  delete noteContentError[id];
+  render();
+  withTimeout(loadNoteContentFromR2(id), 12000, 'note_content_load_timeout').then(content => {
+    const note = state.notesItems.find(n=>n.id===id);
+    noteContentCache[id] = (note && note.format === 'plain') ? normalizePlainNoteContentForEditing(content) : content;
+    delete noteContentLoading[id];
+    render();
+  }).catch(err => {
+    console.error('Falha ao carregar conteúdo da nota flutuante', err);
+    delete noteContentLoading[id];
+    noteContentError[id] = true;
+    render();
+  });
+}
+function closeFloatingNote(noteId){
+  // "fechar salva automaticamente": o conteúdo já vai sendo salvo sozinho a
+  // cada edição (onNoteContentInput, com debounce de 600ms) -- essa chamada
+  // extra aqui só garante que uma edição feita bem no instante de fechar não
+  // fique presa esperando o debounce. Não mexe no temporizador compartilhado
+  // (notesSaveTimer): cancelá-lo aqui poderia derrubar o salvamento pendente
+  // de OUTRA nota sendo editada ao mesmo tempo no editor principal.
+  if(noteContentCache[noteId] !== undefined) saveNoteContentToR2(noteId, noteContentCache[noteId]);
+  state.floatingNotes = state.floatingNotes.filter(f=>f.noteId!==noteId);
+  state.floatingColorMenuFor = state.floatingColorMenuFor===noteId ? null : state.floatingColorMenuFor;
+  saveData(); render();
+}
+function locateFloatingNoteInManager(noteId){
+  const note = state.notesItems.find(n=>n.id===noteId);
+  if(!note) return;
+  // expande toda a cadeia de pastas-mãe até a raiz -- senão a nota pode estar
+  // escondida dentro de uma pasta fechada e o "localizar" não acha nada.
+  const collapsed = state.notesCollapsedFolders || (state.notesCollapsedFolders=[]);
+  let parentId = note.parentId;
+  while(parentId){
+    const idx = collapsed.indexOf(parentId);
+    if(idx>=0) collapsed.splice(idx,1);
+    const parent = state.notesItems.find(n=>n.id===parentId);
+    parentId = parent ? parent.parentId : null;
+  }
+  state.view = 'notes';
+  state.notesHighlightId = noteId;
+  render();
+  requestAnimationFrame(()=>{
+    const el = document.querySelector(`[data-note-id="${noteId}"]`);
+    if(el) el.scrollIntoView({block:'center', behavior:'smooth'});
+  });
+  setTimeout(()=>{ if(state.notesHighlightId===noteId){ state.notesHighlightId=null; render(); } }, 1800);
+}
+function toggleFloatingNoteColorMenu(noteId){
+  state.floatingColorMenuFor = state.floatingColorMenuFor===noteId ? null : noteId;
+  render();
+}
+function pickFloatingNoteColor(noteId, color){
+  state.floatingColorMenuFor = null;
+  setNoteItemColor(noteId, color); // já salva e renderiza
+}
+function previewFloatingNoteOpacity(noteId, value){
+  // só reflexo visual imediato enquanto o slider é arrastado -- sem
+  // saveData()/render() a cada movimento, só ao soltar (onchange, ver commit).
+  const el = document.getElementById(`floating-note-${noteId}`);
+  if(el) el.style.opacity = Math.max(0.2, Math.min(1, Number(value)/100));
+}
+function commitFloatingNoteOpacity(noteId, value){
+  const f = state.floatingNotes.find(x=>x.noteId===noteId);
+  if(!f) return;
+  f.opacity = Math.max(0.2, Math.min(1, Number(value)/100));
+  saveData();
+}
+function bringFloatingNoteToFront(noteId){
+  const f = state.floatingNotes.find(x=>x.noteId===noteId);
+  if(!f) return;
+  floatingNoteZCounter++;
+  f.z = floatingNoteZCounter;
+  const el = document.getElementById(`floating-note-${noteId}`);
+  if(el) el.style.zIndex = f.z; // direto no DOM -- não precisa de render() só pra reordenar
+}
+/* Arrastar e redimensionar seguem o mesmo padrão já usado no arraste da
+   Agenda: Pointer Events (funciona em mouse e toque com o mesmo código),
+   manipulação direta do estilo do elemento durante o gesto (sem render() a
+   cada pixel movido, senão perderia fluidez e recriaria a nota flutuante do
+   zero a cada frame), e só grava em state.floatingNotes + saveData() no
+   pointerup, quando o gesto termina de verdade. */
+let floatingNoteDragState = null;
+function startFloatingNoteDrag(event, noteId){
+  if(event.target.closest('button, input, [contenteditable="true"], textarea')) return;
+  event.preventDefault();
+  const f = state.floatingNotes.find(x=>x.noteId===noteId);
+  if(!f) return;
+  bringFloatingNoteToFront(noteId);
+  floatingNoteDragState = { noteId, startX:event.clientX, startY:event.clientY, startLeft:f.x, startTop:f.y };
+  window.addEventListener('pointermove', moveFloatingNoteDrag);
+  window.addEventListener('pointerup', endFloatingNoteDrag, {once:true});
+}
+function moveFloatingNoteDrag(event){
+  const d = floatingNoteDragState; if(!d) return;
+  const el = document.getElementById(`floating-note-${d.noteId}`);
+  if(!el) return;
+  el.style.left = `${Math.max(0, d.startLeft + (event.clientX - d.startX))}px`;
+  el.style.top = `${Math.max(0, d.startTop + (event.clientY - d.startY))}px`;
+}
+function endFloatingNoteDrag(){
+  window.removeEventListener('pointermove', moveFloatingNoteDrag);
+  const d = floatingNoteDragState; floatingNoteDragState = null;
+  if(!d) return;
+  const el = document.getElementById(`floating-note-${d.noteId}`);
+  const f = state.floatingNotes.find(x=>x.noteId===d.noteId);
+  if(!el || !f) return;
+  f.x = parseFloat(el.style.left) || f.x;
+  f.y = parseFloat(el.style.top) || f.y;
+  saveData();
+}
+const FLOATING_NOTE_MIN_W = 220, FLOATING_NOTE_MIN_H = 180;
+let floatingNoteResizeState = null;
+function startFloatingNoteResize(event, noteId, dir){
+  event.preventDefault();
+  event.stopPropagation(); // não deixa o mousedown "vazar" pro header e iniciar um arraste junto
+  const f = state.floatingNotes.find(x=>x.noteId===noteId);
+  if(!f) return;
+  bringFloatingNoteToFront(noteId);
+  floatingNoteResizeState = { noteId, dir, startX:event.clientX, startY:event.clientY, startLeft:f.x, startTop:f.y, startW:f.width, startH:f.height };
+  window.addEventListener('pointermove', moveFloatingNoteResize);
+  window.addEventListener('pointerup', endFloatingNoteResize, {once:true});
+}
+function moveFloatingNoteResize(event){
+  const r = floatingNoteResizeState; if(!r) return;
+  const el = document.getElementById(`floating-note-${r.noteId}`);
+  if(!el) return;
+  const dx = event.clientX - r.startX, dy = event.clientY - r.startY;
+  let x = r.startLeft, y = r.startTop, w = r.startW, h = r.startH;
+  if(r.dir.includes('e')) w = Math.max(FLOATING_NOTE_MIN_W, r.startW + dx);
+  if(r.dir.includes('s')) h = Math.max(FLOATING_NOTE_MIN_H, r.startH + dy);
+  if(r.dir.includes('w')){ w = Math.max(FLOATING_NOTE_MIN_W, r.startW - dx); x = r.startLeft + (r.startW - w); }
+  if(r.dir.includes('n')){ h = Math.max(FLOATING_NOTE_MIN_H, r.startH - dy); y = r.startTop + (r.startH - h); }
+  el.style.width = `${w}px`; el.style.height = `${h}px`; el.style.left = `${x}px`; el.style.top = `${y}px`;
+}
+function endFloatingNoteResize(){
+  window.removeEventListener('pointermove', moveFloatingNoteResize);
+  const r = floatingNoteResizeState; floatingNoteResizeState = null;
+  if(!r) return;
+  const el = document.getElementById(`floating-note-${r.noteId}`);
+  const f = state.floatingNotes.find(x=>x.noteId===r.noteId);
+  if(!el || !f) return;
+  f.width = parseFloat(el.style.width) || f.width;
+  f.height = parseFloat(el.style.height) || f.height;
+  f.x = parseFloat(el.style.left) || f.x;
+  f.y = parseFloat(el.style.top) || f.y;
+  saveData();
 }
 function getNoteDescendantIds(id){
   const ids = [];
@@ -8438,6 +8678,7 @@ function render(){
         <div class="main">${renderMain()}</div>
       </div>
     </div>
+    ${renderFloatingNotes()}
     ${state.noteCorrection ? renderModal(state.noteCorrection) : (state.modal && !(state.modal.type==='note-chat' && isDesktopLayout()) ? renderModal() : '')}
     ${state.noteConversationManager ? renderNoteConversationManager(state.noteConversationManager) : ''}
     ${state.toast ? renderToast() : ''}
@@ -8524,7 +8765,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='routine'?'active':''}" onclick="openRoutine()">🌿 Rotina</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.122</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.123</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -8547,7 +8788,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.25.122</span>
+        <span class="brand-version">v2026.07.25.123</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -8608,7 +8849,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.122</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.123</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
@@ -8755,6 +8996,63 @@ function renderNotesContentSearchResults(){
     `).join('')}
   </div>`;
 }
+function renderFloatingNotes(){
+  // exclusivo do desktop -- no celular a tela é pequena demais pra janelas
+  // sobrepostas fazerem sentido, e o gesto de arrastar/redimensionar
+  // colidiria com rolagem por toque.
+  if(!isDesktopLayout() || !state.floatingNotes.length) return '';
+  return `<div class="floating-notes-layer">${state.floatingNotes.map(renderFloatingNote).join('')}</div>`;
+}
+function renderFloatingNote(f){
+  const note = state.notesItems.find(n=>n.id===f.noteId && n.type==='note');
+  if(!note) return ''; // a nota foi excluída em outro lugar -- some sozinha; state.floatingNotes se limpa no próximo load
+  const color = note.iconColor || '#F5A623';
+  const loading = noteContentLoading[note.id] || noteContentCache[note.id] === undefined;
+  const error = noteContentError[note.id];
+  let body;
+  if(error){
+    body = `<div class="floating-note-body" style="display:flex; align-items:center; justify-content:center; text-align:center; gap:8px; flex-direction:column;"><span style="font-size:11px; color:var(--error);">Não consegui carregar.</span><button class="ghost-btn" style="font-size:10px; padding:4px 8px;" onclick="delete noteContentError['${note.id}']; ensureFloatingNoteContentLoaded('${note.id}'); render();">Tentar de novo</button></div>`;
+  } else if(loading){
+    body = `<div class="floating-note-body" style="display:flex; align-items:center; justify-content:center;"><div class="spinner"></div></div>`;
+  } else {
+    const content = noteContentCache[note.id];
+    // foco puro no texto: sem barra de ferramentas de formatação, mas
+    // mantém o mesmo TIPO de editor da nota (rich contenteditable pra
+    // format==='plain', textarea pra markdown) pra não mostrar tags HTML
+    // cruas nem perder a formatação já existente.
+    body = note.format === 'plain'
+      ? `<div class="floating-note-body" contenteditable="true" oninput="onNoteContentInput('${note.id}', this.innerHTML)">${content}</div>`
+      : `<textarea class="floating-note-body" oninput="onNoteContentInput('${note.id}', this.value)">${escapeHtml(content)}</textarea>`;
+  }
+  return `<div class="floating-note" id="floating-note-${note.id}" style="left:${f.x}px; top:${f.y}px; width:${f.width}px; height:${f.height}px; opacity:${f.opacity}; z-index:${f.z||10}; border-color:${color};">
+    <div class="floating-note-header" onpointerdown="startFloatingNoteDrag(event,'${note.id}')">
+      <button class="icon-btn" title="Fechar (salva automaticamente)" onclick="closeFloatingNote('${note.id}')">✕</button>
+      <button class="icon-btn" title="Localizar no gerenciador" onclick="locateFloatingNoteInManager('${note.id}')">🔍</button>
+      <button class="icon-btn ${note.favorite?'active':''}" title="${note.favorite?'Remover dos favoritos':'Favoritar'}" onclick="toggleNoteFavorite('${note.id}')">${note.favorite?'★':'☆'}</button>
+      <span style="position:relative;">
+        <button class="icon-btn" title="Mudar o ícone (cor) da nota" onclick="toggleFloatingNoteColorMenu('${note.id}')" style="color:${color};">●</button>
+        ${state.floatingColorMenuFor===note.id ? renderFloatingNoteColorMenu(note.id) : ''}
+      </span>
+      <input type="range" class="floating-note-opacity" min="20" max="100" value="${Math.round(f.opacity*100)}" title="Opacidade" onpointerdown="event.stopPropagation()" oninput="previewFloatingNoteOpacity('${note.id}', this.value)" onchange="commitFloatingNoteOpacity('${note.id}', this.value)">
+    </div>
+    <div class="floating-note-title" onpointerdown="startFloatingNoteDrag(event,'${note.id}')" title="${escapeHtml(note.name)}">${escapeHtml(note.name)}</div>
+    ${body}
+    <div class="floating-note-resize floating-note-resize-n" onpointerdown="startFloatingNoteResize(event,'${note.id}','n')"></div>
+    <div class="floating-note-resize floating-note-resize-s" onpointerdown="startFloatingNoteResize(event,'${note.id}','s')"></div>
+    <div class="floating-note-resize floating-note-resize-e" onpointerdown="startFloatingNoteResize(event,'${note.id}','e')"></div>
+    <div class="floating-note-resize floating-note-resize-w" onpointerdown="startFloatingNoteResize(event,'${note.id}','w')"></div>
+    <div class="floating-note-resize floating-note-resize-ne" onpointerdown="startFloatingNoteResize(event,'${note.id}','ne')"></div>
+    <div class="floating-note-resize floating-note-resize-nw" onpointerdown="startFloatingNoteResize(event,'${note.id}','nw')"></div>
+    <div class="floating-note-resize floating-note-resize-se" onpointerdown="startFloatingNoteResize(event,'${note.id}','se')"></div>
+    <div class="floating-note-resize floating-note-resize-sw" onpointerdown="startFloatingNoteResize(event,'${note.id}','sw')"></div>
+  </div>`;
+}
+function renderFloatingNoteColorMenu(noteId){
+  const colors = ['#F5A623','#FB7185','#A78BFA','#60A5FA','#34D399','#F472B6','#FACC15','#94A3B8'];
+  return `<div class="floating-note-color-menu" onpointerdown="event.stopPropagation()">
+    ${colors.map(c=>`<button type="button" title="${c}" onclick="pickFloatingNoteColor('${noteId}','${c}')" style="background:${c};"></button>`).join('')}
+  </div>`;
+}
 function renderNotesTreeLevel(parentId, depth){
   const searchQuery = ((state.notesSearch && state.notesSearch.query) || '').trim();
   let items = state.notesItems.filter(n=>n.parentId===parentId).sort((a,b) => {
@@ -8788,7 +9086,7 @@ function renderNotesTreeLevel(parentId, depth){
       </div>
     </div>`;
     return `
-    <div class="notes-tree-row ${state.currentNoteId===item.id?'active':''}" style="padding-left:${depth*16+16}px;" draggable="true" ondragstart="onNoteDragStart(event,'${item.id}')">
+    <div class="notes-tree-row ${state.currentNoteId===item.id?'active':''} ${state.notesHighlightId===item.id?'notes-tree-row-flash':''}" data-note-id="${item.id}" style="padding-left:${depth*16+16}px;" draggable="true" ondragstart="onNoteDragStart(event,'${item.id}')">
       <div class="notes-tree-label" onclick="openNote('${item.id}')"><span class="note-color-dot" style="background:${escapeHtml(item.iconColor || '#F5A623')};"></span>${escapeHtml(item.name)}</div>
       <div class="notes-tree-actions">
         <button class="icon-btn" style="width:22px;height:22px;font-size:12px; ${item.favorite?'color:#F5A623;':''}" title="${item.favorite?'Remover dos favoritos':'Adicionar aos favoritos'}" onclick="event.stopPropagation(); toggleNoteFavorite('${item.id}')">${item.favorite?'★':'☆'}</button>
@@ -8878,6 +9176,7 @@ function renderNoteEditor(note){
     </div>
     <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
       <button class="icon-btn" style="${note.favorite?'color:#F5A623;':''}" title="${note.favorite?'Remover dos favoritos':'Adicionar aos favoritos'}" onclick="toggleNoteFavorite('${note.id}')">${note.favorite?'★':'☆'}</button>
+      ${isDesktopLayout() ? `<button class="icon-btn ${state.floatingNotes.some(f=>f.noteId===note.id)?'active':''}" title="Transformar em nota flutuante (post-it) — atalho: Ctrl+Shift+P" onclick="toggleFloatingNote('${note.id}')">📌</button>` : ''}
       <button class="icon-btn" title="Exportar esta nota como arquivo HTML" onclick="exportNoteAsHtml('${note.id}')">⇩</button>
       <button class="icon-btn" title="Sumário (títulos H1/H2/H3)" onclick="openNoteTocModal()">📑</button>
       <button class="icon-btn" title="Configuração de página" onclick="openNotePageSettings()">⚙️</button>
@@ -11199,10 +11498,12 @@ document.addEventListener('keydown', function(e){
   if(state.view !== 'notes' || !state.currentNoteId || state.modal) return;
   if(!(e.ctrlKey || e.metaKey) || !e.shiftKey) return;
   const key = e.key.toLowerCase();
-  if(!['f','g','l','v'].includes(key)) return;
+  if(!['f','g','l','v','p'].includes(key)) return;
   e.preventDefault();
   const sel = state.noteSelection;
-  if(key === 'f'){ // criar cartão (Flashcard)
+  if(key === 'p'){ // transforma a nota aberta em nota flutuante (Post-it)
+    toggleFloatingNote(state.currentNoteId);
+  } else if(key === 'f'){ // criar cartão (Flashcard)
     if(!sel || !sel.text){ showToast('Selecione um trecho da nota primeiro.', 'error'); return; }
     requestCardFromNoteSelection();
   } else if(key === 'g'){ // corriGir
