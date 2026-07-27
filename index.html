@@ -599,10 +599,10 @@
   .agenda-day-tasks{ margin:-2px 0 7px; padding:6px; border-radius:8px; background:var(--bg-2); max-height:134px; overflow-y:auto; flex:0 0 auto; }
   .agenda-day-tasks-label{ display:block; margin-bottom:4px; color:var(--text-faint); font-size:9px; font-weight:700; letter-spacing:.05em; }
   .agenda-day-hours{ flex:1 1 auto; min-height:0; overflow-y:auto; border-top:1px solid var(--border); position:relative; }
-  .agenda-slot{ height:32px; min-height:32px; border-top:1px solid var(--border); padding:0 2px 0 30px; position:relative; z-index:1; }
+  .agenda-slot{ height:16px; min-height:16px; border-top:1px solid var(--border); padding:0 2px 0 30px; position:relative; z-index:1; }
   .agenda-day-hours .agenda-slot:first-child{ border-top:0; }
-  .agenda-slot-time{ position:absolute; left:1px; top:5px; font-size:9.5px; color:var(--text-faint); }
-  .agenda-slot-time.half{ opacity:.65; }
+  .agenda-slot-time{ position:absolute; left:1px; top:2px; font-size:8.5px; color:var(--text-faint); }
+  .agenda-slot-time.half{ opacity:.55; }
   .agenda-scheduled-event{ position:absolute; left:30px; right:2px; z-index:2; min-height:2px; padding:2px 5px; border:1px solid var(--accent-dim); border-radius:5px; background:var(--accent-soft); color:var(--text); font:inherit; font-size:10.5px; line-height:1.2; text-align:left; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; cursor:grab; touch-action:none; user-select:none; -webkit-user-select:none; -webkit-touch-callout:none; }
   .agenda-scheduled-event.tiny{ padding:0 5px; border-radius:3px; font-size:9px; line-height:1; display:flex; align-items:center; }
   .agenda-scheduled-event.done{ border-color:var(--success); background:var(--success-soft); color:var(--success); cursor:default; }
@@ -3330,13 +3330,16 @@ function agendaMinutesToTime(minutes){
 function getAgendaEventEndTime(event){ return event.endTime || (event.time ? addAgendaHour(event.time) : ''); }
 function renderScheduledAgendaEvent(event){
   const start=agendaTimeToMinutes(event.time), end=agendaTimeToMinutes(getAgendaEventEndTime(event));
-  if(start===null || end===null || start<360 || start>=1440) return '';
+  // a grade cobre o dia inteiro (0h–24h, ver timeSlots em renderAgendaWeekView),
+  // então esse limite é só uma proteção contra horário malformado -- não existe
+  // mais nenhum horário "fora da grade" que faça o evento sumir da tela.
+  if(start===null || end===null || start<0 || start>=1440) return '';
   const displayedEnd=Math.max(start+1,end);
-  const top=((start-360)/30)*32;
+  const top=(start/10)*16;
   // altura mínima de 14px (em vez de 2px) garante que até um evento de 5 minutos
   // continue com espaço pra mostrar o título — antes disso ficava um risco sem
   // nenhum texto (font-size:0), como se o evento simplesmente não existisse.
-  const height=Math.max(14,((displayedEnd-start)/30)*32-2);
+  const height=Math.max(14,((displayedEnd-start)/10)*16-2);
   const tiny=height<24;
   const range=`${event.time}–${getAgendaEventEndTime(event)}`;
   const title=`${range} · ${event.title}`;
@@ -3351,7 +3354,7 @@ function renderScheduledAgendaEvent(event){
   // o arraste falhava calado. Repetir esses atributos aqui, calculando o horário
   // mais próximo (arredondado pra baixo, de 30 em 30min), resolve isso.
   const dayKey=getAgendaEventDateKey(event);
-  const slotTime=agendaMinutesToTime(Math.floor(start/30)*30);
+  const slotTime=agendaMinutesToTime(Math.floor(start/10)*10);
   return `<button class="agenda-scheduled-event ${companion?'companion':''} ${event.completedAt&&!companion?'done':''} ${tiny?'tiny':''}" style="top:${top}px; height:${height}px;" title="${escapeHtml(title)}" data-agenda-drop="1" data-agenda-date="${dayKey}" data-agenda-time="${slotTime}" ${draggable?`onpointerdown="agendaPointerDown(event,'${event.id}')"`:''} onclick="if(Date.now()<suppressAgendaClickUntil) return; openAgendaEventModal('${event.id}')">${label}</button>`;
 }
 function openAgendaSuggestions(){
@@ -3394,7 +3397,10 @@ function renderAgendaWeekView(){
   // comparar o campo cru fazia esses eventos sumirem de toda a Agenda, mesmo
   // existindo normalmente na lista.
   const todos=state.agendaEvents.filter(event=>!getAgendaEventDateKey(event) && !event.completedAt);
-  const timeSlots=Array.from({length:36},(_,i)=>{ const minutes=360+i*30; return `${String(Math.floor(minutes/60)).padStart(2,'0')}:${String(minutes%60).padStart(2,'0')}`; });
+  // de 10 em 10 minutos, cobrindo o dia inteiro (0h–24h) -- antes ia de 30 em 30min
+  // e só começava às 6h, então qualquer evento criado de madrugada (antes das 6h)
+  // era salvo normalmente mas nunca aparecia em lugar nenhum da tela.
+  const timeSlots=Array.from({length:144},(_,i)=>{ const minutes=i*10; return `${String(Math.floor(minutes/60)).padStart(2,'0')}:${String(minutes%60).padStart(2,'0')}`; });
   const eventCard=(event, todo)=>{
     const draggable=!(event.completedAt||event.source==='companion');
     return `<div class="agenda-event ${todo?'todo':''} ${event.source==='companion'?'companion':''} ${event.completedAt&&event.source!=='companion'?'done':''}" role="button" tabindex="0" ${draggable?`onpointerdown="agendaPointerDown(event,'${event.id}')"`:''} onclick="if(Date.now()<suppressAgendaClickUntil) return; openAgendaEventModal('${event.id}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openAgendaEventModal('${event.id}')}">${event.completedAt&&event.source!=='companion'?'✓ ':''}${event.time&&!todo?`<strong>${event.time}${event.endTime?`–${event.endTime}`:''}</strong> `:''}${escapeHtml(event.title)}</div>`;
@@ -3403,7 +3409,7 @@ function renderAgendaWeekView(){
     const key=agendaDateKey(date);
     const dayTasks=state.agendaEvents.filter(event=>getAgendaEventDateKey(event)===key&&!event.time);
     const scheduled=state.agendaEvents.filter(event=>getAgendaEventDateKey(event)===key&&event.time);
-    return `<div class="agenda-week-day ${key===todayKey?'today':''}"><div class="agenda-week-title">${date.toLocaleDateString('pt-BR',{weekday:'short'}).replace('.','')}<br><span style="color:var(--text-faint);">${date.getDate()}</span></div><div class="agenda-day-tasks" data-agenda-drop="1" data-agenda-date="${key}" data-agenda-time=""><span class="agenda-day-tasks-label">TAREFAS DO DIA</span>${dayTasks.map(event=>eventCard(event,true)).join('')}${!dayTasks.length?`<span style="font-size:10px; color:var(--text-faint);">Solte uma tarefa aqui</span>`:''}</div><div class="agenda-day-hours">${timeSlots.map(time=>`<div class="agenda-slot" data-agenda-drop="1" data-agenda-date="${key}" data-agenda-time="${time}" oncontextmenu="openAgendaEventAt(event,'${key}','${time}')"><span class="agenda-slot-time ${time.endsWith(':30')?'half':''}">${time}</span></div>`).join('')}${scheduled.map(renderScheduledAgendaEvent).join('')}</div></div>`;
+    return `<div class="agenda-week-day ${key===todayKey?'today':''}"><div class="agenda-week-title">${date.toLocaleDateString('pt-BR',{weekday:'short'}).replace('.','')}<br><span style="color:var(--text-faint);">${date.getDate()}</span></div><div class="agenda-day-tasks" data-agenda-drop="1" data-agenda-date="${key}" data-agenda-time=""><span class="agenda-day-tasks-label">TAREFAS DO DIA</span>${dayTasks.map(event=>eventCard(event,true)).join('')}${!dayTasks.length?`<span style="font-size:10px; color:var(--text-faint);">Solte uma tarefa aqui</span>`:''}</div><div class="agenda-day-hours">${timeSlots.map(time=>`<div class="agenda-slot" data-agenda-drop="1" data-agenda-date="${key}" data-agenda-time="${time}" oncontextmenu="openAgendaEventAt(event,'${key}','${time}')"><span class="agenda-slot-time ${time.endsWith(':00')?'':'half'}">${time}</span></div>`).join('')}${scheduled.map(renderScheduledAgendaEvent).join('')}</div></div>`;
   };
   return `<div style="max-width:1400px; margin:0 auto;"><button class="ghost-btn mobile-back-btn" onclick="backToHome()">← Menu</button><div class="deck-header" style="margin-bottom:14px;"><div><h2 style="margin:0 0 5px;">🗓️ Agenda</h2><p>Arraste pendências entre “A fazer”, tarefas do dia e horários.</p></div><button class="primary-btn" onclick="openAgendaEventModal()">＋ Novo evento</button></div><div class="agenda-week-toolbar"><div class="agenda-week-navigation"><button class="icon-btn" aria-label="Semana anterior" title="Semana anterior" onclick="changeAgendaWeek(-1)">‹</button><button class="ghost-btn" style="padding:6px 9px; font-size:12px;" onclick="goToAgendaToday()">Hoje</button><button class="icon-btn" aria-label="Próxima semana" title="Próxima semana" onclick="changeAgendaWeek(1)">›</button></div><strong class="agenda-week-period">${start.toLocaleDateString('pt-BR',{day:'2-digit',month:'short'})} — ${week[6].toLocaleDateString('pt-BR',{day:'2-digit',month:'short',year:'numeric'})}</strong><div class="agenda-week-actions"><button class="ghost-btn" style="padding:6px 9px; font-size:12px;" onclick="openAgendaSuggestions()">✨ Sugerir</button><button class="icon-btn" title="Chat IA da Agenda" aria-label="Chat IA da Agenda" onclick="openGlobalAiChat()">💬</button><button class="ghost-btn active-mode" style="padding:6px 9px; font-size:12px;" onclick="setAgendaView('week')">Semana</button><button class="ghost-btn" style="padding:6px 9px; font-size:12px;" onclick="setAgendaView('month')">Mês</button><button class="ghost-btn" style="padding:6px 9px; font-size:12px;" onclick="setAgendaView('report')">Relatório</button></div></div><div class="agenda-source-legend"><i></i> Azul: uso registrado no celular pelo Companion</div><div class="agenda-week-layout"><aside class="agenda-todo" data-agenda-drop="1" data-agenda-date="" data-agenda-time=""><div style="display:flex; justify-content:space-between; align-items:center;"><h3 style="margin:0; font-size:15px;">📌 A fazer</h3><span style="font-size:11px; color:var(--text-faint);">${todos.length}</span></div><p style="font-size:11.5px; color:var(--text-faint);">Solte aqui uma pendência sem dia ou horário.</p>${todos.map(event=>eventCard(event,true)).join('') || `<p style="font-size:12px; color:var(--text-faint);">Arraste para um dia ou horário quando decidir.</p>`}</aside><section class="agenda-week">${week.map(dayColumn).join('')}</section></div></div>`;
 }
@@ -8878,6 +8884,13 @@ function render(){
   }
   if(prevAgendaHourScrolls.length){
     document.querySelectorAll('.agenda-day-hours').forEach((el,index)=>{ el.scrollTop=prevAgendaHourScrolls[index]||0; });
+  }else if(state.view==='agenda'){
+    // Primeira vez entrando na Agenda nesta visita à tela (prevAgendaHourScrolls
+    // vazio == não havia ".agenda-day-hours" no DOM antes deste render, ou seja,
+    // não tem posição de rolagem prévia pra restaurar). A grade agora cobre o dia
+    // inteiro a partir da meia-noite (antes começava às 6h) -- sem isso a tela
+    // sempre abriria lá em cima, na madrugada, em vez de num horário mais útil.
+    document.querySelectorAll('.agenda-day-hours').forEach(el=>{ el.scrollTop=576; });
   }
   if(state.modal?.type==='active-outline-view' && state.activeOutlineScroll.outlineId===state.modal.outlineId){
     const outlineScrollEl = document.querySelector('.active-outline-view-scroll');
@@ -8958,7 +8971,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='routine'?'active':''}" onclick="openRoutine()">🌿 Rotina</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.129</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.130</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -8981,7 +8994,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.25.129</span>
+        <span class="brand-version">v2026.07.25.130</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -9042,7 +9055,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.129</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.130</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
