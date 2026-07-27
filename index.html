@@ -446,6 +446,9 @@
   .notes-editor-header{ display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; }
   .note-writing-stats{ font-size:11px; color:var(--text-faint); margin-top:3px; font-variant-numeric:tabular-nums; }
   .notes-mode-toggle{ display:flex; gap:6px; }
+  .notes-nav-history{ display:flex; gap:6px; margin:2px 0 10px; }
+  .notes-nav-history .icon-btn:disabled{ opacity:.35; cursor:default; }
+  .notes-nav-history .icon-btn:disabled:hover{ color:var(--text-muted); border-color:var(--border); }
 
   /* notas flutuantes ("post-it") — só desktop */
   .floating-note{
@@ -881,7 +884,12 @@ let state = {
   // do modo de exibição das notas).
   activeOutlineId: null,
   activeOutlineScroll: {outlineId:null, top:0}, // lembra onde parou de ler no celular
-  activeOutlinePanelOpen: false
+  activeOutlinePanelOpen: false,
+  // histórico de navegação entre notas (setas ← →, só desktop) -- estado de
+  // sessão, como o modo de exibição das notas: não precisa sobreviver a um
+  // recarregamento, igual o histórico de abas de um navegador começa vazio.
+  noteNavHistory: [],
+  noteNavIndex: -1
 };
 
 function uid(){ return Math.random().toString(36).slice(2,10); }
@@ -5539,11 +5547,57 @@ function closeCurrentNote(){
   state.noteFindReplace = null;
   render();
 }
-function openNote(id){
+/* ============ HISTÓRICO DE NAVEGAÇÃO ENTRE NOTAS (setas ← →, desktop) ============ */
+function pushNoteNavHistory(id){
+  // corta o "futuro" se o usuário tinha voltado e agora abre algo novo --
+  // mesmo comportamento do histórico de navegação de um navegador.
+  if(state.noteNavIndex < state.noteNavHistory.length-1){
+    state.noteNavHistory = state.noteNavHistory.slice(0, state.noteNavIndex+1);
+  }
+  // não empilha de novo se a nota já é a que está no topo (reabrir a mesma
+  // nota não deveria virar uma entrada nova no histórico)
+  if(state.noteNavHistory[state.noteNavHistory.length-1] !== id){
+    state.noteNavHistory.push(id);
+  }
+  state.noteNavIndex = state.noteNavHistory.length-1;
+}
+function hasNoteHistoryBack(){
+  for(let i=state.noteNavIndex-1; i>=0; i--) if(state.notesItems.some(n=>n.id===state.noteNavHistory[i])) return true;
+  return false;
+}
+function hasNoteHistoryForward(){
+  for(let i=state.noteNavIndex+1; i<state.noteNavHistory.length; i++) if(state.notesItems.some(n=>n.id===state.noteNavHistory[i])) return true;
+  return false;
+}
+// pula por cima de entradas de notas já excluídas -- em vez de remover do
+// histórico (o que bagunçaria os índices), só ignora na hora de navegar.
+function navigateNoteHistoryBack(){
+  for(let i=state.noteNavIndex-1; i>=0; i--){
+    if(state.notesItems.some(n=>n.id===state.noteNavHistory[i])){
+      state.noteNavIndex = i;
+      openNote(state.noteNavHistory[i], {skipHistory:true});
+      return;
+    }
+  }
+}
+function navigateNoteHistoryForward(){
+  for(let i=state.noteNavIndex+1; i<state.noteNavHistory.length; i++){
+    if(state.notesItems.some(n=>n.id===state.noteNavHistory[i])){
+      state.noteNavIndex = i;
+      openNote(state.noteNavHistory[i], {skipHistory:true});
+      return;
+    }
+  }
+}
+function openNote(id, opts){
   rememberNoteScroll(state.currentNoteId);
   finishNotesPresence();
   const selectedItem=state.notesItems.find(item=>item.id===id);
   if(!selectedItem) return;
+  // opts.skipHistory: usado pelas próprias setas de navegar (navigateNoteHistoryBack/
+  // Forward) -- senão clicar em "voltar" empilharia a nota de volta no topo do
+  // histórico, e "avançar" nunca funcionaria de verdade.
+  if(!(opts && opts.skipHistory)) pushNoteNavHistory(id);
   state.currentNoteId = id;
   startNotesPresence(id);
   if(selectedItem.type==='note') state.lastNoteId = id;
@@ -8903,7 +8957,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='routine'?'active':''}" onclick="openRoutine()">🌿 Rotina</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.127</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.128</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -8926,7 +8980,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.25.127</span>
+        <span class="brand-version">v2026.07.25.128</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -8987,7 +9041,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.127</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.128</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
@@ -9335,6 +9389,10 @@ function renderNoteEditor(note){
   </div>
   ${renderNoteCommentsPanel(note)}
   ${state.noteFindReplace && state.noteFindReplace.active ? renderNoteFindBar(state.noteFindReplace) : ''}
+  ${isDesktopLayout() ? `<div class="notes-nav-history">
+    <button class="icon-btn" title="Nota anterior" ${hasNoteHistoryBack()?'':'disabled'} onclick="navigateNoteHistoryBack()">←</button>
+    <button class="icon-btn" title="Próxima nota" ${hasNoteHistoryForward()?'':'disabled'} onclick="navigateNoteHistoryForward()">→</button>
+  </div>` : ''}
   ${(isPlain || mode !== 'preview') ? renderNotesToolbar(note.format) : ''}
   ${isPlain ? `
   <div class="notes-editor-panes plain ${state.notesPageView ? 'page-view' : ''}" style="${state.notesPageView ? pageStyle : ''}">
