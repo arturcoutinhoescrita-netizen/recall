@@ -2278,29 +2278,34 @@ const GEMINI_MODEL_TEXT = "gemini-3.5-flash-lite";
 async function callGeminiOnce(prompt, opts, key, model){
   const parts = [{ text: prompt }];
   if(opts.imageBase64) parts.push({ inline_data: { mime_type: opts.imageMime || 'image/jpeg', data: opts.imageBase64 } });
-  const body = { contents: [{ parts }] };
   // os modelos "flash" atuais do Gemini gastam uma parte imprevisível do limite de tokens
   // em raciocínio interno (não aparece na resposta) antes de escrever o texto visível —
   // sem essa folga, respostas curtas saem cortadas no meio (finishReason: MAX_TOKENS). A
-  // folga de +800 sozinha não bastava: o orçamento de raciocínio desses modelos pode passar
-  // disso, consumindo o limite inteiro antes de chegar no texto visível (relatado
-  // especialmente na correção de notas, que já pede pouca coisa: só ortografia/pontuação).
-  // thinkingBudget:0 desliga esse raciocínio interno, então 100% do maxOutputTokens vira
-  // resposta de verdade — nenhuma das tarefas que usam callGemini (correção, tradução,
-  // distratores de quiz, ações do agente em JSON etc.) precisa de raciocínio em várias
-  // etapas, então isso não perde qualidade em troca de mais velocidade e previsibilidade.
-  body.generationConfig = { maxOutputTokens: (opts.maxTokens||400) + 800, thinkingConfig: { thinkingBudget: 0 } };
-  // O agente da nota depende de uma resposta que a aplicação consiga ler e
-  // executar. Pedir JSON ao modelo no prompt ajuda, mas não impede que ele
-  // acrescente uma frase antes/depois do objeto; o MIME type torna o contrato
-  // explícito na própria API.
-  if(opts.responseMimeType) body.generationConfig.responseMimeType = opts.responseMimeType;
-  if(opts.useSearch) body.tools = [{ google_search: {} }];
-  const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body)
-  });
+  // folga de +800 sozinha não bastava, daí a tentativa de desligar esse raciocínio de vez
+  // com thinkingConfig.thinkingBudget:0. Só que nem todo modelo/variante aceita esse campo
+  // -- descobrimos na prática que pelo menos um deles responde 400 (Bad Request) quando ele
+  // vem no corpo, o que trocar de chave OU de modelo não resolve (os dois recebem o mesmo
+  // corpo inválido). Por isso: tenta primeiro COM thinkingConfig; se der 400, tenta nessa
+  // MESMA chave/modelo de novo, sem esse campo, antes de desistir -- assim continua evitando
+  // resposta cortada onde o modelo aceita, sem travar onde não aceita.
+  const makeBody = (withThinking) => {
+    const generationConfig = { maxOutputTokens: (opts.maxTokens||400) + 800 };
+    if(withThinking) generationConfig.thinkingConfig = { thinkingBudget: 0 };
+    // O agente da nota depende de uma resposta que a aplicação consiga ler e
+    // executar. Pedir JSON ao modelo no prompt ajuda, mas não impede que ele
+    // acrescente uma frase antes/depois do objeto; o MIME type torna o contrato
+    // explícito na própria API.
+    if(opts.responseMimeType) generationConfig.responseMimeType = opts.responseMimeType;
+    const b = { contents: [{ parts }], generationConfig };
+    if(opts.useSearch) b.tools = [{ google_search: {} }];
+    return b;
+  };
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`;
+  const doFetch = (body) => fetch(endpoint, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) });
+  let resp = await doFetch(makeBody(true));
+  if(!resp.ok && resp.status === 400){
+    resp = await doFetch(makeBody(false));
+  }
   if(!resp.ok){
     const errBody = await resp.text().catch(()=> '');
     const err = new Error('api_error');
@@ -8891,7 +8896,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='routine'?'active':''}" onclick="openRoutine()">🌿 Rotina</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.125</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.126</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -8914,7 +8919,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.25.125</span>
+        <span class="brand-version">v2026.07.25.126</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -8975,7 +8980,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.125</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.126</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
