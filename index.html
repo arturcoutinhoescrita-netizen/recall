@@ -5438,14 +5438,23 @@ function openNotes(){
     .filter(item => item.type === 'folder')
     .map(item => item.id);
   state.view = 'notes';
-  // O caderno abre sempre no explorador. Assim uma nota remota que falhou ao
-  // carregar não bloqueia a aba inteira antes de a pessoa escolher o que abrir.
-  state.currentNoteId = null;
-  startNotesPresence(null);
   // No desktop o chat é um painel fixo de trabalho: voltar ao explorador ou
   // trocar de nota não o fecha. No celular ele continua sendo uma janela.
   if(state.modal?.type==='note-chat' && !isDesktopLayout()) state.modal=null;
-  render();
+  // Reabre a última nota editada (se ela ainda existir) em vez de sempre cair
+  // no explorador -- entrar na aba Notas deve continuar de onde a pessoa
+  // parou. Se a nota sumiu (excluída em outro aparelho, por exemplo) ou
+  // nunca houve uma, cai no explorador como antes; a nota também tem sua
+  // própria tela de erro com botão de "tentar de novo" caso o carregamento
+  // do conteúdo falhe, então reabrir automaticamente não trava mais a aba.
+  const lastNote = state.lastNoteId && state.notesItems.find(item=>item.id===state.lastNoteId && item.type==='note');
+  if(lastNote){
+    openNote(lastNote.id);
+  }else{
+    state.currentNoteId = null;
+    startNotesPresence(null);
+    render();
+  }
 }
 function startNotesExplorerResize(event){
   if(window.matchMedia('(max-width:820px)').matches) return;
@@ -9028,7 +9037,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='routine'?'active':''}" onclick="openRoutine()">🌿 Rotina</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.131</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.132</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -9051,7 +9060,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.25.131</span>
+        <span class="brand-version">v2026.07.25.132</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -9112,7 +9121,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.131</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.132</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
