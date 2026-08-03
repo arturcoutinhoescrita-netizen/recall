@@ -1,11 +1,11 @@
-# Letther B — versão organizada com avisos apenas de erro
+# Letther B — versão organizada com correção da barra de notas
 
 Esta versão conserva a lógica do arquivo original, mas separa apresentação, inicialização e funcionalidades.
 
 ## Estrutura
 
 ```text
-Letther_B_apenas_erros/
+Letther_B_toolbar_corrigido/
 ├── index.html
 ├── manifest.json
 ├── sw.js
@@ -59,6 +59,14 @@ Letther_B_apenas_erros/
 - As telas de resultado dos exercícios, explicações de respostas e o painel de atividade em andamento foram preservados, pois fazem parte da interface funcional e não são notificações transitórias.
 - O cache do Service Worker foi atualizado para forçar o carregamento desta versão.
 
+
+## Correção do Cmd/Ctrl+Z nas notas
+
+- O histórico próprio agora preserva o foco, o cursor e a posição de rolagem ao desfazer ou refazer.
+- A correção cobre tanto notas em texto normal (`contenteditable`) quanto notas em Markdown (`textarea`).
+- O atalho também reconhece corretamente eventos originados dentro de elementos formatados do editor rico.
+- O cache do Service Worker foi atualizado para distribuir a correção em instalações PWA existentes.
+
 ## Como executar
 
 Não abra apenas com duplo clique, porque Firebase, Service Worker e alguns recursos exigem servidor local/HTTPS. Na pasta do projeto, execute:
@@ -72,3 +80,12 @@ Depois abra `http://localhost:8000`.
 ## Próxima etapa recomendada
 
 A divisão atual é conservadora: melhora muito a manutenção sem reescrever a arquitetura. Depois, os eventos `onclick` e o estado global podem ser migrados gradualmente para módulos ES, começando pelo Caderno de Notas.
+
+## Correção da barra de ferramentas das notas
+
+- A posição vertical da nota agora é preservada sempre que a interface é redesenhada.
+- O foco e a seleção são guardados antes de clicar em cor, destaque, fonte, tamanho, título, alinhamento, listas, links, wikilinks e imagens.
+- Os comandos voltam ao mesmo trecho da nota sem levar a página para o início.
+- Modais de link, wikilink e imagem preservam a posição antes de abrir e depois de confirmar.
+- O foco do editor usa `preventScroll` quando o navegador oferece suporte.
+- O cache do Service Worker foi atualizado para `v11-toolbar-scroll-fix`.

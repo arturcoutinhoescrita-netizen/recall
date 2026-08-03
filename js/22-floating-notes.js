@@ -1005,15 +1005,48 @@ function insertImageMarkdown(textareaId, url, alt){
    direto via execCommand num contenteditable — o usuário vê o resultado final
    na hora, sem símbolo de sintaxe nenhum, e por isso não precisa das abas
    Editar/Dividido/Prévia (não existe "fonte" separada da "prévia"). --- */
+let pendingRichToolbarContext = null;
+function captureRichToolbarContext(){
+  const selection=captureRichCursorOffset();
+  pendingRichToolbarContext={
+    noteId:state.currentNoteId,
+    createdAt:Date.now(),
+    selection,
+    text:window.getSelection()?.toString()||'',
+    scroll:typeof captureNoteEditorScrollState==='function' ? captureNoteEditorScrollState() : null
+  };
+  return pendingRichToolbarContext;
+}
+function captureNoteInsertContext(){
+  const context=captureRichToolbarContext();
+  state.pendingNoteInsertOffset=context?.selection||null;
+  state.pendingNoteInsertText=context?.text||'';
+  state.pendingNoteInsertScroll=context?.scroll||null;
+}
+function takeRichToolbarContext(){
+  const context=pendingRichToolbarContext;
+  pendingRichToolbarContext=null;
+  if(!context || context.noteId!==state.currentNoteId || Date.now()-context.createdAt>15000) return null;
+  return context;
+}
 function focusRichEditor(){
   const el = document.getElementById('note-editor-plain');
-  if(el) el.focus();
+  if(!el) return null;
+  const scroll=typeof captureNoteEditorScrollState==='function' ? captureNoteEditorScrollState() : null;
+  try{ el.focus({preventScroll:true}); }catch(error){ el.focus(); }
+  if(scroll && typeof restoreNoteEditorScrollState==='function') restoreNoteEditorScrollState(scroll);
+  return el;
 }
 function applyRichCommand(cmd, value){
-  focusRichEditor();
+  const context=takeRichToolbarContext();
+  const scroll=context?.scroll || (typeof captureNoteEditorScrollState==='function' ? captureNoteEditorScrollState() : null);
+  const selection=context?.selection || captureRichCursorOffset();
+  const el=focusRichEditor();
+  if(!el) return;
+  if(selection) restoreRichCursorOffset(el,selection);
   document.execCommand(cmd, false, value != null ? value : null);
-  const el = document.getElementById('note-editor-plain');
-  if(el) onNoteContentInput(state.currentNoteId, el.innerHTML);
+  onNoteContentInput(state.currentNoteId, el.innerHTML);
+  if(scroll && typeof restoreNoteEditorScrollState==='function') restoreNoteEditorScrollState(scroll);
 }
 function setRichTextColor(color){ applyRichCommand('foreColor', color); }
 function setRichHighlight(color){ applyRichCommand('hiliteColor', color); }
@@ -1024,7 +1057,11 @@ function setRichHeading(level){
   applyRichCommand('formatBlock',`<${level}>`);
 }
 function toggleRichHeadingMenu(){
-  state.noteHeadingMenu=state.noteHeadingMenu ? null : {savedOffset:captureRichCursorOffset()};
+  const context=takeRichToolbarContext();
+  state.noteHeadingMenu=state.noteHeadingMenu ? null : {
+    savedOffset:context?.selection || captureRichCursorOffset(),
+    scrollState:context?.scroll || (typeof captureNoteEditorScrollState==='function' ? captureNoteEditorScrollState() : null)
+  };
   render();
 }
 function chooseRichHeading(level){
@@ -1032,8 +1069,13 @@ function chooseRichHeading(level){
   state.noteHeadingMenu=false;
   state.lastRichHeading=level;
   render();
-  const editor=document.getElementById('note-editor-plain');
-  if(editor){ editor.focus(); restoreRichCursorOffset(editor,menu?.savedOffset); document.execCommand('formatBlock',false,`<${level}>`); onNoteContentInput(state.currentNoteId,editor.innerHTML); }
+  const editor=focusRichEditor();
+  if(editor){
+    restoreRichCursorOffset(editor,menu?.savedOffset);
+    document.execCommand('formatBlock',false,`<${level}>`);
+    onNoteContentInput(state.currentNoteId,editor.innerHTML);
+    if(menu?.scrollState && typeof restoreNoteEditorScrollState==='function') restoreNoteEditorScrollState(menu.scrollState);
+  }
 }
 function renderRichHeadingMenu(){
   if(!state.noteHeadingMenu) return '';
@@ -1047,12 +1089,15 @@ function setRichAlignment(alignment){
 }
 function setRichFontSize(size){
   const px=Math.max(8,Math.min(72,Number(size)||14));
-  const editor=document.getElementById('note-editor-plain');
+  const context=takeRichToolbarContext();
+  const scroll=context?.scroll || (typeof captureNoteEditorScrollState==='function' ? captureNoteEditorScrollState() : null);
+  const selection=context?.selection || captureRichCursorOffset();
+  const editor=focusRichEditor();
   if(!editor) return;
+  if(selection) restoreRichCursorOffset(editor,selection);
   // O HTML exibido é a fonte de verdade para o histórico. Capturá-lo antes do
   // execCommand impede que "Desfazer" restaure marcação intermediária <font>.
   noteContentCache[state.currentNoteId]=editor.innerHTML;
-  editor.focus();
   // execCommand aceita somente os tamanhos legados 1–7. O valor 7 funciona
   // como marcador temporário; em seguida ele é convertido para CSS em pixels,
   // que preserva o tamanho exato e também é respeitado pela paginação.
@@ -1062,12 +1107,15 @@ function setRichFontSize(size){
     el.style.fontSize=`${px}px`;
   });
   onNoteContentInput(state.currentNoteId,editor.innerHTML);
+  if(scroll && typeof restoreNoteEditorScrollState==='function') restoreNoteEditorScrollState(scroll);
   const picker=document.querySelector('select[title="Tamanho da fonte"]');
   if(picker) picker.value='';
 }
 function openRichColorMenu(kind){
-  const savedOffset = captureRichCursorOffset();
-  state.noteColorMenu = { kind, savedOffset };
+  const context=takeRichToolbarContext();
+  const savedOffset = context?.selection || captureRichCursorOffset();
+  const scrollState = context?.scroll || (typeof captureNoteEditorScrollState==='function' ? captureNoteEditorScrollState() : null);
+  state.noteColorMenu = { kind, savedOffset, scrollState };
   render();
 }
 function applyRichPaletteColor(kind, color){
@@ -1076,12 +1124,12 @@ function applyRichPaletteColor(kind, color){
   if(kind === 'text') state.lastRichTextColor = color;
   else state.lastRichHighlight = color;
   render();
-  const editor = document.getElementById('note-editor-plain');
+  const editor = focusRichEditor();
   if(editor){
-    editor.focus();
     restoreRichCursorOffset(editor, menu && menu.savedOffset);
     document.execCommand(kind === 'text' ? 'foreColor' : 'hiliteColor', false, color);
     onNoteContentInput(state.currentNoteId, editor.innerHTML);
+    if(menu?.scrollState && typeof restoreNoteEditorScrollState==='function') restoreNoteEditorScrollState(menu.scrollState);
   }
 }
 function applyLastRichColor(kind){
@@ -1092,10 +1140,7 @@ function toggleNotePageView(){
   render();
 }
 function insertRichIndent(){
-  focusRichEditor();
-  document.execCommand('insertHTML', false, '    ');
-  const el = document.getElementById('note-editor-plain');
-  if(el) onNoteContentInput(state.currentNoteId, el.innerHTML);
+  applyRichCommand('insertHTML','    ');
 }
 // captura a posição do cursor/seleção no contenteditable ANTES de abrir um
 // modal — a Selection global do navegador se move assim que o modal ganha
@@ -1121,11 +1166,13 @@ function restoreRichCursorOffset(el, savedOffset){
     sel.addRange(range);
   }
 }
-function openInsertRichLinkModal(savedOffsetOverride, selectedTextOverride){
+function openInsertRichLinkModal(savedOffsetOverride, selectedTextOverride, savedScrollOverride){
+  const context=savedOffsetOverride ? null : takeRichToolbarContext();
   const sel = window.getSelection();
-  const text = selectedTextOverride != null ? selectedTextOverride : (sel ? sel.toString() : '');
-  const savedOffset = savedOffsetOverride || captureRichCursorOffset();
-  state.modal = { type:'insert-rich-link', url:'', text, savedOffset };
+  const text = selectedTextOverride != null ? selectedTextOverride : (context?.text != null ? context.text : (sel ? sel.toString() : ''));
+  const savedOffset = savedOffsetOverride || context?.selection || captureRichCursorOffset();
+  const scrollState = savedScrollOverride || context?.scroll || (typeof captureNoteEditorScrollState==='function' ? captureNoteEditorScrollState() : null);
+  state.modal = { type:'insert-rich-link', url:'', text, savedOffset, scrollState };
   render();
 }
 function confirmInsertRichLink(){
@@ -1134,21 +1181,24 @@ function confirmInsertRichLink(){
   if(!url){ showToast('Cole o link.', 'error'); return; }
   const text = (m.text||'').trim() || url;
   const savedOffset = m.savedOffset;
+  const scrollState = m.scrollState;
   state.modal = null;
   render();
-  const el = document.getElementById('note-editor-plain');
+  const el = focusRichEditor();
   if(el){
-    el.focus();
     restoreRichCursorOffset(el, savedOffset);
     document.execCommand('insertHTML', false, `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(text)}</a>`);
     onNoteContentInput(state.currentNoteId, el.innerHTML);
+    if(scrollState && typeof restoreNoteEditorScrollState==='function') restoreNoteEditorScrollState(scrollState);
   }
 }
 function openInsertWikiLinkModalRich(){
+  const context=takeRichToolbarContext();
   const sel = window.getSelection();
-  const name = sel ? sel.toString() : '';
-  const savedOffset = captureRichCursorOffset();
-  state.modal = { type:'insert-wiki-link-rich', name, savedOffset };
+  const name = context?.text != null ? context.text : (sel ? sel.toString() : '');
+  const savedOffset = context?.selection || captureRichCursorOffset();
+  const scrollState = context?.scroll || (typeof captureNoteEditorScrollState==='function' ? captureNoteEditorScrollState() : null);
+  state.modal = { type:'insert-wiki-link-rich', name, savedOffset, scrollState };
   render();
 }
 function confirmInsertWikiLinkRich(){
@@ -1156,16 +1206,17 @@ function confirmInsertWikiLinkRich(){
   const name = (m.name||'').trim();
   if(!name){ showToast('Digite o nome da nota.', 'error'); return; }
   const savedOffset = m.savedOffset;
+  const scrollState = m.scrollState;
   state.modal = null;
   render();
-  const el = document.getElementById('note-editor-plain');
+  const el = focusRichEditor();
   if(el){
-    el.focus();
     restoreRichCursorOffset(el, savedOffset);
     const exists = !!findNoteByName(name);
     const cls = exists ? 'wiki-link' : 'wiki-link wiki-link-new';
     document.execCommand('insertHTML', false, `<a href="#" class="${cls}" data-note-name="${escapeHtml(name)}" title="${exists?'Abrir nota':'Criar nota'}">${escapeHtml(name)}</a>`);
     onNoteContentInput(state.currentNoteId, el.innerHTML);
+    if(scrollState && typeof restoreNoteEditorScrollState==='function') restoreNoteEditorScrollState(scrollState);
   }
 }
 // notas "texto normal" criadas antes dessa mudança guardavam texto puro (sem
@@ -1243,10 +1294,12 @@ function domPositionToTextOffset(container, node, offset){
   range.setEnd(node, offset);
   return range.toString().length;
 }
-function openInsertImageModal(savedOffsetOverride){
+function openInsertImageModal(savedOffsetOverride, savedScrollOverride){
   const note = state.notesItems.find(n=>n.id===state.currentNoteId);
-  const savedOffset = savedOffsetOverride || ((note && note.format === 'plain') ? captureRichCursorOffset() : null);
-  state.modal = { type:'insert-note-image', url:'', alt:'', savedOffset };
+  const context=savedOffsetOverride ? null : takeRichToolbarContext();
+  const savedOffset = savedOffsetOverride || context?.selection || ((note && note.format === 'plain') ? captureRichCursorOffset() : null);
+  const scrollState = savedScrollOverride || context?.scroll || (typeof captureNoteEditorScrollState==='function' ? captureNoteEditorScrollState() : null);
+  state.modal = { type:'insert-note-image', url:'', alt:'', savedOffset, scrollState };
   render();
 }
 function openNoteInsertOption(select){
@@ -1255,11 +1308,14 @@ function openNoteInsertOption(select){
   if(!choice) return;
   const savedOffset=state.pendingNoteInsertOffset || null;
   const selectedText=state.pendingNoteInsertText || '';
+  const savedScroll=state.pendingNoteInsertScroll || null;
   state.pendingNoteInsertOffset=null;
   state.pendingNoteInsertText=null;
-  if(choice==='link') openInsertRichLinkModal(savedOffset,selectedText);
-  else if(choice==='image-url') openInsertImageModal(savedOffset);
-  else if(choice==='image-upload') openNoteImageUploadPicker(savedOffset);
+  state.pendingNoteInsertScroll=null;
+  pendingRichToolbarContext=null;
+  if(choice==='link') openInsertRichLinkModal(savedOffset,selectedText,savedScroll);
+  else if(choice==='image-url') openInsertImageModal(savedOffset,savedScroll);
+  else if(choice==='image-upload') openNoteImageUploadPicker(savedOffset,savedScroll);
 }
 function confirmInsertNoteImage(){
   const m = state.modal;
@@ -1267,26 +1323,29 @@ function confirmInsertNoteImage(){
   if(!url){ showToast('Cole o link da imagem.', 'error'); return; }
   const alt = m.alt||'';
   const savedOffset = m.savedOffset;
+  const scrollState = m.scrollState;
   state.modal = null;
   render();
   const note = state.notesItems.find(n=>n.id===state.currentNoteId);
   if(note && note.format === 'plain'){
-    const el = document.getElementById('note-editor-plain');
+    const el = focusRichEditor();
     if(el){
-      el.focus();
       restoreRichCursorOffset(el, savedOffset);
       document.execCommand('insertHTML', false, `<img data-note-image-id="${uid()}" src="${escapeHtml(url)}" alt="${escapeHtml(alt)}">`);
       onNoteContentInput(state.currentNoteId, el.innerHTML);
+      if(scrollState && typeof restoreNoteEditorScrollState==='function') restoreNoteEditorScrollState(scrollState);
     }
   } else {
     insertImageMarkdown('note-editor-textarea', url, alt);
   }
 }
-function openNoteImageUploadPicker(savedOffsetOverride){
+function openNoteImageUploadPicker(savedOffsetOverride, savedScrollOverride){
   const noteId = state.currentNoteId;
   if(!noteId) return;
   const note = state.notesItems.find(n=>n.id===noteId);
-  const savedOffset = savedOffsetOverride || ((note && note.format === 'plain') ? captureRichCursorOffset() : null);
+  const context=savedOffsetOverride ? null : takeRichToolbarContext();
+  const savedOffset = savedOffsetOverride || context?.selection || ((note && note.format === 'plain') ? captureRichCursorOffset() : null);
+  const scrollState = savedScrollOverride || context?.scroll || (typeof captureNoteEditorScrollState==='function' ? captureNoteEditorScrollState() : null);
   const input = document.createElement('input');
   input.type = 'file';
   input.accept = 'image/*';
@@ -1298,12 +1357,12 @@ function openNoteImageUploadPicker(savedOffsetOverride){
       const url = await uploadNoteImage(file);
       const alt = file.name.replace(/\.[^/.]+$/, '');
       if(note && note.format === 'plain'){
-        const el = document.getElementById('note-editor-plain');
+        const el = focusRichEditor();
         if(el){
-          el.focus();
           restoreRichCursorOffset(el, savedOffset);
           document.execCommand('insertHTML', false, `<img data-note-image-id="${uid()}" src="${escapeHtml(url)}" alt="${escapeHtml(alt)}">`);
           onNoteContentInput(noteId, el.innerHTML);
+          if(scrollState && typeof restoreNoteEditorScrollState==='function') restoreNoteEditorScrollState(scrollState);
         }
       } else {
         insertImageMarkdown('note-editor-textarea', url, alt);

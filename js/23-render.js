@@ -40,6 +40,12 @@ function render(){
   // mesmo livro/baralho/aba) — trocar de tela deve mesmo começar do topo.
   const prevMain = document.querySelector('.main');
   const prevScrollTop = prevMain ? prevMain.scrollTop : 0;
+  // Notas têm rolagem própria dentro de .notes-editor-panes. Menus de cor,
+  // títulos, links, imagens e modais chamam render(); preservar só .main não
+  // basta, porque o editor interno seria recriado no topo.
+  const noteEditorRenderState = typeof captureNoteEditorRenderState==='function'
+    ? captureNoteEditorRenderState()
+    : null;
   // Cada coluna da agenda possui rolagem própria. Ao abrir/editar um evento,
   // preservamos o horário que estava sendo observado em vez de voltar para 6h.
   const prevAgendaHourScrolls = state.view==='agenda'
@@ -74,6 +80,9 @@ function render(){
   if(restoreScroll){
     const newMain = document.querySelector('.main');
     if(newMain) newMain.scrollTop = prevScrollTop;
+  }
+  if(noteEditorRenderState && typeof restoreNoteEditorRenderState==='function'){
+    restoreNoteEditorRenderState(noteEditorRenderState);
   }
   if(prevAgendaHourScrolls.length){
     document.querySelectorAll('.agenda-day-hours').forEach((el,index)=>{ el.scrollTop=prevAgendaHourScrolls[index]||0; });
@@ -641,7 +650,7 @@ function renderNotesToolbar(format){
   // seleção já vazia) e inserções (link, imagem) iam sempre pro início do
   // texto em vez de onde o cursor estava. Não afeta o modo markdown (a
   // textarea guarda selectionStart/End independente do foco).
-  const noSteal = isMarkdown ? '' : `onmousedown="event.preventDefault()" `;
+  const noSteal = isMarkdown ? '' : `onmousedown="event.preventDefault(); captureRichToolbarContext()" `;
   const bold = isMarkdown ? `applyMdWrap('${id}','**')` : `applyRichCommand('bold')`;
   const italic = isMarkdown ? `applyMdWrap('${id}','*')` : `applyRichCommand('italic')`;
   const list = isMarkdown ? `applyMdLinePrefix('${id}','- ')` : `applyRichCommand('insertUnorderedList')`;
@@ -658,14 +667,14 @@ function renderNotesToolbar(format){
     <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Itálico" onclick="${italic}"><em>I</em></button>
     ${!isMarkdown ? `<span style="display:inline-flex; position:relative;"><button class="icon-btn" ${noSteal}title="Aplicar última cor de texto" onclick="applyLastRichColor('text')" style="font-size:13px; border-bottom:3px solid ${state.lastRichTextColor||'#000000'};">A</button><button class="icon-btn" ${noSteal}title="Escolher cor do texto" onclick="openRichColorMenu('text')" style="width:20px; font-size:10px; margin-left:-4px;">▾</button>${renderRichColorPalette('text')}</span>
     <span style="display:inline-flex; position:relative;"><button class="icon-btn" ${noSteal}title="Aplicar último destaque" onclick="applyLastRichColor('highlight')" style="font-size:14px; border-bottom:3px solid ${state.lastRichHighlight||'#F5D76E'};">🖍</button><button class="icon-btn" ${noSteal}title="Escolher cor do destaque" onclick="openRichColorMenu('highlight')" style="width:20px; font-size:10px; margin-left:-4px;">▾</button>${renderRichColorPalette('highlight')}</span>
-    <select title="Fonte" style="width:auto; max-width:150px; padding:5px 7px; font-size:11px;" onchange="setRichFont(this.value)"><option value="inherit">Fonte</option><option value="Arial">Arial</option><option value="Arial Rounded">Arial Rounded</option><option value="Georgia">Georgia</option><option value="Verdana">Verdana</option><option value="Courier New">Monoespaçada</option><option value="Cinzel Decorative">Cinzel Decorative</option><option value="Great Vibes">Great Vibes</option><option value="Nickainley">Nickainley</option><option value="SangGuru">SangGuru</option><option value="Special Elite">Special Elite</option><option value="Zeyada">Zeyada</option></select>
-    <select title="Tamanho da fonte" style="width:auto; max-width:84px; padding:5px 7px; font-size:11px;" onchange="setRichFontSize(this.value)"><option value="">Tamanho</option><option value="10">10 px</option><option value="12">12 px</option><option value="14">14 px</option><option value="16">16 px</option><option value="18">18 px</option><option value="20">20 px</option><option value="24">24 px</option><option value="28">28 px</option><option value="32">32 px</option><option value="36">36 px</option></select>` : ''}
+    <select title="Fonte" style="width:auto; max-width:150px; padding:5px 7px; font-size:11px;" onpointerdown="captureRichToolbarContext()" onchange="setRichFont(this.value)"><option value="inherit">Fonte</option><option value="Arial">Arial</option><option value="Arial Rounded">Arial Rounded</option><option value="Georgia">Georgia</option><option value="Verdana">Verdana</option><option value="Courier New">Monoespaçada</option><option value="Cinzel Decorative">Cinzel Decorative</option><option value="Great Vibes">Great Vibes</option><option value="Nickainley">Nickainley</option><option value="SangGuru">SangGuru</option><option value="Special Elite">Special Elite</option><option value="Zeyada">Zeyada</option></select>
+    <select title="Tamanho da fonte" style="width:auto; max-width:84px; padding:5px 7px; font-size:11px;" onpointerdown="captureRichToolbarContext()" onchange="setRichFontSize(this.value)"><option value="">Tamanho</option><option value="10">10 px</option><option value="12">12 px</option><option value="14">14 px</option><option value="16">16 px</option><option value="18">18 px</option><option value="20">20 px</option><option value="24">24 px</option><option value="28">28 px</option><option value="32">32 px</option><option value="36">36 px</option></select>` : ''}
     ${!isMarkdown ? `<span style="display:inline-flex; position:relative;"><button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Aplicar último título" onclick="setRichHeading('${state.lastRichHeading||'h1'}')">${String(state.lastRichHeading||'h1').toUpperCase()}</button><button class="icon-btn" style="width:20px; font-size:10px; margin-left:-4px;" ${noSteal}title="Escolher título" onclick="toggleRichHeadingMenu()">▾</button>${renderRichHeadingMenu()}</span>` : `<button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" title="Título 1" onclick="applyMdLinePrefix('${id}','# ')">H1</button>`}
     <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Lista" onclick="${list}">•</button>
     <button class="icon-btn" style="width:auto; padding:0 8px; font-size:12px;" ${noSteal}title="Lista numerada" onclick="${olist}">1.</button>
     <button class="icon-btn" ${noSteal}title="Recuo de parágrafo (igual à tecla Tab)" onclick="${indent}">↹</button>
-    ${!isMarkdown ? `<select title="Alinhamento do texto" style="width:auto; max-width:112px; padding:5px 7px; font-size:11px;" onchange="setRichAlignment(this.value)"><option value="left" ${(state.lastRichAlignment||'left')==='left'?'selected':''}>← Esquerda</option><option value="center" ${(state.lastRichAlignment||'left')==='center'?'selected':''}>↔ Centro</option><option value="right" ${(state.lastRichAlignment||'left')==='right'?'selected':''}>Direita →</option><option value="justify" ${(state.lastRichAlignment||'left')==='justify'?'selected':''}>☰ Justificar</option></select>` : ''}
-    ${!isMarkdown ? `<select title="Inserir na nota" style="width:auto; max-width:112px; padding:5px 7px; font-size:11px;" onpointerdown="state.pendingNoteInsertOffset=captureRichCursorOffset(); state.pendingNoteInsertText=window.getSelection()?.toString()||''" onchange="openNoteInsertOption(this)"><option value="">＋ Inserir</option><option value="link">🔗 Link</option><option value="image-url">🖼️ Imagem por link</option><option value="image-upload">📤 Enviar imagem</option></select>` : `<button class="icon-btn" title="Link" onclick="${link}">🔗</button>`}
+    ${!isMarkdown ? `<select title="Alinhamento do texto" style="width:auto; max-width:112px; padding:5px 7px; font-size:11px;" onpointerdown="captureRichToolbarContext()" onchange="setRichAlignment(this.value)"><option value="left" ${(state.lastRichAlignment||'left')==='left'?'selected':''}>← Esquerda</option><option value="center" ${(state.lastRichAlignment||'left')==='center'?'selected':''}>↔ Centro</option><option value="right" ${(state.lastRichAlignment||'left')==='right'?'selected':''}>Direita →</option><option value="justify" ${(state.lastRichAlignment||'left')==='justify'?'selected':''}>☰ Justificar</option></select>` : ''}
+    ${!isMarkdown ? `<select title="Inserir na nota" style="width:auto; max-width:112px; padding:5px 7px; font-size:11px;" onpointerdown="captureNoteInsertContext()" onchange="openNoteInsertOption(this)"><option value="">＋ Inserir</option><option value="link">🔗 Link</option><option value="image-url">🖼️ Imagem por link</option><option value="image-upload">📤 Enviar imagem</option></select>` : `<button class="icon-btn" title="Link" onclick="${link}">🔗</button>`}
     <button class="icon-btn" ${noSteal}title="Link pra outra nota (${noteShortcutLabel('l')})" onclick="${wikiLink}">🔀</button>
   </div>`;
 }

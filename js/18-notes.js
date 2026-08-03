@@ -29,6 +29,100 @@ function restoreNoteScroll(noteId){
     if(textarea) textarea.scrollTop=position.textarea;
   });
 }
+
+/* Estado visual completo do editor. Várias ferramentas da barra abrem menus ou
+   modais chamando render(), o que recria o contenteditable. Sem guardar também
+   as rolagens internas e a seleção, o navegador leva a nota para o início. */
+function captureNoteEditorScrollState(){
+  if(state.view!=='notes' || !state.currentNoteId) return null;
+  const main=document.querySelector('.main');
+  const pane=document.querySelector('.notes-editor-panes');
+  const rich=document.getElementById('note-editor-plain');
+  const textarea=document.getElementById('note-editor-textarea');
+  const scrolling=document.scrollingElement;
+  return {
+    noteId:state.currentNoteId,
+    windowX:window.scrollX||0,
+    windowY:window.scrollY||0,
+    documentTop:scrolling?.scrollTop||0,
+    documentLeft:scrolling?.scrollLeft||0,
+    mainTop:main?.scrollTop||0,
+    mainLeft:main?.scrollLeft||0,
+    paneTop:pane?.scrollTop||0,
+    paneLeft:pane?.scrollLeft||0,
+    richTop:rich?.scrollTop||0,
+    richLeft:rich?.scrollLeft||0,
+    textareaTop:textarea?.scrollTop||0,
+    textareaLeft:textarea?.scrollLeft||0
+  };
+}
+function restoreNoteEditorScrollState(snapshot){
+  if(!snapshot || state.view!=='notes' || state.currentNoteId!==snapshot.noteId) return;
+  const restore=()=>{
+    if(state.view!=='notes' || state.currentNoteId!==snapshot.noteId) return;
+    const main=document.querySelector('.main');
+    const pane=document.querySelector('.notes-editor-panes');
+    const rich=document.getElementById('note-editor-plain');
+    const textarea=document.getElementById('note-editor-textarea');
+    const scrolling=document.scrollingElement;
+    if(main){ main.scrollTop=snapshot.mainTop; main.scrollLeft=snapshot.mainLeft; }
+    if(pane){ pane.scrollTop=snapshot.paneTop; pane.scrollLeft=snapshot.paneLeft; }
+    if(rich){ rich.scrollTop=snapshot.richTop; rich.scrollLeft=snapshot.richLeft; }
+    if(textarea){ textarea.scrollTop=snapshot.textareaTop; textarea.scrollLeft=snapshot.textareaLeft; }
+    if(scrolling){ scrolling.scrollTop=snapshot.documentTop; scrolling.scrollLeft=snapshot.documentLeft; }
+    window.scrollTo(snapshot.windowX,snapshot.windowY);
+  };
+  restore();
+  requestAnimationFrame(()=>{ restore(); requestAnimationFrame(restore); });
+}
+function captureNoteEditorRenderState(){
+  const scroll=captureNoteEditorScrollState();
+  if(!scroll) return null;
+  const rich=document.getElementById('note-editor-plain');
+  const textarea=document.getElementById('note-editor-textarea');
+  const active=document.activeElement;
+  let editorId=null, selection=null, shouldRestoreFocus=false;
+  if(textarea){
+    editorId=textarea.id;
+    if(active===textarea){
+      shouldRestoreFocus=true;
+      selection={start:textarea.selectionStart||0,end:textarea.selectionEnd||0,direction:textarea.selectionDirection||'none'};
+    }
+  }else if(rich){
+    editorId=rich.id;
+    selection=typeof captureRichCursorOffset==='function' ? captureRichCursorOffset() : null;
+    shouldRestoreFocus=active===rich || !!selection;
+  }
+  return {...scroll,editorId,selection,shouldRestoreFocus};
+}
+function restoreNoteEditorRenderState(snapshot){
+  if(!snapshot || state.view!=='notes' || state.currentNoteId!==snapshot.noteId) return;
+  const desktopChatOnly=state.modal?.type==='note-chat' && typeof isDesktopLayout==='function' && isDesktopLayout();
+  const modalOpen=!!state.noteCorrection || !!state.noteConversationManager || (!!state.modal && !desktopChatOnly);
+  const restore=()=>{
+    if(state.view!=='notes' || state.currentNoteId!==snapshot.noteId) return;
+    restoreNoteEditorScrollState(snapshot);
+    if(modalOpen) return;
+    const editor=snapshot.editorId && document.getElementById(snapshot.editorId);
+    if(!editor) return;
+    if(snapshot.selection){
+      if(editor.id==='note-editor-textarea'){
+        const max=editor.value.length;
+        const start=Math.max(0,Math.min(max,snapshot.selection.start||0));
+        const end=Math.max(start,Math.min(max,snapshot.selection.end==null?start:snapshot.selection.end));
+        try{ editor.setSelectionRange(start,end,snapshot.selection.direction||'none'); }catch(error){}
+      }else if(typeof restoreRichCursorOffset==='function'){
+        restoreRichCursorOffset(editor,snapshot.selection);
+      }
+    }
+    if(snapshot.shouldRestoreFocus){
+      try{ editor.focus({preventScroll:true}); }catch(error){ editor.focus(); }
+    }
+    restoreNoteEditorScrollState(snapshot);
+  };
+  restore();
+  requestAnimationFrame(()=>{ restore(); requestAnimationFrame(restore); });
+}
 function getNoteContent(noteId){
   return noteContentCache[noteId] !== undefined ? noteContentCache[noteId] : '';
 }
