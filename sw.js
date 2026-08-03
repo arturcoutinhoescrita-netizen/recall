@@ -1,4 +1,4 @@
-const CACHE_NAME = 'letther-b-shell-v11-toolbar-scroll-fix';
+const CACHE_NAME = 'letther-b-shell-v11-toolbar-scroll-fix-dropdown-fix';
 const APP_SHELL = [
   './',
   './index.html',

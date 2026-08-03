@@ -1029,6 +1029,22 @@ function takeRichToolbarContext(){
   if(!context || context.noteId!==state.currentNoteId || Date.now()-context.createdAt>15000) return null;
   return context;
 }
+/* Os pequenos menus de cor, marca-texto e tipo de título não precisam
+   reconstruir o aplicativo inteiro. Atualizar somente a barra preserva o
+   contenteditable original, a seleção e a rolagem sem depender de correções
+   posteriores do navegador. */
+function refreshRichNotesToolbarOnly(scrollState, selection){
+  const toolbar=document.querySelector('.notes-toolbar');
+  const note=state.notesItems.find(item=>item.id===state.currentNoteId && item.type==='note');
+  if(!toolbar || !note || typeof renderNotesToolbar!=='function') return false;
+  const savedScroll=scrollState || (typeof captureNoteEditorScrollState==='function' ? captureNoteEditorScrollState() : null);
+  const savedSelection=selection || captureRichCursorOffset();
+  toolbar.outerHTML=renderNotesToolbar(note.format);
+  const editor=document.getElementById('note-editor-plain');
+  if(editor && savedSelection) restoreRichCursorOffset(editor,savedSelection);
+  if(savedScroll && typeof restoreNoteEditorScrollState==='function') restoreNoteEditorScrollState(savedScroll);
+  return true;
+}
 function focusRichEditor(){
   const el = document.getElementById('note-editor-plain');
   if(!el) return null;
@@ -1058,17 +1074,17 @@ function setRichHeading(level){
 }
 function toggleRichHeadingMenu(){
   const context=takeRichToolbarContext();
-  state.noteHeadingMenu=state.noteHeadingMenu ? null : {
-    savedOffset:context?.selection || captureRichCursorOffset(),
-    scrollState:context?.scroll || (typeof captureNoteEditorScrollState==='function' ? captureNoteEditorScrollState() : null)
-  };
-  render();
+  const savedOffset=context?.selection || captureRichCursorOffset();
+  const scrollState=context?.scroll || (typeof captureNoteEditorScrollState==='function' ? captureNoteEditorScrollState() : null);
+  state.noteColorMenu=null;
+  state.noteHeadingMenu=state.noteHeadingMenu ? null : {savedOffset,scrollState};
+  if(!refreshRichNotesToolbarOnly(scrollState,savedOffset)) render();
 }
 function chooseRichHeading(level){
   const menu=state.noteHeadingMenu;
   state.noteHeadingMenu=false;
   state.lastRichHeading=level;
-  render();
+  if(!refreshRichNotesToolbarOnly(menu?.scrollState,menu?.savedOffset)) render();
   const editor=focusRichEditor();
   if(editor){
     restoreRichCursorOffset(editor,menu?.savedOffset);
@@ -1115,15 +1131,17 @@ function openRichColorMenu(kind){
   const context=takeRichToolbarContext();
   const savedOffset = context?.selection || captureRichCursorOffset();
   const scrollState = context?.scroll || (typeof captureNoteEditorScrollState==='function' ? captureNoteEditorScrollState() : null);
-  state.noteColorMenu = { kind, savedOffset, scrollState };
-  render();
+  const isSameMenu=state.noteColorMenu?.kind===kind;
+  state.noteHeadingMenu=null;
+  state.noteColorMenu = isSameMenu ? null : { kind, savedOffset, scrollState };
+  if(!refreshRichNotesToolbarOnly(scrollState,savedOffset)) render();
 }
 function applyRichPaletteColor(kind, color){
   const menu = state.noteColorMenu;
   state.noteColorMenu = null;
   if(kind === 'text') state.lastRichTextColor = color;
   else state.lastRichHighlight = color;
-  render();
+  if(!refreshRichNotesToolbarOnly(menu?.scrollState,menu?.savedOffset)) render();
   const editor = focusRichEditor();
   if(editor){
     restoreRichCursorOffset(editor, menu && menu.savedOffset);
