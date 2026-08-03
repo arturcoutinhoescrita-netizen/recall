@@ -113,7 +113,11 @@ document.addEventListener('keydown', function(e){
 document.addEventListener('keydown', function(e){
   if(!(e.ctrlKey || e.metaKey) || state.view !== 'notes' || !state.currentNoteId) return;
   const active = document.activeElement;
-  const isNoteEditor = active && (active.id === 'note-editor-textarea' || active.id === 'note-editor-plain');
+  const target = e.target;
+  const isNoteEditor = !!(
+    (active && (active.id === 'note-editor-textarea' || active.id === 'note-editor-plain')) ||
+    (target && (target.id === 'note-editor-textarea' || target.id === 'note-editor-plain' || target.closest?.('#note-editor-plain')))
+  );
   if(!isNoteEditor) return;
   const key = e.key.toLowerCase();
   if(key === 'z'){

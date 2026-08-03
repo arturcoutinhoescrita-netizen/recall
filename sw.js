@@ -1,4 +1,4 @@
-const CACHE_NAME = 'letther-b-shell-v9-errors-only';
+const CACHE_NAME = 'letther-b-shell-v10-cmdz-fix';
 const APP_SHELL = [
   './',
   './index.html',

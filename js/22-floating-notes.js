@@ -463,17 +463,122 @@ function recordNoteHistory(id, before, after){
   if(history.entries.length > NOTE_HISTORY_LIMIT) history.entries.shift();
   history.index = history.entries.length - 1;
 }
+/* Guarda o ponto de leitura do editor antes de aplicar uma entrada do
+   histórico. No contenteditable, trocar todo o innerHTML invalida a Selection
+   do navegador; sem restaurá-la, o Safari/Chrome pode levar o foco e a rolagem
+   para o começo da nota ao usar Cmd/Ctrl+Z. */
+function captureNoteHistoryEditorState(editor){
+  if(!editor) return null;
+  const stateSnapshot = {
+    editorId:editor.id,
+    windowX:window.scrollX||0,
+    windowY:window.scrollY||0,
+    documentTop:document.scrollingElement ? document.scrollingElement.scrollTop : 0,
+    mainTop:document.querySelector('.main')?.scrollTop||0,
+    paneTop:document.querySelector('.notes-editor-panes')?.scrollTop||0,
+    editorTop:editor.scrollTop||0,
+    editorLeft:editor.scrollLeft||0,
+    selection:null,
+    currentText:editor.id === 'note-editor-textarea' ? editor.value : (editor.textContent||'')
+  };
+  if(editor.id === 'note-editor-textarea'){
+    stateSnapshot.selection={
+      start:Number.isFinite(editor.selectionStart)?editor.selectionStart:0,
+      end:Number.isFinite(editor.selectionEnd)?editor.selectionEnd:0,
+      direction:editor.selectionDirection||'none'
+    };
+  }else{
+    stateSnapshot.selection=captureRichCursorOffset();
+  }
+  return stateSnapshot;
+}
+function noteHistoryTargetText(editorId,value){
+  if(editorId === 'note-editor-textarea') return String(value||'');
+  const holder=document.createElement('div');
+  holder.innerHTML=String(value||'');
+  return holder.textContent||'';
+}
+/* Converte a posição do cursor da versão atual para a versão restaurada.
+   Assim, ao desfazer uma inserção no meio do texto, o cursor volta para o
+   ponto da alteração em vez de permanecer deslocado um caractere. */
+function mapNoteHistoryOffset(offset,currentText,targetText){
+  const current=String(currentText||''), target=String(targetText||'');
+  let prefix=0;
+  while(prefix<current.length && prefix<target.length && current[prefix]===target[prefix]) prefix++;
+  let suffix=0;
+  while(suffix<current.length-prefix && suffix<target.length-prefix && current[current.length-1-suffix]===target[target.length-1-suffix]) suffix++;
+  const currentEnd=current.length-suffix;
+  const targetEnd=target.length-suffix;
+  const pos=Math.max(0,Math.min(Number(offset)||0,current.length));
+  if(pos<prefix) return pos;
+  if(pos>currentEnd) return Math.max(0,Math.min(target.length,pos+(target.length-current.length)));
+  return targetEnd;
+}
+function restoreNoteHistoryRichSelection(editor,selection){
+  if(!editor || !selection) return;
+  const max=(editor.textContent||'').length;
+  const start=Math.max(0,Math.min(max,selection.start||0));
+  const end=Math.max(start,Math.min(max,selection.end==null?start:selection.end));
+  let range=textOffsetToRange(editor,start,end);
+  if(!range){
+    range=document.createRange();
+    range.selectNodeContents(editor);
+    range.collapse(false);
+  }
+  const browserSelection=window.getSelection();
+  if(browserSelection){
+    browserSelection.removeAllRanges();
+    browserSelection.addRange(range);
+  }
+}
+function restoreNoteHistoryEditorState(editor,snapshot,targetValue){
+  if(!editor || !snapshot) return;
+  const targetText=noteHistoryTargetText(editor.id,targetValue);
+  const originalSelection=snapshot.selection;
+  const mappedSelection=originalSelection ? {
+    start:mapNoteHistoryOffset(originalSelection.start,snapshot.currentText,targetText),
+    end:mapNoteHistoryOffset(originalSelection.end,snapshot.currentText,targetText),
+    direction:originalSelection.direction||'none'
+  } : null;
+  const restore=()=>{
+    const currentEditor=document.getElementById(snapshot.editorId);
+    if(!currentEditor) return;
+    try{ currentEditor.focus({preventScroll:true}); }catch(error){ currentEditor.focus(); }
+    if(mappedSelection){
+      if(currentEditor.id === 'note-editor-textarea'){
+        const max=currentEditor.value.length;
+        const start=Math.max(0,Math.min(max,mappedSelection.start));
+        const end=Math.max(start,Math.min(max,mappedSelection.end));
+        try{ currentEditor.setSelectionRange(start,end,mappedSelection.direction); }catch(error){}
+      }else{
+        restoreNoteHistoryRichSelection(currentEditor,mappedSelection);
+      }
+    }
+    currentEditor.scrollTop=snapshot.editorTop;
+    currentEditor.scrollLeft=snapshot.editorLeft;
+    const pane=document.querySelector('.notes-editor-panes');
+    const main=document.querySelector('.main');
+    if(pane) pane.scrollTop=snapshot.paneTop;
+    if(main) main.scrollTop=snapshot.mainTop;
+    if(document.scrollingElement) document.scrollingElement.scrollTop=snapshot.documentTop;
+    window.scrollTo(snapshot.windowX,snapshot.windowY);
+  };
+  // Restaura imediatamente e novamente após o navegador recalcular o layout.
+  // A segunda passagem impede o salto tardio causado pelo focus/Selection.
+  restore();
+  requestAnimationFrame(()=>{ restore(); requestAnimationFrame(restore); });
+}
 function syncNoteEditorFromHistory(id, value){
   const note = state.notesItems.find(n=>n.id===id);
   if(!note) return;
-  if(note.format === 'plain'){
-    const editor = document.getElementById('note-editor-plain');
-    if(editor) editor.innerHTML = value;
-  }else{
-    const editor = document.getElementById('note-editor-textarea');
-    if(editor) editor.value = value;
+  const editor = document.getElementById(note.format === 'plain' ? 'note-editor-plain' : 'note-editor-textarea');
+  const editorState = captureNoteHistoryEditorState(editor);
+  if(editor){
+    if(note.format === 'plain') editor.innerHTML = value;
+    else editor.value = value;
   }
   onNoteContentInput(id, value, true);
+  restoreNoteHistoryEditorState(editor,editorState,value);
 }
 function undoNoteEdit(){
   const id = state.currentNoteId;
