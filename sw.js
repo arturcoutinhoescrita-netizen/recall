@@ -1,4 +1,4 @@
-const CACHE_NAME = 'letther-b-shell-v12-composition-format-web-import';
+const CACHE_NAME = 'letther-b-shell-v13-deadkey-network-first';
 const APP_SHELL = [
   './',
   './index.html',
@@ -42,19 +42,46 @@ self.addEventListener('install', event => {
 });
 
 self.addEventListener('activate', event => {
-  event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(key => key !== CACHE_NAME).map(key => caches.delete(key)))));
-  self.clients.claim();
+  event.waitUntil(
+    caches.keys()
+      .then(keys => Promise.all(keys.filter(key => key !== CACHE_NAME).map(key => caches.delete(key))))
+      .then(() => self.clients.claim())
+  );
 });
+
+async function networkFirst(request, fallbackKey){
+  try{
+    const response = await fetch(request);
+    if(response && response.ok){
+      const copy=response.clone();
+      caches.open(CACHE_NAME).then(cache => cache.put(request,copy)).catch(()=>{});
+    }
+    return response;
+  }catch(error){
+    const cached=await caches.match(request) || await caches.match(request,{ignoreSearch:true});
+    if(cached) return cached;
+    if(fallbackKey){
+      const fallback=await caches.match(fallbackKey);
+      if(fallback) return fallback;
+    }
+    throw error;
+  }
+}
 
 self.addEventListener('fetch', event => {
   if(event.request.method !== 'GET') return;
+  const url=new URL(event.request.url);
+
+  // Navegação: versão publicada primeiro; shell offline como fallback.
   if(event.request.mode === 'navigate'){
-    event.respondWith(fetch(event.request).then(response => {
-      const copy=response.clone();
-      caches.open(CACHE_NAME).then(cache => cache.put('./index.html',copy));
-      return response;
-    }).catch(() => caches.match('./index.html')));
+    event.respondWith(networkFirst(event.request,'./index.html'));
     return;
   }
-  event.respondWith(caches.match(event.request).then(cached => cached || fetch(event.request)));
+
+  // Arquivos do próprio Letther B também são network-first. Antes eram
+  // cache-first, então uma implantação nova podia carregar index.html novo e
+  // JavaScript antigo na mesma sessão, mascarando hotfixes até outro reload.
+  if(url.origin === self.location.origin){
+    event.respondWith(networkFirst(event.request));
+  }
 });

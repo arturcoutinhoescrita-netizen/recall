@@ -1821,11 +1821,19 @@ document.addEventListener('select', handleNoteSelection);
 let noteSelectionChangeTimer = null;
 document.addEventListener('selectionchange', () => {
   if(state.view !== 'notes' || !state.currentNoteId) return;
+  // Dead keys/IME também mexem temporariamente na Selection. Não rodamos a
+  // lógica de barra contextual nesse intervalo: mesmo sem alterar o Range,
+  // consultar/atualizar UI no meio da composição é fonte de bugs entre engines.
+  if(typeof isTextCompositionActive==='function' && isTextCompositionActive()) return;
   clearTimeout(noteSelectionChangeTimer);
-  noteSelectionChangeTimer = setTimeout(handleNoteSelection, 220);
+  noteSelectionChangeTimer = setTimeout(()=>{
+    if(typeof isTextCompositionActive==='function' && isTextCompositionActive()) return;
+    handleNoteSelection();
+  }, 220);
 });
 function handleNoteSelection(e){
   if(state.view !== 'notes' || !state.currentNoteId) return;
+  if((e && e.isComposing) || (typeof isTextCompositionActive==='function' && isTextCompositionActive())) return;
   // clicar nos próprios botões da barra (Corrigir/Criar cartão) dispara um mouseup
   // fora da textarea/prévia, que sem essa guarda apagaria state.noteSelection um
   // instante antes do onclick do botão rodar — os botões pareciam não fazer nada.

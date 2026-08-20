@@ -22,28 +22,120 @@ function fmtDue(due){
 let __lastRenderKey = null;
 let pageTransitionTimer = null;
 
-/* Caracteres compostos (acentos, til, cedilha e IMEs) são produzidos pelo
-   navegador em mais de uma etapa. Se qualquer estado paralelo chamar render()
-   entre compositionstart e compositionend, o app troca o input/contenteditable
-   debaixo do teclado e a composição é cancelada. O sintoma era intermitente:
-   depois de algum aviso/salvamento, ´+a, ~+a ou ç podiam parar de funcionar.
+/* Entrada por IME/dead keys (acentos, til, cedilha etc.)
+   ---------------------------------------------------------
+   No macOS, especialmente no Chrome/Chromium, uma "dead key" pode ser
+   anunciada no keydown como key="Dead" ANTES de compositionstart. Isso cria
+   uma janela perigosa entre pressionar o acento e pressionar a vogal: qualquer
+   render() nesse intervalo substitui o input/contenteditable e o navegador
+   perde o estado nativo que produziria á/ã/ê/ç.
 
-   Em vez de tentar adivinhar QUEM chamou render(), protegemos a fronteira que
-   realmente importa: enquanto houver composição ativa, o render completo fica
-   pendente e roda uma única vez logo depois que o navegador concluir o caractere. */
-let __textCompositionDepth = 0;
+   Há ainda diferenças de ordem entre compositionend e o input final. Portanto
+   não liberamos um render pendente imediatamente no compositionend: esperamos
+   o commit do input e um pequeno período de estabilização do DOM.
+
+   Esta guarda é global de propósito: o mesmo problema pode atingir notas,
+   busca, modais e respostas de estudo. Nenhum evento é cancelado; apenas
+   adiamos rerenders que recriariam o elemento focado. */
+let __nativeCompositionDepth = 0;
+let __deadKeyInputPending = false;
+let __textInputSettleUntil = 0;
 let __renderPendingAfterComposition = false;
-function isTextCompositionActive(){
-  return __textCompositionDepth > 0;
+let __deadKeyFallbackTimer = null;
+let __textInputSettleTimer = null;
+
+function isEditableTextTarget(target){
+  if(!target || target.nodeType !== 1) return false;
+  if(target.isContentEditable || target.closest?.('[contenteditable="true"]')) return true;
+  if(target.tagName === 'TEXTAREA') return true;
+  if(target.tagName !== 'INPUT') return false;
+  const type=String(target.type||'text').toLowerCase();
+  return !['button','checkbox','color','file','hidden','image','radio','range','reset','submit'].includes(type);
 }
-document.addEventListener('compositionstart', () => {
-  __textCompositionDepth += 1;
+function isTextCompositionActive(){
+  return __nativeCompositionDepth > 0 || __deadKeyInputPending || Date.now() < __textInputSettleUntil;
+}
+function flushDeferredRenderAfterTextInput(){
+  if(isTextCompositionActive() || !__renderPendingAfterComposition) return;
+  __renderPendingAfterComposition = false;
+  requestAnimationFrame(()=>{
+    // Um novo dead key/composition pode ter começado entre o timer e este frame.
+    if(isTextCompositionActive()){
+      __renderPendingAfterComposition = true;
+      return;
+    }
+    render();
+  });
+}
+function scheduleTextInputSettle(delay=120){
+  __textInputSettleUntil = Math.max(__textInputSettleUntil, Date.now()+delay);
+  if(__textInputSettleTimer) clearTimeout(__textInputSettleTimer);
+  __textInputSettleTimer=setTimeout(()=>{
+    if(__nativeCompositionDepth>0 || __deadKeyInputPending) return;
+    __textInputSettleUntil=0;
+    flushDeferredRenderAfterTextInput();
+  }, delay+8);
+}
+function armDeadKeyInputGuard(){
+  __deadKeyInputPending=true;
+  if(__deadKeyFallbackTimer) clearTimeout(__deadKeyFallbackTimer);
+  // Se o usuário desistir da combinação (trocar foco, apertar outra tecla etc.),
+  // a UI não pode ficar bloqueada indefinidamente.
+  __deadKeyFallbackTimer=setTimeout(()=>{
+    __deadKeyInputPending=false;
+    scheduleTextInputSettle(80);
+  }, 2200);
+}
+function releaseDeadKeyInputGuard(){
+  __deadKeyInputPending=false;
+  if(__deadKeyFallbackTimer){ clearTimeout(__deadKeyFallbackTimer); __deadKeyFallbackTimer=null; }
+}
+
+// CAPTURE é intencional: esta proteção precisa começar antes de qualquer
+// atalho/handler do aplicativo enxergar a tecla que iniciou a composição.
+document.addEventListener('keydown', event=>{
+  if(!isEditableTextTarget(event.target)) return;
+  const isNativeDeadKey = event.key === 'Dead' || event.key === 'Process' || event.keyCode === 229;
+  if(isNativeDeadKey) armDeadKeyInputGuard();
 }, true);
-document.addEventListener('compositionend', () => {
-  __textCompositionDepth = Math.max(0, __textCompositionDepth - 1);
-  if(__textCompositionDepth === 0 && __renderPendingAfterComposition){
-    __renderPendingAfterComposition = false;
-    requestAnimationFrame(() => render());
+
+document.addEventListener('compositionstart', event=>{
+  if(!isEditableTextTarget(event.target)) return;
+  __nativeCompositionDepth += 1;
+  armDeadKeyInputGuard();
+}, true);
+
+document.addEventListener('compositionend', event=>{
+  if(!isEditableTextTarget(event.target)) return;
+  __nativeCompositionDepth = Math.max(0, __nativeCompositionDepth - 1);
+  releaseDeadKeyInputGuard();
+  // Não renderizar aqui. Alguns engines ainda vão disparar/confirmar o input.
+  scheduleTextInputSettle(140);
+}, true);
+
+document.addEventListener('beforeinput', event=>{
+  if(!isEditableTextTarget(event.target)) return;
+  if(event.isComposing || /Composition/i.test(event.inputType||'') || __deadKeyInputPending){
+    // Mantém a guarda viva até o input que efetivamente alterou o editor.
+    if(__deadKeyInputPending) armDeadKeyInputGuard();
+  }
+}, true);
+
+document.addEventListener('input', event=>{
+  if(!isEditableTextTarget(event.target)) return;
+  const belongsToComposition = event.isComposing || /Composition/i.test(event.inputType||'') || __deadKeyInputPending || __nativeCompositionDepth>0;
+  if(!belongsToComposition) return;
+  // Se esse já é o input final (não composing), podemos soltar a dead key, mas
+  // ainda damos ao navegador alguns ms para concluir Selection/DOM internamente.
+  if(!event.isComposing && __nativeCompositionDepth===0) releaseDeadKeyInputGuard();
+  scheduleTextInputSettle(140);
+}, true);
+
+document.addEventListener('focusout', event=>{
+  if(!isEditableTextTarget(event.target)) return;
+  if(__nativeCompositionDepth===0){
+    releaseDeadKeyInputGuard();
+    scheduleTextInputSettle(40);
   }
 }, true);
 
@@ -203,7 +295,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='routine'?'active':''}" onclick="openRoutine()">🌿 Rotina</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.07.25.132</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.08.20.133</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -226,7 +318,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.07.25.132</span>
+        <span class="brand-version">v2026.08.20.133</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -287,7 +379,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.07.25.132</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.08.20.133</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
