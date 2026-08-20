@@ -310,6 +310,7 @@ async function loadData(){
       // segunda falha: segue com o app vazio, sem travar a tela nem assustar com um log de erro
     }
   }
+  if(typeof consumePendingWebFlashcardImport==='function') consumePendingWebFlashcardImport();
   render();
 }
 async function loadCompanionReports(){

@@ -21,7 +21,37 @@ function fmtDue(due){
 
 let __lastRenderKey = null;
 let pageTransitionTimer = null;
+
+/* Caracteres compostos (acentos, til, cedilha e IMEs) são produzidos pelo
+   navegador em mais de uma etapa. Se qualquer estado paralelo chamar render()
+   entre compositionstart e compositionend, o app troca o input/contenteditable
+   debaixo do teclado e a composição é cancelada. O sintoma era intermitente:
+   depois de algum aviso/salvamento, ´+a, ~+a ou ç podiam parar de funcionar.
+
+   Em vez de tentar adivinhar QUEM chamou render(), protegemos a fronteira que
+   realmente importa: enquanto houver composição ativa, o render completo fica
+   pendente e roda uma única vez logo depois que o navegador concluir o caractere. */
+let __textCompositionDepth = 0;
+let __renderPendingAfterComposition = false;
+function isTextCompositionActive(){
+  return __textCompositionDepth > 0;
+}
+document.addEventListener('compositionstart', () => {
+  __textCompositionDepth += 1;
+}, true);
+document.addEventListener('compositionend', () => {
+  __textCompositionDepth = Math.max(0, __textCompositionDepth - 1);
+  if(__textCompositionDepth === 0 && __renderPendingAfterComposition){
+    __renderPendingAfterComposition = false;
+    requestAnimationFrame(() => render());
+  }
+}, true);
+
 function render(){
+  if(isTextCompositionActive()){
+    __renderPendingAfterComposition = true;
+    return;
+  }
   // A navegação muda `state.view` antes de chegar aqui. Encerrar neste ponto
   // garante que sair de Notas por qualquer menu registre o tempo acumulado.
   if(state.view!=='notes') finishNotesPresence();

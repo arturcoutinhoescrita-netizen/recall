@@ -1,4 +1,4 @@
-const CACHE_NAME = 'letther-b-shell-v11-toolbar-scroll-fix-dropdown-fix';
+const CACHE_NAME = 'letther-b-shell-v12-composition-format-web-import';
 const APP_SHELL = [
   './',
   './index.html',
@@ -29,6 +29,7 @@ const APP_SHELL = [
   './js/22-floating-notes.js',
   './js/23-render.js',
   './js/24-modals.js',
+  './js/26-web-flashcards.js',
   './js/25-utils-bootstrap.js',
   './assets/letther-b-icon-contrast-32.png',
   './assets/letther-b-icon-contrast-180.png',

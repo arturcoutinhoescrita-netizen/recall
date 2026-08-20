@@ -804,6 +804,7 @@ function replaceRichWikiText(editor,start,end,name){
    no keydown da barra de espaço (antes dela ser inserida), igual o gatilho
    do Obsidian/Notion: comitar o "#" acumulado assim que o espaço é digitado. */
 function maybeAutoFormatRichHeading(event, editor){
+  if(event.isComposing || (typeof isTextCompositionActive==='function' && isTextCompositionActive())) return false;
   if(event.key !== ' ' || !editor) return false;
   const selection = window.getSelection();
   if(!selection || !selection.rangeCount || !editor.contains(selection.anchorNode)) return false;
@@ -870,6 +871,9 @@ function maybeFinalizeRichWikiLink(editor){
 function handleRichEditorInput(editor){
   if(!editor || !state.currentNoteId) return;
   onNoteContentInput(state.currentNoteId,editor.innerHTML);
+  // Durante composição, qualquer transformação estrutural do DOM (como fechar
+  // um wikilink) pode interromper o caractere que o sistema ainda está montando.
+  if(typeof isTextCompositionActive==='function' && isTextCompositionActive()) return;
   if(maybeFinalizeRichWikiLink(editor)){ hideWikiAutocomplete(); return; }
   const context=getRichWikiAutocompleteContext(editor);
   if(context) showWikiAutocomplete(editor,context); else hideWikiAutocomplete();
@@ -882,6 +886,7 @@ function selectWikiAutocompleteItem(index){
   hideWikiAutocomplete();
 }
 function handleWikiAutocompleteKeydown(event){
+  if(event.isComposing || (typeof isTextCompositionActive==='function' && isTextCompositionActive())) return false;
   if(!wikiAutocomplete.active) return false;
   if(event.key==='ArrowDown' || event.key==='ArrowUp'){
     event.preventDefault();
@@ -1285,6 +1290,103 @@ function replaceRichTextRange(container, start, end, replacement){
   });
   range.deleteContents();
   range.insertNode(fragment);
+  return true;
+}
+
+/* A correção da IA trabalha com texto puro, mas a nota rica guarda HTML. Antes,
+   aceitar uma correção substituía a seleção inteira por um único nó de texto e
+   destruía negrito, itálico, cor, marca-texto, links e tamanhos de fonte.
+
+   A solução é calcular somente os pequenos trechos que realmente mudaram e
+   aplicá-los do fim para o começo. As partes que a IA não alterou nunca saem do
+   DOM; e uma palavra corrigida continua sendo inserida no mesmo contexto do nó
+   original (por exemplo, dentro do <b> ou <span style=...> que já a envolvia). */
+function tokenizeCorrectionText(text){
+  const value=String(text==null?'':text);
+  try{ return value.match(/\s+|[\p{L}\p{N}_]+|[^\s\p{L}\p{N}_]+/gu) || []; }
+  catch(error){ return value.match(/\s+|[A-Za-zÀ-ÿ0-9_]+|[^\sA-Za-zÀ-ÿ0-9_]+/g) || []; }
+}
+function buildCorrectionReplacementOps(original, corrected){
+  const oldTokens=tokenizeCorrectionText(original), newTokens=tokenizeCorrectionText(corrected);
+  const m=oldTokens.length, n=newTokens.length;
+  // Para seleções muito grandes, evita construir uma matriz LCS gigante.
+  // Como correção ortográfica costuma alterar poucos tokens, um alinhamento
+  // local por janela preserva os mesmos pequenos pontos de edição sem trocar o
+  // HTML inteiro (o que voltaria a apagar a formatação).
+  if(m*n > 4000000){
+    const ops=[]; let i=0,j=0,oldOffset=0;
+    const LOOKAHEAD=80;
+    while(i<m || j<n){
+      if(i<m && j<n && oldTokens[i]===newTokens[j]){ oldOffset+=oldTokens[i].length; i++; j++; continue; }
+      const start=oldOffset;
+      let best=null;
+      for(let di=0;di<=LOOKAHEAD && i+di<m;di++){
+        for(let dj=0;dj<=LOOKAHEAD && j+dj<n;dj++){
+          if(oldTokens[i+di]!==newTokens[j+dj]) continue;
+          const score=di+dj;
+          if(!best || score<best.score){ best={di,dj,score}; if(score===1) break; }
+        }
+        if(best && best.score===1) break;
+      }
+      if(!best){
+        const oldTail=oldTokens.slice(i).join('');
+        const newTail=newTokens.slice(j).join('');
+        ops.push({start,end:start+oldTail.length,replacement:newTail});
+        break;
+      }
+      const removed=oldTokens.slice(i,i+best.di).join('');
+      const inserted=newTokens.slice(j,j+best.dj).join('');
+      if(removed || inserted) ops.push({start,end:start+removed.length,replacement:inserted});
+      oldOffset+=removed.length; i+=best.di; j+=best.dj;
+    }
+    return ops;
+  }
+  const dp=Array.from({length:m+1},()=>new Uint16Array(n+1));
+  for(let i=m-1;i>=0;i--){
+    for(let j=n-1;j>=0;j--){
+      dp[i][j]=oldTokens[i]===newTokens[j] ? dp[i+1][j+1]+1 : Math.max(dp[i+1][j],dp[i][j+1]);
+    }
+  }
+  const ops=[];
+  let i=0,j=0,oldOffset=0,change=null;
+  const flush=()=>{
+    if(!change) return;
+    change.replacement=change.newParts.join('');
+    delete change.newParts;
+    // Não cria operações vazias que não façam nada.
+    if(change.start!==change.end || change.replacement) ops.push(change);
+    change=null;
+  };
+  const begin=()=>{ if(!change) change={start:oldOffset,end:oldOffset,newParts:[]}; };
+  while(i<m || j<n){
+    if(i<m && j<n && oldTokens[i]===newTokens[j]){
+      flush();
+      oldOffset+=oldTokens[i].length; i++; j++; continue;
+    }
+    begin();
+    if(j<n && (i>=m || dp[i][j+1] > dp[i+1][j])){
+      change.newParts.push(newTokens[j]); j++; continue;
+    }
+    if(i<m){
+      oldOffset+=oldTokens[i].length;
+      change.end=oldOffset;
+      i++; continue;
+    }
+  }
+  flush();
+  return ops;
+}
+function replaceRichTextRangePreservingFormatting(container,start,end,original,corrected){
+  if(!container) return false;
+  const oldText=String(original==null?'':original), newText=String(corrected==null?'':corrected);
+  if(oldText===newText) return true;
+  const ops=buildCorrectionReplacementOps(oldText,newText);
+  // Aplica ao contrário para que os offsets do começo da seleção permaneçam
+  // válidos mesmo quando uma correção aumenta/diminui o número de caracteres.
+  for(let i=ops.length-1;i>=0;i--){
+    const op=ops[i];
+    if(!replaceRichTextRange(container,start+op.start,start+op.end,op.replacement)) return false;
+  }
   return true;
 }
 // Versão para o marcador de comentário. O HTML é produzido só pelo próprio
@@ -1736,9 +1838,12 @@ function handleNoteSelection(e){
   if(activeEl && activeEl.id === 'note-editor-textarea'){
     const start = activeEl.selectionStart, end = activeEl.selectionEnd;
     if(end > start){
-      const text = activeEl.value.slice(start, end).trim();
+      const rawText = activeEl.value.slice(start, end);
+      const leading = rawText.length - rawText.trimStart().length;
+      const trailing = rawText.length - rawText.trimEnd().length;
+      const text = rawText.slice(leading, rawText.length - trailing);
       if(text){
-        state.noteSelection = { text, source:'textarea', start, end };
+        state.noteSelection = { text, source:'textarea', start:start+leading, end:end-trailing };
         bar.style.display = 'flex';
         if(correctBtn) correctBtn.style.display = '';
         if(commentBtn) commentBtn.style.display = '';
@@ -1748,14 +1853,17 @@ function handleNoteSelection(e){
   } else {
     const richEl = document.getElementById('note-editor-plain');
     const sel = window.getSelection();
-    const text = sel ? sel.toString().trim() : '';
+    const rawSelectedText = sel ? sel.toString() : '';
+    const leadingSelectedWhitespace = rawSelectedText.length - rawSelectedText.trimStart().length;
+    const trailingSelectedWhitespace = rawSelectedText.length - rawSelectedText.trimEnd().length;
+    const text = rawSelectedText.slice(leadingSelectedWhitespace, rawSelectedText.length - trailingSelectedWhitespace);
     // texto normal (contenteditable): a correção também funciona aqui — guarda
     // os ÍNDICES de caractere (não um Range de verdade, que ficaria inválido
     // assim que render() recriar o contenteditable enquanto a IA está pensando).
     if(text && richEl && sel.rangeCount && !sel.isCollapsed && richEl.contains(sel.anchorNode)){
       const r = sel.getRangeAt(0);
-      const start = domPositionToTextOffset(richEl, r.startContainer, r.startOffset);
-      const end = domPositionToTextOffset(richEl, r.endContainer, r.endOffset);
+      const start = domPositionToTextOffset(richEl, r.startContainer, r.startOffset) + leadingSelectedWhitespace;
+      const end = domPositionToTextOffset(richEl, r.endContainer, r.endOffset) - trailingSelectedWhitespace;
       state.noteSelection = { text, source:'richtext', start, end };
       bar.style.display = 'flex';
       if(correctBtn) correctBtn.style.display = '';
@@ -2102,7 +2210,7 @@ function confirmNoteCorrection(){
     // reconstrói o Range agora, do DOM atual — um Range guardado desde o
     // pedido de correção ficaria inválido, porque o render() ao abrir o
     // modal já recriou o contenteditable (e os nós que ele apontava).
-    if(el && replaceRichTextRange(el, m.start, m.end, m.corrected)){
+    if(el && replaceRichTextRangePreservingFormatting(el, m.start, m.end, m.original, m.corrected)){
       note.updatedAt = Date.now();
       if(state.noteCorrection) state.noteCorrection=null; else state.modal = null;
       const updated = el.innerHTML;

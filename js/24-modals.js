@@ -66,6 +66,7 @@ function renderModal(overrideModal){
   if(m.type === 'app-options') return renderAppOptionsModal();
   if(m.type === 'photo-crop') return renderPhotoCropModal(m);
   if(m.type === 'photo-import') return renderPhotoImportModal(m);
+  if(m.type === 'web-flashcards') return renderWebFlashcardsModal(m);
   if(m.type === 'add-book') return renderAddBookModal(m);
   if(m.type === 'quote-capture') return renderQuoteCaptureModal(m);
   if(m.type === 'word-lookup') return renderWordLookupModal(m);
