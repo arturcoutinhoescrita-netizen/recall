@@ -1,4 +1,4 @@
-const CACHE_NAME = 'letther-b-shell-v14-keyboard-focus-fix';
+const CACHE_NAME = 'letther-b-shell-v15-brazilian-pro-keyboard-fix';
 const APP_SHELL = [
   './',
   './index.html',
