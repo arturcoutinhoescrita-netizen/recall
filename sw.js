@@ -1,4 +1,4 @@
-const CACHE_NAME = 'letther-b-shell-v13-deadkey-network-first';
+const CACHE_NAME = 'letther-b-shell-v14-keyboard-focus-fix';
 const APP_SHELL = [
   './',
   './index.html',

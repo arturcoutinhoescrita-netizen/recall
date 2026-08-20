@@ -95,7 +95,10 @@ function releaseDeadKeyInputGuard(){
 // atalho/handler do aplicativo enxergar a tecla que iniciou a composição.
 document.addEventListener('keydown', event=>{
   if(!isEditableTextTarget(event.target)) return;
-  const isNativeDeadKey = event.key === 'Dead' || event.key === 'Process' || event.keyCode === 229;
+  // Alguns layouts informam o próprio sinal em vez de key="Dead".
+  const isNativeDeadKey = event.key === 'Dead' || event.key === 'Process' ||
+    event.key === 'Unidentified' || event.keyCode === 229 ||
+    /^[`´~^¨]$/.test(event.key||'');
   if(isNativeDeadKey) armDeadKeyInputGuard();
 }, true);
 
@@ -115,6 +118,9 @@ document.addEventListener('compositionend', event=>{
 
 document.addEventListener('beforeinput', event=>{
   if(!isEditableTextTarget(event.target)) return;
+  // Protege também caracteres diretos (como ç) quando o oninput do campo
+  // chama render(): o DOM só pode ser recriado depois do commit nativo.
+  scheduleTextInputSettle(event.isComposing ? 180 : 90);
   if(event.isComposing || /Composition/i.test(event.inputType||'') || __deadKeyInputPending){
     // Mantém a guarda viva até o input que efetivamente alterou o editor.
     if(__deadKeyInputPending) armDeadKeyInputGuard();
@@ -124,7 +130,10 @@ document.addEventListener('beforeinput', event=>{
 document.addEventListener('input', event=>{
   if(!isEditableTextTarget(event.target)) return;
   const belongsToComposition = event.isComposing || /Composition/i.test(event.inputType||'') || __deadKeyInputPending || __nativeCompositionDepth>0;
-  if(!belongsToComposition) return;
+  if(!belongsToComposition){
+    scheduleTextInputSettle(90);
+    return;
+  }
   // Se esse já é o input final (não composing), podemos soltar a dead key, mas
   // ainda damos ao navegador alguns ms para concluir Selection/DOM internamente.
   if(!event.isComposing && __nativeCompositionDepth===0) releaseDeadKeyInputGuard();
@@ -138,6 +147,22 @@ document.addEventListener('focusout', event=>{
     scheduleTextInputSettle(40);
   }
 }, true);
+
+// Trocar de aplicativo/aba no meio de uma tecla morta pode cancelar a
+// composição sem disparar compositionend. Nunca carregamos esse estado
+// incompleto quando o Letther B perde ou recupera o foco.
+function resetInterruptedTextComposition(){
+  __nativeCompositionDepth=0;
+  releaseDeadKeyInputGuard();
+  __textInputSettleUntil=0;
+  if(__textInputSettleTimer){ clearTimeout(__textInputSettleTimer); __textInputSettleTimer=null; }
+  flushDeferredRenderAfterTextInput();
+}
+window.addEventListener('blur', resetInterruptedTextComposition);
+window.addEventListener('focus', resetInterruptedTextComposition);
+document.addEventListener('visibilitychange', ()=>{
+  if(document.hidden) resetInterruptedTextComposition();
+});
 
 function render(){
   if(isTextCompositionActive()){
@@ -295,7 +320,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='routine'?'active':''}" onclick="openRoutine()">🌿 Rotina</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.08.20.133</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.08.20.134</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -318,7 +343,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.08.20.133</span>
+        <span class="brand-version">v2026.08.20.134</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -379,7 +404,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.08.20.133</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.08.20.134</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
@@ -1936,4 +1961,3 @@ function backToDeck(){
   state.view = 'deck'; state.tab = 'study'; state.session = null;
   render();
 }
-

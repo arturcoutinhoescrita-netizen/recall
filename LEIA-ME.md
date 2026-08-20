@@ -89,3 +89,10 @@ A divisão atual é conservadora: melhora muito a manutenção sem reescrever a 
 - Modais de link, wikilink e imagem preservam a posição antes de abrir e depois de confirmar.
 - O foco do editor usa `preventScroll` quando o navegador oferece suporte.
 - O cache do Service Worker foi atualizado para `v11-toolbar-scroll-fix`.
+
+## Correção de acentos após alternar de aplicativo
+
+- Composições interrompidas são descartadas ao perder ou recuperar o foco da janela.
+- Teclas mortas também são reconhecidas quando o navegador informa o próprio sinal em vez de `key="Dead"`.
+- O redesenho da interface aguarda o navegador concluir qualquer edição em campos de texto, inclusive a inserção direta de `ç`.
+- A correção cobre notas, pesquisas, modais, cartões e respostas de estudo.
