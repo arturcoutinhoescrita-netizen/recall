@@ -102,3 +102,8 @@ A divisão atual é conservadora: melhora muito a manutenção sem reescrever a 
 
 - A aba `Estudar` e o início das sessões agora encerram qualquer composição de teclado pendente antes de redesenhar a interface.
 - A navegação para o estudo deixa de ficar invisivelmente adiada depois de editar ou pesquisar cartões.
+
+## Correção de "Estudar de novo"
+
+- Sessões padrão mistas agora são reiniciadas pela função correta, preservando em cada item o tipo de exercício (`mc`, `open` ou imagem).
+- As alternativas de múltipla escolha voltam a aparecer ao repetir uma sessão concluída.

@@ -332,7 +332,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='routine'?'active':''}" onclick="openRoutine()">🌿 Rotina</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.08.23.136</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.08.23.137</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -355,7 +355,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.08.23.136</span>
+        <span class="brand-version">v2026.08.23.137</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -416,7 +416,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.08.23.136</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.08.23.137</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
@@ -1939,6 +1939,14 @@ function renderReverseTranslateExercise(s, card){
   </div>`;
 }
 
+function restartCompletedSession(){
+  const previous = state.session;
+  if(!previous) return;
+  if(previous.mode === 'lang-mixed') startLanguageSession(previous.deckId);
+  else if(previous.mode === 'std-mixed') startMixedStandardSession(previous.deckId);
+  else startSession(previous.deckId, previous.mode);
+}
+
 function renderResultsView(){
   const s = state.session;
   if(!s) return '';
@@ -1965,7 +1973,7 @@ function renderResultsView(){
     </div>
     <div class="action-row">
       <button class="ghost-btn" onclick="backToDeck()">Voltar ao baralho</button>
-      <button class="primary-btn" onclick="${s.mode === 'lang-mixed' ? `startLanguageSession('${s.deckId}')` : `startSession('${s.deckId}','${s.mode}')`}">Estudar de novo</button>
+      <button class="primary-btn" onclick="restartCompletedSession()">Estudar de novo</button>
     </div>
   </div>`;
 }

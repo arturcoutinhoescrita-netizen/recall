@@ -1,4 +1,4 @@
-const CACHE_NAME = 'letther-b-shell-v16-study-navigation-fix';
+const CACHE_NAME = 'letther-b-shell-v17-study-again-mixed-fix';
 const APP_SHELL = [
   './',
   './index.html',
