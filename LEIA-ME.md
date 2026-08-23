@@ -97,3 +97,8 @@ A divisão atual é conservadora: melhora muito a manutenção sem reescrever a 
 - O redesenho da interface aguarda o navegador concluir qualquer edição em campos de texto, inclusive a inserção direta de `ç`.
 - A correção cobre notas, pesquisas, modais, cartões e respostas de estudo.
 - No layout macOS `Brazilian - Pro`, toda tecla capaz de iniciar texto fica protegida até o navegador confirmar a edição; isso não depende mais de o Chrome informar `key="Dead"` corretamente.
+
+## Correção da abertura do estudo
+
+- A aba `Estudar` e o início das sessões agora encerram qualquer composição de teclado pendente antes de redesenhar a interface.
+- A navegação para o estudo deixa de ficar invisivelmente adiada depois de editar ou pesquisar cartões.

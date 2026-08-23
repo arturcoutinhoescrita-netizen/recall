@@ -162,6 +162,14 @@ function resetInterruptedTextComposition(){
   if(__textInputSettleTimer){ clearTimeout(__textInputSettleTimer); __textInputSettleTimer=null; }
   flushDeferredRenderAfterTextInput();
 }
+function renderNavigationChange(){
+  // Cliques que mudam de tela/aba não podem ficar presos atrás da proteção de
+  // teclado. Isso acontecia ao sair de um campo de cartão e clicar em Estudar:
+  // state.tab mudava, mas o render visível continuava adiado.
+  __renderPendingAfterComposition=false;
+  resetInterruptedTextComposition();
+  render();
+}
 window.addEventListener('blur', resetInterruptedTextComposition);
 window.addEventListener('focus', resetInterruptedTextComposition);
 document.addEventListener('visibilitychange', ()=>{
@@ -324,7 +332,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='routine'?'active':''}" onclick="openRoutine()">🌿 Rotina</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.08.20.135</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.08.23.136</span>
   </nav>`;
 }
 function renderDesktopDeckExplorer(){
@@ -347,7 +355,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.08.20.135</span>
+        <span class="brand-version">v2026.08.23.136</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -408,7 +416,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.08.20.135</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.08.23.136</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
@@ -1062,7 +1070,7 @@ function renderDeckView(){
   ${state.tab === 'cards' ? renderCardsTab(deck) : renderStudyPicker(deck)}
   `;
 }
-function setTab(t){ state.tab = t; render(); }
+function setTab(t){ state.tab = t; renderNavigationChange(); }
 
 function renderTranslationFields(idPrefix, existingBack){
   const parts = String(existingBack||'').split('/').map(s=>s.trim());

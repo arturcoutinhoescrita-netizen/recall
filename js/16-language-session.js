@@ -79,7 +79,7 @@ function startMixedStandardSession(deckId){
     graded: false, gradeChosen: null, autoMatched: false
   };
   state.view = 'study';
-  render();
+  renderNavigationChange();
   if(getCurrentExType() === 'mc') loadOptionsForCurrent();
 }
 function startLanguageSession(deckId){
@@ -127,7 +127,7 @@ function startLanguageSession(deckId){
     loadingContent: false, content: null, chosenIndex: null
   };
   state.view = 'study';
-  render();
+  renderNavigationChange();
   prefetchSessionContent(state.session).then(() => loadContentForCurrent());
 }
 function friendlyAiErrorMsg(e){
@@ -746,4 +746,3 @@ function endSessionEarly(){
   state.view = 'results';
   render();
 }
-

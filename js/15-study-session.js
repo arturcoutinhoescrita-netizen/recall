@@ -61,7 +61,7 @@ function startSession(deckId, mode){
     autoMatched: false
   };
   state.view = 'study';
-  render();
+  renderNavigationChange();
   const first = getCurrentCard();
   if(!first) return;
   if(mode === 'mc') loadOptionsForCurrent();
@@ -118,4 +118,3 @@ function getCurrentQueueItem(){
   const item = s.queue[s.index];
   return (item && typeof item === 'object') ? item : null;
 }
-
