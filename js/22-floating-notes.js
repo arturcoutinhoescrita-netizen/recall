@@ -1170,6 +1170,32 @@ function insertRichIndent(){
 // foco (o input de dentro dele tem autofocus), então sem isso qualquer
 // inserção feita depois (link, imagem) sempre acabava caindo no início do
 // texto em vez de onde o usuário realmente estava escrevendo.
+function richNodePath(root,node){
+  if(!root || !node || (node!==root && !root.contains(node))) return null;
+  const path=[];
+  while(node && node!==root){
+    const parent=node.parentNode;
+    if(!parent) return null;
+    const index=Array.prototype.indexOf.call(parent.childNodes,node);
+    if(index<0) return null;
+    path.unshift(index);
+    node=parent;
+  }
+  return node===root ? path : null;
+}
+function richNodeFromPath(root,path){
+  if(!root || !Array.isArray(path)) return null;
+  let node=root;
+  for(const index of path){
+    if(!node.childNodes || index<0 || index>=node.childNodes.length) return null;
+    node=node.childNodes[index];
+  }
+  return node;
+}
+function richBoundaryOffsetIsValid(node,offset){
+  if(!node || !Number.isInteger(offset) || offset<0) return false;
+  return node.nodeType===Node.TEXT_NODE ? offset<=node.length : offset<=node.childNodes.length;
+}
 function captureRichCursorOffset(){
   const el = document.getElementById('note-editor-plain');
   const sel = window.getSelection();
@@ -1177,12 +1203,32 @@ function captureRichCursorOffset(){
   const r = sel.getRangeAt(0);
   return {
     start: domPositionToTextOffset(el, r.startContainer, r.startOffset),
-    end: domPositionToTextOffset(el, r.endContainer, r.endOffset)
+    end: domPositionToTextOffset(el, r.endContainer, r.endOffset),
+    startPath:richNodePath(el,r.startContainer),
+    startOffset:r.startOffset,
+    endPath:richNodePath(el,r.endContainer),
+    endOffset:r.endOffset
   };
 }
 function restoreRichCursorOffset(el, savedOffset){
   if(!savedOffset) return;
-  const range = textOffsetToRange(el, savedOffset.start, savedOffset.end);
+  let range=null;
+  // Caminhos estruturais distinguem pontos que têm o mesmo índice no texto
+  // puro, como o fim de um parágrafo e o começo do próximo. Essa ambiguidade
+  // fazia H1/H2/H3, fonte, tamanho, cores e alinhamento restaurarem a seleção
+  // em outro bloco. Como o HTML do editor não muda enquanto o menu da barra é
+  // aberto, o caminho continua válido; offsets numéricos antigos ficam como
+  // fallback para fluxos que realmente recriam uma estrutura diferente.
+  const startNode=richNodeFromPath(el,savedOffset.startPath);
+  const endNode=richNodeFromPath(el,savedOffset.endPath);
+  if(richBoundaryOffsetIsValid(startNode,savedOffset.startOffset) && richBoundaryOffsetIsValid(endNode,savedOffset.endOffset)){
+    try{
+      range=document.createRange();
+      range.setStart(startNode,savedOffset.startOffset);
+      range.setEnd(endNode,savedOffset.endOffset);
+    }catch(error){ range=null; }
+  }
+  if(!range) range = textOffsetToRange(el, savedOffset.start, savedOffset.end);
   if(range){
     const sel = window.getSelection();
     sel.removeAllRanges();
@@ -3252,4 +3298,3 @@ async function copyPasteCorrectionResult(){
     showToast('Não consegui copiar automaticamente. Selecione o texto manualmente.', 'error');
   }
 }
-

@@ -30,7 +30,7 @@
   "fonts/SpecialElite-Regular.ttf": "14780ea85064dcb150c23c9a87e2b870439c38668b6d8f1dad5c6db701ab9520",
   "fonts/Zeyada-Regular.ttf": "7ca864ae9f551edff7030f097e47e43de0b68f70a294b5ae3d4b9dcc179ac0f4",
   "google-services.json": "31576e63de5074e9048a960d287d7f2a42e3e766474e93eca82185d346916155",
-  "index.html": "a21406386a6ec15209e5a4c948236064999858debd45975c59a3f29a5612f66b",
+  "index.html": "ac3b2d89515ada60030963c2d3ebc27ced79dc7001eb6929678c85746c090e86",
   "js/01-state.js": "0313e91159fdd526c6fc601f7b8fdb47b8d1bb9601aaf8fa43d0026b73a4f293",
   "js/02-activity-history.js": "18e9a9be311408a85c08cad4dbc86ea1bd36558f028137e9dbd084b5f1c2cfd4",
   "js/03-firebase.js": "3d55adf7e8d6851fcdb5857e0efb4b4b6854a2e09e5459e753c4863bf3a6f705",
@@ -52,7 +52,7 @@
   "js/19-note-history.js": "b56c85347d33c3326826567edd49c375a4ee4ebbe0236dd0a667caeff2f5c9d5",
   "js/20-outline.js": "9d971259af1a51083ba9adec7826e1d9aca53452e246730978807c3e25d54571",
   "js/21-active-outline.js": "ba137cdc63f1a9e4423851f92c72180b3c2a6598fcceffe86402068580f3875c",
-  "js/22-floating-notes.js": "c485b5872a93b1de1c4ee094f967130dc9916f9d82b0cf4cffb2de3bf008ae98",
+  "js/22-floating-notes.js": "916befbc1211de86b6f466e33109df82e95b854a41f5e6ffe2c0600a552e56e5",
   "js/23-render.js": "d5550d5a47a38131959d689d46d07480182d6238f849a7e5f3b8a11babc3edfc",
   "js/24-modals.js": "cf904f26b7c21feea800f13c9ac48dd0de5aefdda00afaf714b695f7ea8ed5ea",
   "js/25-utils-bootstrap.js": "5166f9b498e7767798818dc7951ad2b415be4ec53959689313b8f09f0729c237",
@@ -60,5 +60,5 @@
   "js/theme-init.js": "0975cc0163c37087c32f18c513a56994d6a98ccdb21356b04f17a0deec1e2bda",
   "manifest.json": "69a71469bb318050f8790a53fd6dcb37ff0ed1099c604bab3ab5a8924b2572c6",
   "original/index-original.html": "2393e30ece2a5743e0704f993c543629591e8f9f32622c8611905b9ce24e48af",
-  "sw.js": "fb11711f090fdc8c736df099057295abb7d23f353f3daf311283ca739a140de2"
+  "sw.js": "d2b979a2f919e48b7c0b594801c0692a273e93a2c53546f34f5fb77b99e1ea11"
 }
