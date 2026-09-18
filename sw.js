@@ -1,4 +1,4 @@
-const CACHE_NAME = 'letther-b-shell-v18-aurora-skin';
+const CACHE_NAME = 'letther-b-shell-v19-aurora-paintfix';
 const APP_SHELL = [
   './',
   './index.html',
