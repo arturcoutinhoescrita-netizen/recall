@@ -216,7 +216,7 @@ function render(){
 
   const app = document.getElementById('app');
   if(!hasClaudeStorage() && !state.firebaseUser){
-    app.innerHTML = renderAuthGate();
+    app.innerHTML = renderAuthGate() + (state.modal?.type==='appearance' ? renderModal() : '');
     return;
   }
   // no mobile, alterna entre a "etapa" da lista de baralhos e a do baralho aberto;
@@ -393,7 +393,7 @@ function renderSidebar(){
       ${state.pendingFileHandle ? `<br><a href="#" style="color:var(--accent); text-decoration:underline;" onclick="event.preventDefault(); reconnectFileHandle();">🔌 Reconectar ao arquivo local usado antes</a>` : ''}
       ` : ''}
       <br><a href="#" style="color:var(--text-muted); text-decoration:underline;" onclick="event.preventDefault(); openApiKeyModal();">${getApiKey() ? 'Chave de API do Gemini configurada ✓' : '⚠ Configurar chave de API do Gemini'}</a>
-      <br><a href="#" style="color:var(--text-muted); text-decoration:underline;" onclick="event.preventDefault(); toggleTheme();">${getTheme()==='light' ? '🌙 Usar tema escuro' : '☀️ Usar tema claro'}</a>
+      <br><a href="#" style="color:var(--text-muted); text-decoration:underline;" onclick="event.preventDefault(); openAppearanceModal();">🎨 Aparência: ${getThemeLabel()}</a>
     </div>
     </div>
     ${renderMobileSidebar()}

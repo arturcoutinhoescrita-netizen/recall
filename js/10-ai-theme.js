@@ -1,16 +1,30 @@
 /* ============ AI CALLS ============ */
-/* ============ TEMA (claro/escuro) ============ */
-function getTheme(){ return localStorage.getItem('recall_theme') || 'dark'; }
+/* ============ APARÊNCIA ============ */
+const APP_THEMES = {
+  aurora: { label:'Aurora', color:'#080B16', statusBar:'black-translucent' },
+  dark: { label:'Escuro clássico', color:'#14162B', statusBar:'black-translucent' },
+  light: { label:'Claro', color:'#FAF8F5', statusBar:'default' }
+};
+function getTheme(){
+  const saved = localStorage.getItem('recall_theme');
+  return APP_THEMES[saved] ? saved : 'aurora';
+}
+function getThemeLabel(theme){ return (APP_THEMES[theme || getTheme()] || APP_THEMES.aurora).label; }
 function applyTheme(theme){
-  document.documentElement.setAttribute('data-recall-theme', theme === 'light' ? 'light' : 'dark');
-  const tc = document.getElementById('theme-color-meta'); if(tc) tc.content = theme==='light' ? '#FAF8F5' : '#14162B';
-  const sb = document.getElementById('status-bar-style-meta'); if(sb) sb.content = theme==='light' ? 'default' : 'black-translucent';
+  const selected = APP_THEMES[theme] ? theme : 'aurora';
+  document.documentElement.setAttribute('data-recall-theme', selected);
+  const tc = document.getElementById('theme-color-meta'); if(tc) tc.content = APP_THEMES[selected].color;
+  const sb = document.getElementById('status-bar-style-meta'); if(sb) sb.content = APP_THEMES[selected].statusBar;
+}
+function setTheme(theme){
+  const selected = APP_THEMES[theme] ? theme : 'aurora';
+  localStorage.setItem('recall_theme', selected);
+  applyTheme(selected);
+  render();
 }
 function toggleTheme(){
-  const next = getTheme() === 'light' ? 'dark' : 'light';
-  localStorage.setItem('recall_theme', next);
-  applyTheme(next);
-  render(); // atualiza o texto do link no rodapé
+  const order = ['aurora','dark','light'];
+  setTheme(order[(order.indexOf(getTheme()) + 1) % order.length]);
 }
 
 function getApiKey(){ return localStorage.getItem('recall_gemini_api_key') || ''; }
@@ -272,4 +286,3 @@ function generateLocalMCStandard(card, deckCards){
   const distractorCards = shuffle(eligibleOthers.slice()).slice(0, 3);
   return shuffle([card.back, ...distractorCards.map(c => c.back)]);
 }
-

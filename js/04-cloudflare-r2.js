@@ -112,6 +112,6 @@ function renderAuthGate(){
       <p style="color:var(--text-muted); max-width:320px; font-size:14px;">Entre com sua conta Google pra acessar seus baralhos, sincronizados em qualquer computador ou celular.</p>
       <button class="primary-btn" onclick="signInWithGoogle()">Entrar com Google</button>
     `}
+    <button class="ghost-btn" style="margin-top:4px; font-size:12px; padding:8px 12px;" onclick="openAppearanceModal();">🎨 Aparência: ${getThemeLabel()}</button>
   </div>`;
 }
-

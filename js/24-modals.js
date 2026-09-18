@@ -2,6 +2,7 @@
 function openNewDeckModal(){ state.modal = { type:'new-deck', name:'', color: DECK_COLORS[state.decks.length % DECK_COLORS.length], deckType:'standard' }; render(); }
 function openApiKeyModal(){ state.modal = { type:'api-key', key: getApiKey(), key2: getApiKey2(), booksKey: getBooksApiKey() }; render(); }
 function openAppOptionsModal(){ state.modal={type:'app-options'}; render(); }
+function openAppearanceModal(){ state.modal={type:'appearance'}; render(); }
 function closeModal(){
   if(state.noteCorrection){ state.noteCorrection=null; render(); return; }
   const closingQuickCommand = state.modal?.type==='quick-command';
@@ -45,10 +46,29 @@ function renderAppOptionsModal(){
       ${(!hasClaudeStorage() && hasFileSystemAccess()) ? `<button class="ghost-btn" onclick="saveToFileSystem(); closeModal();">💾 ${state.fileHandle?'Sincronizar arquivo local':'Salvar em arquivo local'}</button><button class="ghost-btn" onclick="openFromFileSystem(); closeModal();">📂 Abrir arquivo local</button>` : ''}
       <button class="ghost-btn" onclick="openApiKeyModal()">🔑 ${getApiKey()?'Gerenciar chaves de API':'Configurar chaves de API'}</button>
       <button class="ghost-btn" onclick="requestPwaInstall()">📲 ${state.pwaInstallAvailable?'Instalar o Letther B':'Como instalar no celular'}</button>
-      <button class="ghost-btn" onclick="toggleTheme(); closeModal();">${getTheme()==='light'?'🌙 Usar tema escuro':'☀️ Usar tema claro'}</button>
+      <button class="ghost-btn" onclick="openAppearanceModal();">🎨 Aparência <span style="color:var(--text-faint);">· ${getThemeLabel()}</span></button>
       ${hasFirebaseUser() ? `<button class="ghost-btn" style="color:var(--error);" onclick="signOutUser(); closeModal();">Sair da conta</button>` : ''}
     </div>
     <div class="modal-actions"><button class="ghost-btn" onclick="closeModal()">Fechar</button></div>
+  </div></div>`;
+}
+function renderAppearanceModal(){
+  const current=getTheme();
+  const option=(id,icon,title,description,swatches)=>`<button class="appearance-option ${current===id?'selected':''}" aria-pressed="${current===id}" onclick="setTheme('${id}')">
+    <span class="appearance-preview appearance-preview-${id}" aria-hidden="true">${swatches.map(color=>`<i style="background:${color}"></i>`).join('')}</span>
+    <span class="appearance-copy"><strong>${icon} ${title}</strong><small>${description}</small></span>
+    <span class="appearance-check">${current===id?'✓':''}</span>
+  </button>`;
+  return `<div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal appearance-modal">
+    <div class="appearance-heading"><div><span class="appearance-eyebrow">PERSONALIZE SEU ESPAÇO</span><h3>Aparência</h3></div><button class="icon-btn" aria-label="Fechar" onclick="closeModal()">✕</button></div>
+    <p class="appearance-intro">Escolha a atmosfera que combina com você. A alteração é imediata e fica salva neste dispositivo.</p>
+    <div class="appearance-options">
+      ${option('aurora','✦','Aurora','Profundo, moderno e com brilho violeta.',['#080B16','#121B2E','#7C9CFF','#A78BFA'])}
+      ${option('dark','🌙','Escuro clássico','O visual escuro original do Letther B.',['#14162B','#1B1E3B','#F5A623','#F4F1EA'])}
+      ${option('light','☀','Claro','Leve, quente e com tons naturais.',['#FAF8F5','#FFFFFF','#B88E74','#4A3525'])}
+    </div>
+    <div class="appearance-note">↺ Você pode voltar aqui e desativar a skin Aurora quando quiser.</div>
+    <div class="modal-actions"><button class="primary-btn" onclick="closeModal()">Concluído</button></div>
   </div></div>`;
 }
 function renderModal(overrideModal){
@@ -64,6 +84,7 @@ function renderModal(overrideModal){
   if(m.type === 'global-ai-chat') return renderGlobalAiChatModal(m);
   if(m.type === 'api-key') return renderApiKeyModal(m);
   if(m.type === 'app-options') return renderAppOptionsModal();
+  if(m.type === 'appearance') return renderAppearanceModal();
   if(m.type === 'photo-crop') return renderPhotoCropModal(m);
   if(m.type === 'photo-import') return renderPhotoImportModal(m);
   if(m.type === 'web-flashcards') return renderWebFlashcardsModal(m);
@@ -1006,4 +1027,3 @@ function confirmNewDeck(){
   state.modal = null;
   createDeck(name, color, deckType);
 }
-
