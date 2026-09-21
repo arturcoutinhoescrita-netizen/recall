@@ -219,11 +219,18 @@ function render(){
     app.innerHTML = renderAuthGate() + (state.modal?.type==='appearance' ? renderModal() : '');
     return;
   }
+  if(!hasClaudeStorage() && state.firebaseUser && !state.dataReady){
+    app.innerHTML = state.dataLoadFailed
+      ? `<div class="data-load-gate"><div class="brand-mark"></div><h2>Não consegui carregar seus dados</h2><p>${escapeHtml(state.syncError||'A conexão com o servidor falhou.')}</p><p>Nenhuma alteração foi liberada, para impedir que uma tela vazia sobrescreva sua conta.</p><button class="primary-btn" onclick="retryLoadData()">Tentar novamente</button></div>`
+      : `<div class="data-load-gate"><div class="spinner"></div><p>Carregando seus dados com segurança…</p></div>`;
+    return;
+  }
   // no mobile, alterna entre a "etapa" da lista de baralhos e a do baralho aberto;
   // no desktop essa classe não tem efeito nenhum (barra lateral fica sempre visível).
   app.className = `${state.view === 'home' ? 'step-home' : 'step-detail'}${state.sidebarAutoHide ? ' sidebar-auto-hide' : ''}${state.pageTransition ? ' page-transition' : ''}`;
   app.innerHTML = `
     ${renderSidebar()}
+    ${renderSyncBanner()}
     <div class="app-workspace">
       ${renderDesktopTopNav()}
       <div class="desktop-content">
@@ -275,6 +282,17 @@ function render(){
   }
   if(state.modal?.type==='quick-command'){ focusQuickCommandInput(); return; }
   requestAnimationFrame(focusStudyInput);
+}
+
+function getSyncStatusLabel(){
+  return ({loading:'Carregando…',saving:'Salvando…',saved:'Salvo no servidor',offline:'Offline · protegido neste dispositivo',error:'Falha ao salvar',conflict:'Conflito de sincronização'})[state.syncStatus] || 'Salvo no servidor';
+}
+function renderSyncBanner(){
+  if(!['offline','error','conflict'].includes(state.syncStatus)) return '';
+  const message=state.syncError || (state.syncStatus==='offline'
+    ? 'Você está offline. As mudanças estão protegidas neste dispositivo e serão enviadas ao reconectar.'
+    : 'As últimas mudanças ainda não foram confirmadas pelo servidor.');
+  return `<div class="sync-alert sync-alert-${state.syncStatus}" role="alert"><strong>${escapeHtml(getSyncStatusLabel())}</strong><span>${escapeHtml(message)}</span>${state.syncStatus==='conflict'?`<button class="ghost-btn" onclick="location.reload()">Recarregar e mesclar</button>`:''}</div>`;
 }
 function focusStudyInput(){
   if(state.view === 'deck' && state.tab === 'cards' && state._searchFocused){
@@ -380,9 +398,9 @@ function renderSidebar(){
       }).join('')}
     </div>
     <div class="sidebar-foot">
-      ${state.saveFailed ? `<div style="color:var(--error); margin-bottom:6px;">⚠ Não consegui salvar as últimas mudanças. Exporte um backup pra não perder nada.</div>` : ''}
+      <div id="sync-status-indicator" class="sync-status sync-${escapeHtml(state.syncStatus||'saved')}">${escapeHtml(getSyncStatusLabel())}</div>
       ${hasFirebaseUser() ? `<div style="margin-bottom:4px;">👤 ${escapeHtml(state.firebaseUser.email||'')} · <a href="#" style="color:var(--text-muted); text-decoration:underline;" onclick="event.preventDefault(); signOutUser();">Sair</a></div>` : ''}
-      ${state.decks.length} baralho(s) · dados salvos automaticamente<br>
+      ${state.decks.length} baralho(s)<br>
       <a href="#" style="color:var(--text-muted); text-decoration:underline;" onclick="event.preventDefault(); exportAllBackup();">Exportar backup completo</a>
       &nbsp;·&nbsp;
       <a href="#" style="color:var(--text-muted); text-decoration:underline;" onclick="event.preventDefault(); triggerImportBackup();">Importar backup</a>

@@ -37,10 +37,9 @@ function closeFloatingNote(noteId){
   // "fechar salva automaticamente": o conteúdo já vai sendo salvo sozinho a
   // cada edição (onNoteContentInput, com debounce de 600ms) -- essa chamada
   // extra aqui só garante que uma edição feita bem no instante de fechar não
-  // fique presa esperando o debounce. Não mexe no temporizador compartilhado
-  // (notesSaveTimer): cancelá-lo aqui poderia derrubar o salvamento pendente
-  // de OUTRA nota sendo editada ao mesmo tempo no editor principal.
-  if(noteContentCache[noteId] !== undefined) saveNoteContentToR2(noteId, noteContentCache[noteId]);
+  // fique presa esperando o debounce. Cada nota tem seu próprio temporizador,
+  // então fechar uma não cancela o salvamento de outra.
+  flushPendingNoteSave(noteId);
   state.floatingNotes = state.floatingNotes.filter(f=>f.noteId!==noteId);
   state.floatingColorMenuFor = state.floatingColorMenuFor===noteId ? null : state.floatingColorMenuFor;
   saveData(); render();
@@ -220,7 +219,18 @@ async function duplicateNoteItem(id){
   saveNoteContentToR2(copy.id, content);
   showToast('Nota duplicada.');
 }
-let notesSaveTimer = null;
+const notesSaveTimers = new Map();
+function flushPendingNoteSave(noteId){
+  const timer=notesSaveTimers.get(noteId);
+  if(timer){ clearTimeout(timer); notesSaveTimers.delete(noteId); }
+  if(noteContentCache[noteId] === undefined) return;
+  saveData();
+  saveNoteContentToR2(noteId,noteContentCache[noteId]);
+}
+function flushAllPendingNoteSaves(){
+  Array.from(notesSaveTimers.keys()).forEach(flushPendingNoteSave);
+  flushLocalRecoverySnapshot();
+}
 // Página 15 × 21 cm com margens de 1,5 cm deixa uma área útil de 12 × 18 cm.
 // Em fonte de leitura comum (aprox. 12 pt, entrelinha 1,5), isso equivale a
 // cerca de 230 palavras por página — ainda é uma estimativa, não paginação real.
@@ -605,6 +615,9 @@ function onNoteContentInput(id, value, skipHistory){
   noteContentCache[id] = value;
   item.updatedAt = Date.now();
   updateNoteWritingStats(value);
+  // O texto entra numa cópia local durável logo após a digitação. O envio ao
+  // R2 continua com debounce, sem fazer uma requisição por tecla.
+  scheduleLocalRecoverySnapshot();
   // NÃO chama render() aqui — recriar a textarea inteira a cada tecla perdia
   // a posição de rolagem dela (a tela "pulava" ao digitar linhas mais abaixo,
   // pior ainda no celular) e podia cancelar acentos compostos no meio da
@@ -618,11 +631,13 @@ function onNoteContentInput(id, value, skipHistory){
     const previewEl = document.querySelector('.notes-preview');
     if(previewEl) previewEl.innerHTML = renderNoteMarkdown(value);
   }
-  if(notesSaveTimer) clearTimeout(notesSaveTimer);
-  notesSaveTimer = setTimeout(() => {
+  const existingTimer=notesSaveTimers.get(id);
+  if(existingTimer) clearTimeout(existingTimer);
+  notesSaveTimers.set(id,setTimeout(() => {
+    notesSaveTimers.delete(id);
     saveData(); // metadados (nome, pasta, updatedAt) no Firestore
-    saveNoteContentToR2(id, value); // o texto de verdade no R2
-  }, 600);
+    saveNoteContentToR2(id, noteContentCache[id]); // sempre envia a versão mais recente
+  }, 600));
 }
 function exportNoteAsHtml(id){
   const note=state.notesItems.find(item=>item.id===id && item.type==='note');

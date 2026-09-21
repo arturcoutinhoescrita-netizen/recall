@@ -7,9 +7,14 @@ function escapeHtml(str){
 setInterval(()=>{ if(state.view === 'study'){ const t = document.querySelector('.timer'); if(t && state.session) t.textContent = fmtTime(Date.now()-state.session.startTime); } }, 1000);
 setInterval(maintainActivityTimers, 60000);
 document.addEventListener('visibilitychange', () => {
-  if(document.hidden){ finishReadingActivity(); finishWritingActivity(); }
+  if(document.hidden){
+    finishReadingActivity();
+    finishWritingActivity();
+    if(typeof flushAllPendingNoteSaves==='function') flushAllPendingNoteSaves();
+  }
   else { syncRoutineTimerDisplay(); }
 });
+window.addEventListener('pagehide',()=>{ if(typeof flushAllPendingNoteSaves==='function') flushAllPendingNoteSaves(); });
 window.addEventListener('pageshow', () => { syncRoutineTimerDisplay(); });
 window.addEventListener('beforeinstallprompt', event => {
   event.preventDefault();

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'letther-b-shell-v20-rich-selection-fix';
+const CACHE_NAME = 'letther-b-shell-v21-sync-safety';
 const APP_SHELL = [
   './',
   './index.html',

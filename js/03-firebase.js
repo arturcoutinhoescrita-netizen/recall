@@ -32,9 +32,17 @@ function initFirebase(){
   auth.onAuthStateChanged(user => {
     state.firebaseUser = user;
     state.authReady = true;
+    state.dataReady = false;
+    state.dataLoadFailed = false;
+    state.syncStatus = user ? 'loading' : 'saved';
     state.fileHandle = null; state.pendingFileHandle = null; // não carrega o arquivo lembrado da conta anterior
     if(user){
-      loadData().then(async () => { await loadCompanionReports(); tryReconnectFileHandle(); render(); });
+      loadData().then(async ok => {
+        if(!ok) return;
+        await loadCompanionReports();
+        tryReconnectFileHandle();
+        render();
+      });
     } else {
       state.decks = []; state.cards = {}; state.stats = { totalPoints: 0 };
       render();
@@ -64,4 +72,3 @@ function signInWithGoogle(){
 function signOutUser(){
   auth.signOut();
 }
-

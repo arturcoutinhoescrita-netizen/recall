@@ -65,22 +65,45 @@ async function loadNoteContentFromR2(noteId){
   if(!resp.ok) throw new Error('note_content_download_error');
   return await resp.text();
 }
-async function saveNoteContentToR2(noteId, content){
-  try{
-    const token = await getFirebaseIdToken();
-    const userId = auth.currentUser.uid;
-    const resp = await fetch(`${EPUB_WORKER_URL}/note-content/${userId}/${noteId}`, {
-      method: 'PUT',
-      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'text/plain; charset=utf-8' },
-      body: content
-    });
-    if(!resp.ok) throw new Error('note_content_upload_error');
-    if(state.saveFailed){ state.saveFailed = false; render(); }
-  }catch(e){
-    console.error('Falha ao salvar conteúdo da nota no R2', e);
-    state.saveFailed = true;
-    render();
-  }
+const noteContentSaveQueues=new Map();
+function saveNoteContentToR2(noteId, content){
+  // A fila é independente por nota. Assim uma rede lenta numa nota não bloqueia
+  // o envio das demais, e versões do mesmo texto nunca chegam fora de ordem.
+  const previous=noteContentSaveQueues.get(noteId)||Promise.resolve();
+  const operation=previous.catch(()=>{}).then(async()=>{
+    let lastError=null;
+    for(let attempt=0;attempt<3;attempt++){
+      try{
+        const token=await withTimeout(getFirebaseIdToken(),8000,'note_content_auth_timeout');
+        const userId=auth.currentUser.uid;
+        const resp=await withTimeout(fetch(`${EPUB_WORKER_URL}/note-content/${userId}/${noteId}`,{
+          method:'PUT',
+          headers:{'Authorization':`Bearer ${token}`,'Content-Type':'text/plain; charset=utf-8'},
+          body:content
+        }),15000,'note_content_upload_timeout');
+        if(!resp.ok) throw new Error(`note_content_upload_error_${resp.status}`);
+        state.noteSaveFailed=false;
+        if(state.syncStatus==='error' && /texto da nota/i.test(state.syncError||'')){
+          state.syncStatus=pendingRemoteSave?'saving':'saved';
+          state.syncError=''; state.saveFailed=false; updateSyncIndicator();
+        }
+        return true;
+      }catch(error){
+        lastError=error;
+        if(attempt<2) await sleep(700*(attempt+1));
+      }
+    }
+    console.error('Falha ao salvar conteúdo da nota no R2',lastError);
+    state.noteSaveFailed=true;
+    setSyncProblem('error','O texto da nota ainda não foi confirmado no servidor. Uma cópia local está protegida e o envio será tentado novamente.',lastError);
+    return false;
+  });
+  noteContentSaveQueues.set(noteId,operation);
+  operation.finally(()=>{
+    if(noteContentSaveQueues.get(noteId)===operation) noteContentSaveQueues.delete(noteId);
+    if(typeof maybeClearPendingRecovery==='function') maybeClearPendingRecovery();
+  });
+  return operation;
 }
 async function deleteNoteContentFromR2(noteId){
   try{

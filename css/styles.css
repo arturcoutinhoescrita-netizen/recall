@@ -25,7 +25,26 @@
     --text-muted:#9498B8;
     --text-faint:#5C6088;
     --border:rgba(244,241,234,0.09);
-  }
+}
+
+/* Estado real da sincronização: nunca afirmar que algo foi salvo antes da
+   confirmação do servidor. Em falhas, o aviso permanece visível também no
+   celular, onde o rodapé da barra lateral pode ficar fora da tela. */
+.sync-status{font-size:11.5px;font-weight:700;margin-bottom:7px;color:var(--text-muted)}
+.sync-status::before{content:'●';margin-right:6px;color:var(--text-faint)}
+.sync-status.sync-saving::before,.sync-status.sync-loading::before{color:#eab64d}
+.sync-status.sync-saved::before{color:#42c98b}
+.sync-status.sync-offline::before{color:#eab64d}
+.sync-status.sync-error::before,.sync-status.sync-conflict::before{color:var(--error)}
+.sync-alert{position:fixed;z-index:120;top:12px;left:50%;transform:translateX(-50%);width:min(720px,calc(100vw - 24px));display:flex;align-items:center;gap:10px;padding:11px 14px;border-radius:12px;border:1px solid var(--border);background:var(--surface);box-shadow:0 10px 35px rgba(0,0,0,.28);font-size:12.5px;color:var(--text)}
+.sync-alert strong{white-space:nowrap}.sync-alert span{flex:1;color:var(--text-muted)}
+.sync-alert-error,.sync-alert-conflict{border-color:color-mix(in srgb,var(--error) 55%,var(--border))}
+.sync-alert-offline{border-color:color-mix(in srgb,#eab64d 55%,var(--border))}
+.sync-alert .ghost-btn{padding:6px 9px;white-space:nowrap}
+.data-load-gate{width:min(460px,calc(100vw - 32px));min-height:100vh;margin:auto;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:12px;color:var(--text)}
+.data-load-gate .brand-mark{width:52px;height:52px;border-radius:14px}
+.data-load-gate h2,.data-load-gate p{margin:0}.data-load-gate p{color:var(--text-muted);line-height:1.55}
+@media(max-width:700px){.sync-alert{top:max(8px,env(safe-area-inset-top));align-items:flex-start;flex-wrap:wrap}.sync-alert strong{width:100%}}
   :root[data-recall-theme="light"]{
     /* tema claro: Harmonia Botânica & Nude */
     --bg:#FAF8F5;
