@@ -404,6 +404,7 @@ function renderSidebar(){
       <a href="#" style="color:var(--text-muted); text-decoration:underline;" onclick="event.preventDefault(); exportAllBackup();">Exportar backup completo</a>
       &nbsp;·&nbsp;
       <a href="#" style="color:var(--text-muted); text-decoration:underline;" onclick="event.preventDefault(); triggerImportBackup();">Importar backup</a>
+      <div style="margin-top:6px; font-size:10px; color:var(--text-faint);">Recall v.138</div>
       ${(!hasClaudeStorage() && hasFileSystemAccess()) ? `
       <br><a href="#" style="color:var(--text-muted); text-decoration:underline;" onclick="event.preventDefault(); saveToFileSystem();">${state.fileHandle ? '💾 Sincronizando com arquivo local ✓' : '💾 Salvar em arquivo local'}</a>
       &nbsp;·&nbsp;
