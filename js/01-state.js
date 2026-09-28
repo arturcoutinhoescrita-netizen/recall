@@ -459,6 +459,7 @@ async function loadData(){
       } else if(hasFirebaseUser()){
         const snap = await db.collection('users').doc(state.firebaseUser.uid).get();
         const root=snap.exists ? snap.data() : {};
+        let d=root;
         dataSyncRevision=Number(root?._sync?.revision)||0;
         if(root?._storage?.version===FIRESTORE_STORAGE_VERSION){
           d=await readPayloadGeneration(root._storage);
