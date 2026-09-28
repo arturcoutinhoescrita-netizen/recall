@@ -230,7 +230,9 @@ const LOCAL_PENDING_PREFIX = 'letther_b_pending_v1:';
 const LOCAL_GOOD_PREFIX = 'letther_b_last_good_v1:';
 const SYNC_CLIENT_KEY = 'letther_b_sync_client_id';
 const FIRESTORE_CHUNK_RAW_BYTES = 300000;
-const FIRESTORE_STORAGE_VERSION = 2;
+const FIRESTORE_CHUNK_STORAGE_VERSION = 2;
+const FIRESTORE_STORAGE_VERSION = 3;
+const FIRESTORE_COMPRESSED_SAFE_BYTES = 900000;
 let dataSyncRevision = 0;
 let dataSaveVersion = 0;
 let pendingRemoteSave = null;
@@ -270,6 +272,36 @@ function base64ToBytes(value){
   for(let i=0;i<binary.length;i++) bytes[i]=binary.charCodeAt(i);
   return bytes;
 }
+async function gzipBytes(bytes){
+  if(typeof CompressionStream==='undefined') throw new Error('compression_stream_unavailable');
+  const stream=new Blob([bytes]).stream().pipeThrough(new CompressionStream('gzip'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+async function gunzipBytes(bytes){
+  if(typeof DecompressionStream==='undefined') throw new Error('decompression_stream_unavailable');
+  const stream=new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+async function encodeCompressedPayload(payload){
+  const raw=new TextEncoder().encode(JSON.stringify(payload));
+  const compressed=await gzipBytes(raw);
+  const blob=bytesToBase64(compressed);
+  const storedBytes=new TextEncoder().encode(blob).length;
+  if(storedBytes>FIRESTORE_COMPRESSED_SAFE_BYTES){
+    const error=new Error('compressed_payload_too_large');
+    error.code='compressed_payload_too_large';
+    error.storedBytes=storedBytes;
+    error.rawBytes=raw.length;
+    throw error;
+  }
+  return {version:FIRESTORE_STORAGE_VERSION,encoding:'gzip-base64',blob,rawByteLength:raw.length,storedByteLength:storedBytes};
+}
+async function decodeCompressedPayload(storage){
+  if(!storage || Number(storage.version)!==FIRESTORE_STORAGE_VERSION || storage.encoding!=='gzip-base64' || !storage.blob) throw new Error('invalid_compressed_storage');
+  const compressed=base64ToBytes(storage.blob);
+  const raw=await gunzipBytes(compressed);
+  return JSON.parse(new TextDecoder().decode(raw));
+}
 function makeStorageGeneration(revision){
   const client=String(syncClientId||'client').replace(/[^a-zA-Z0-9_-]/g,'').slice(-24)||'client';
   return `r${Number(revision)||0}_${Date.now().toString(36)}_${client}`;
@@ -297,10 +329,10 @@ async function writePayloadGeneration(payload,revision){
     });
   });
   await batch.commit();
-  return {version:FIRESTORE_STORAGE_VERSION,encoding:'base64-utf8',generation,chunkCount:encoded.chunks.length,byteLength:encoded.bytes.length};
+  return {version:FIRESTORE_CHUNK_STORAGE_VERSION,encoding:'base64-utf8',generation,chunkCount:encoded.chunks.length,byteLength:encoded.bytes.length};
 }
 async function readPayloadGeneration(storage){
-  if(!storage || Number(storage.version)!==FIRESTORE_STORAGE_VERSION || !storage.generation || !Number(storage.chunkCount)) throw new Error('invalid_chunk_storage');
+  if(!storage || Number(storage.version)!==FIRESTORE_CHUNK_STORAGE_VERSION || !storage.generation || !Number(storage.chunkCount)) throw new Error('invalid_chunk_storage');
   const userRef=db.collection('users').doc(state.firebaseUser.uid);
   const docs=await Promise.all(Array.from({length:Number(storage.chunkCount)},(_,index)=>userRef.collection('dataChunks').doc(chunkDocId(storage.generation,index)).get()));
   if(docs.some(doc=>!doc.exists)) throw new Error('missing_chunk_storage');
@@ -462,10 +494,14 @@ async function loadData(){
         let d=root;
         dataSyncRevision=Number(root?._sync?.revision)||0;
         if(root?._storage?.version===FIRESTORE_STORAGE_VERSION){
+          d=await decodeCompressedPayload(root._storage);
+        }else if(root?._storage?.version===FIRESTORE_CHUNK_STORAGE_VERSION){
+          // Compatibilidade com a tentativa anterior de armazenamento em
+          // subcoleção. Lemos se existir e migramos imediatamente para v3.
           d=await readPayloadGeneration(root._storage);
+          needsStorageMigration=true;
         }else{
-          // Formato legado: os dados ainda vivem no documento principal. Eles
-          // permanecem intactos até uma geração v2 ser gravada e confirmada.
+          // Formato legado: os dados ainda vivem no documento principal.
           d=root;
           needsStorageMigration=true;
         }
@@ -605,15 +641,11 @@ async function flushRemoteSave(){
   pendingRemoteSave=null;
   remoteSaveRunning=true;
   const expectedRevision=dataSyncRevision;
-  let writtenStorage=null;
   let previousStorage=null;
   try{
     const ref=db.collection('users').doc(state.firebaseUser.uid);
-    const targetRevision=expectedRevision+1;
-    // Os blocos são gravados primeiro. Só depois o documento principal passa a
-    // apontar para essa geração; uma falha no meio nunca substitui dados válidos.
-    writtenStorage=await writePayloadGeneration(entry.payload,targetRevision);
-    let committedRevision=targetRevision;
+    const compressedStorage=await encodeCompressedPayload(entry.payload);
+    let committedRevision=expectedRevision+1;
     await db.runTransaction(async transaction=>{
       const snap=await transaction.get(ref);
       const root=snap.exists ? (snap.data()||{}) : {};
@@ -623,29 +655,31 @@ async function flushRemoteSave(){
       }
       previousStorage=root?._storage||null;
       committedRevision=remoteRevision+1;
-      // merge:true preserva o documento legado como uma cópia de segurança.
-      // A partir daqui, a leitura oficial usa exclusivamente _storage v2.
+      // Substitui atomicamente o documento monolítico antigo por um documento
+      // pequeno contendo o payload comprimido. Se a transação falhar, o
+      // documento anterior continua intacto e a recuperação local permanece.
       transaction.set(ref,{
-        _storage:{...writtenStorage,revision:committedRevision,updatedAt:Date.now()},
+        _storage:{...compressedStorage,revision:committedRevision,updatedAt:Date.now()},
         _sync:{revision:committedRevision,clientId:syncClientId,clientUpdatedAt:Date.now(),serverUpdatedAt:firebase.firestore.FieldValue.serverTimestamp()}
-      },{merge:true});
+      });
     });
     dataSyncRevision=committedRevision;
     state.lastSavedAt=Date.now();
     state.saveFailed=false;
     state.syncError='';
     acknowledgeRecovery(entry.record,committedRevision);
-    if(previousStorage?.generation && previousStorage.generation!==writtenStorage.generation) deletePayloadGeneration(previousStorage);
+    if(previousStorage?.version===FIRESTORE_CHUNK_STORAGE_VERSION && previousStorage?.generation) deletePayloadGeneration(previousStorage);
     if(pendingRemoteSave){
       pendingRemoteSave.record=persistPendingRecovery(pendingRemoteSave.payload,dataSyncRevision)||pendingRemoteSave.record;
       state.syncStatus='saving';
     }else state.syncStatus='saved';
     updateSyncIndicator();
   }catch(error){
-    if(writtenStorage) deletePayloadGeneration(writtenStorage);
     if(!pendingRemoteSave || pendingRemoteSave.version<entry.version) pendingRemoteSave=entry;
     if(error?.code==='sync_conflict'){
       setSyncProblem('conflict','Outra aba ou aparelho alterou os dados. Esta cópia ficou protegida localmente; recarregue para mesclar sem perder nada.',error);
+    }else if(error?.code==='compressed_payload_too_large'){
+      setSyncProblem('error',`Mesmo comprimidos, os dados chegaram a ${(Number(error.storedBytes||0)/1024).toFixed(0)} KB. A cópia local está protegida; será preciso dividir o banco em documentos com novas regras do Firestore.`,error);
     }else{
       state.syncStatus=navigator.onLine?'error':'offline';
       state.syncError=navigator.onLine?'O servidor não confirmou o salvamento. A cópia local está protegida e tentaremos novamente.':'Sem conexão. As mudanças estão protegidas neste dispositivo e serão enviadas ao reconectar.';
