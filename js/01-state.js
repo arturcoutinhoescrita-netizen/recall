@@ -682,7 +682,7 @@ async function flushRemoteSave(){
       setSyncProblem('error',`Mesmo comprimidos, os dados chegaram a ${(Number(error.storedBytes||0)/1024).toFixed(0)} KB. A cópia local está protegida; será preciso dividir o banco em documentos com novas regras do Firestore.`,error);
     }else{
       state.syncStatus=navigator.onLine?'error':'offline';
-      state.syncError=navigator.onLine?'O servidor não confirmou o salvamento. A cópia local está protegida e tentaremos novamente.':'Sem conexão. As mudanças estão protegidas neste dispositivo e serão enviadas ao reconectar.';
+      state.syncError=navigator.onLine?('O servidor rejeitou o salvamento ('+String((error&&error.code)|| (error&&error.name) ||'erro_desconhecido')+')'+((error&&error.message)?': '+String(error.message).replace(/\\s+/g,' ').trim():'')+'. A cópia local está protegida e tentaremos novamente.'):'Sem conexão. As mudanças estão protegidas neste dispositivo e serão enviadas ao reconectar.';
       state.saveFailed=navigator.onLine;
       if(navigator.onLine) console.error('Falha ao salvar dados no Firestore',error);
       render();
