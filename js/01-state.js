@@ -229,7 +229,8 @@ function hasFirebaseUser(){
 const LOCAL_PENDING_PREFIX = 'letther_b_pending_v1:';
 const LOCAL_GOOD_PREFIX = 'letther_b_last_good_v1:';
 const SYNC_CLIENT_KEY = 'letther_b_sync_client_id';
-const FIRESTORE_SAFE_PAYLOAD_BYTES = 950000;
+const FIRESTORE_CHUNK_RAW_BYTES = 300000;
+const FIRESTORE_STORAGE_VERSION = 2;
 let dataSyncRevision = 0;
 let dataSaveVersion = 0;
 let pendingRemoteSave = null;
@@ -256,6 +257,74 @@ function buildDataPayload(){
 function payloadByteLength(payload){
   try{ return new TextEncoder().encode(JSON.stringify(payload)).length; }
   catch(error){ return JSON.stringify(payload).length; }
+}
+function bytesToBase64(bytes){
+  let binary='';
+  const step=0x8000;
+  for(let i=0;i<bytes.length;i+=step) binary+=String.fromCharCode(...bytes.subarray(i,Math.min(i+step,bytes.length)));
+  return btoa(binary);
+}
+function base64ToBytes(value){
+  const binary=atob(String(value||''));
+  const bytes=new Uint8Array(binary.length);
+  for(let i=0;i<binary.length;i++) bytes[i]=binary.charCodeAt(i);
+  return bytes;
+}
+function makeStorageGeneration(revision){
+  const client=String(syncClientId||'client').replace(/[^a-zA-Z0-9_-]/g,'').slice(-24)||'client';
+  return `r${Number(revision)||0}_${Date.now().toString(36)}_${client}`;
+}
+function chunkDocId(generation,index){
+  return `${generation}_${String(index).padStart(4,'0')}`;
+}
+function encodePayloadForFirestore(payload,generation){
+  const bytes=new TextEncoder().encode(JSON.stringify(payload));
+  const chunks=[];
+  for(let offset=0,index=0;offset<bytes.length;offset+=FIRESTORE_CHUNK_RAW_BYTES,index++){
+    chunks.push({id:chunkDocId(generation,index),index,data:bytesToBase64(bytes.subarray(offset,Math.min(offset+FIRESTORE_CHUNK_RAW_BYTES,bytes.length)))});
+  }
+  if(!chunks.length) chunks.push({id:chunkDocId(generation,0),index:0,data:bytesToBase64(new Uint8Array())});
+  return {bytes,chunks};
+}
+async function writePayloadGeneration(payload,revision){
+  const generation=makeStorageGeneration(revision);
+  const encoded=encodePayloadForFirestore(payload,generation);
+  const userRef=db.collection('users').doc(state.firebaseUser.uid);
+  const batch=db.batch();
+  encoded.chunks.forEach(chunk=>{
+    batch.set(userRef.collection('dataChunks').doc(chunk.id),{
+      generation,index:chunk.index,total:encoded.chunks.length,encoding:'base64-utf8',data:chunk.data,createdAt:firebase.firestore.FieldValue.serverTimestamp()
+    });
+  });
+  await batch.commit();
+  return {version:FIRESTORE_STORAGE_VERSION,encoding:'base64-utf8',generation,chunkCount:encoded.chunks.length,byteLength:encoded.bytes.length};
+}
+async function readPayloadGeneration(storage){
+  if(!storage || Number(storage.version)!==FIRESTORE_STORAGE_VERSION || !storage.generation || !Number(storage.chunkCount)) throw new Error('invalid_chunk_storage');
+  const userRef=db.collection('users').doc(state.firebaseUser.uid);
+  const docs=await Promise.all(Array.from({length:Number(storage.chunkCount)},(_,index)=>userRef.collection('dataChunks').doc(chunkDocId(storage.generation,index)).get()));
+  if(docs.some(doc=>!doc.exists)) throw new Error('missing_chunk_storage');
+  const parts=docs.map((doc,index)=>{
+    const data=doc.data()||{};
+    if(data.generation!==storage.generation || Number(data.index)!==index) throw new Error('invalid_chunk_order');
+    return base64ToBytes(data.data);
+  });
+  const total=parts.reduce((sum,part)=>sum+part.length,0);
+  const bytes=new Uint8Array(total);
+  let offset=0;
+  parts.forEach(part=>{ bytes.set(part,offset); offset+=part.length; });
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
+async function deletePayloadGeneration(storage){
+  if(!storage || !storage.generation || !Number(storage.chunkCount) || !hasFirebaseUser()) return;
+  try{
+    const userRef=db.collection('users').doc(state.firebaseUser.uid);
+    const batch=db.batch();
+    for(let index=0;index<Number(storage.chunkCount);index++) batch.delete(userRef.collection('dataChunks').doc(chunkDocId(storage.generation,index)));
+    await batch.commit();
+  }catch(error){
+    console.warn('Não foi possível limpar a geração antiga de dados',error);
+  }
 }
 function makeRecoveryRecord(payload, baseRevision){
   const contents={};
@@ -379,6 +448,7 @@ async function loadData(){
   state.dataLoadFailed=false;
   state.syncStatus='loading';
   let recoveredRecord=null;
+  let needsStorageMigration=false;
   for(let attempt=0; attempt<2; attempt++){
     try{
       if(hasClaudeStorage()){
@@ -388,8 +458,16 @@ async function loadData(){
         }
       } else if(hasFirebaseUser()){
         const snap = await db.collection('users').doc(state.firebaseUser.uid).get();
-        let d=snap.exists ? snap.data() : {};
-        dataSyncRevision=Number(d?._sync?.revision)||0;
+        const root=snap.exists ? snap.data() : {};
+        dataSyncRevision=Number(root?._sync?.revision)||0;
+        if(root?._storage?.version===FIRESTORE_STORAGE_VERSION){
+          d=await readPayloadGeneration(root._storage);
+        }else{
+          // Formato legado: os dados ainda vivem no documento principal. Eles
+          // permanecem intactos até uma geração v2 ser gravada e confirmada.
+          d=root;
+          needsStorageMigration=true;
+        }
         recoveredRecord=readPendingRecovery();
         // Uma versão antiga do app ainda aberta em outro dispositivo pode usar
         // set() sem o campo _sync e fazer a revisão do servidor regredir a zero.
@@ -423,8 +501,10 @@ async function loadData(){
       return false;
     }
   }
-  if(recoveredRecord){
+  if(recoveredRecord || needsStorageMigration){
     saveData();
+  }
+  if(recoveredRecord){
     Object.entries(recoveredRecord.noteContents||{}).forEach(([noteId,content])=>{
       if(typeof saveNoteContentToR2==='function') saveNoteContentToR2(noteId,content);
     });
@@ -524,29 +604,44 @@ async function flushRemoteSave(){
   pendingRemoteSave=null;
   remoteSaveRunning=true;
   const expectedRevision=dataSyncRevision;
+  let writtenStorage=null;
+  let previousStorage=null;
   try{
     const ref=db.collection('users').doc(state.firebaseUser.uid);
-    let committedRevision=expectedRevision+1;
+    const targetRevision=expectedRevision+1;
+    // Os blocos são gravados primeiro. Só depois o documento principal passa a
+    // apontar para essa geração; uma falha no meio nunca substitui dados válidos.
+    writtenStorage=await writePayloadGeneration(entry.payload,targetRevision);
+    let committedRevision=targetRevision;
     await db.runTransaction(async transaction=>{
       const snap=await transaction.get(ref);
-      const remoteRevision=snap.exists ? (Number(snap.data()?._sync?.revision)||0) : 0;
+      const root=snap.exists ? (snap.data()||{}) : {};
+      const remoteRevision=Number(root?._sync?.revision)||0;
       if(remoteRevision!==expectedRevision){
         const conflict=new Error('sync_conflict'); conflict.code='sync_conflict'; throw conflict;
       }
+      previousStorage=root?._storage||null;
       committedRevision=remoteRevision+1;
-      transaction.set(ref,{...entry.payload,_sync:{revision:committedRevision,clientId:syncClientId,clientUpdatedAt:Date.now(),serverUpdatedAt:firebase.firestore.FieldValue.serverTimestamp()}});
+      // merge:true preserva o documento legado como uma cópia de segurança.
+      // A partir daqui, a leitura oficial usa exclusivamente _storage v2.
+      transaction.set(ref,{
+        _storage:{...writtenStorage,revision:committedRevision,updatedAt:Date.now()},
+        _sync:{revision:committedRevision,clientId:syncClientId,clientUpdatedAt:Date.now(),serverUpdatedAt:firebase.firestore.FieldValue.serverTimestamp()}
+      },{merge:true});
     });
     dataSyncRevision=committedRevision;
     state.lastSavedAt=Date.now();
     state.saveFailed=false;
     state.syncError='';
     acknowledgeRecovery(entry.record,committedRevision);
+    if(previousStorage?.generation && previousStorage.generation!==writtenStorage.generation) deletePayloadGeneration(previousStorage);
     if(pendingRemoteSave){
       pendingRemoteSave.record=persistPendingRecovery(pendingRemoteSave.payload,dataSyncRevision)||pendingRemoteSave.record;
       state.syncStatus='saving';
     }else state.syncStatus='saved';
     updateSyncIndicator();
   }catch(error){
+    if(writtenStorage) deletePayloadGeneration(writtenStorage);
     if(!pendingRemoteSave || pendingRemoteSave.version<entry.version) pendingRemoteSave=entry;
     if(error?.code==='sync_conflict'){
       setSyncProblem('conflict','Outra aba ou aparelho alterou os dados. Esta cópia ficou protegida localmente; recarregue para mesclar sem perder nada.',error);
@@ -576,11 +671,6 @@ function saveData(){
   }
   const record=persistPendingRecovery(payload,dataSyncRevision);
   if(!record){ setSyncProblem('error','Não foi possível criar a cópia local de segurança. Libere espaço no navegador antes de continuar.'); return Promise.resolve(false); }
-  const bytes=payloadByteLength(payload);
-  if(bytes>FIRESTORE_SAFE_PAYLOAD_BYTES){
-    setSyncProblem('error',`O banco atingiu ${(bytes/1024).toFixed(0)} KB e está perto do limite do Firestore. A mudança ficou protegida localmente, mas não foi enviada.`);
-    return Promise.resolve(false);
-  }
   dataSaveVersion++;
   pendingRemoteSave={payload,record,version:dataSaveVersion};
   state.syncStatus=navigator.onLine?'saving':'offline';
