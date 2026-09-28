@@ -1,4 +1,4 @@
-const CACHE_NAME = 'letther-b-shell-v21-sync-safety';
+const CACHE_NAME = 'letther-b-shell-v22-firestore-chunks';
 const APP_SHELL = [
   './',
   './index.html',
