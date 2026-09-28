@@ -1,4 +1,4 @@
-const CACHE_NAME = 'letther-b-shell-v24-firestore-error-details';
+const CACHE_NAME = 'letther-b-shell-v138';
 const APP_SHELL = [
   './',
   './index.html',
