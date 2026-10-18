@@ -337,11 +337,11 @@ function openDesktopDecks(){
   const lastDeck = state.decks.find(deck => deck.id===state.lastDeckId);
   const fallbackDeck = getOrderedDecks()[0];
   const deck = lastDeck || fallbackDeck;
-  if(!deck){ state.view='home'; state.currentDeckId=null; state.tab='cards'; render(); return; }
+  if(!deck){ state.view='deck-list'; state.currentDeckId=null; state.tab='cards'; render(); return; }
   selectDeck(deck.id);
 }
 function renderDesktopTopNav(){
-  const deckActive=state.view==='deck'||state.view==='study';
+  const deckActive=state.view==='deck'||state.view==='study'||state.view==='deck-list';
   return `<nav class="desktop-top-nav" aria-label="Navegação principal">
     <button class="desktop-top-brand" title="Baralhos" onclick="openDesktopDecks()"><span><strong>Letther B</strong><small>let it be</small></span></button>
     <button class="ghost-btn ${deckActive?'active':''}" onclick="openDesktopDecks()">🗂️ Baralhos</button>
@@ -353,13 +353,59 @@ function renderDesktopTopNav(){
     <span class="desktop-app-version" title="Versão do Letther B">v2026.08.23.137</span>
   </nav>`;
 }
+function renderDeckBrowserItem(deck,mobile){
+  const due=getDueCards(deck.id).length;
+  const active=state.currentDeckId===deck.id&&['deck','study'].includes(state.view);
+  const cls=mobile?'mobile-deck-card':'deck-item';
+  const drag=mobile?'':`draggable="true" ondragstart="startDeckDrag(event,'${deck.id}')"`;
+  return `<div class="${cls} deck-browser-row ${active?'active':''}" ${drag} onclick="selectDeck('${deck.id}')" title="${escapeHtml(deck.name)}">
+    <span class="deck-dot" style="background:${deck.color}"></span>
+    <span class="deck-item-name">${escapeHtml(deck.name)}</span>
+    ${due?`<span class="due-badge">${due}</span>`:''}
+    <span class="deck-browser-row-actions">
+      <button class="deck-move-button" title="Mover para pasta" aria-label="Mover ${escapeHtml(deck.name)} para pasta" onclick="event.stopPropagation();openMoveDeckModal('${deck.id}')">📂</button>
+      <button class="deck-favorite-toggle ${deck.favorite?'active':''}" title="${deck.favorite?'Remover dos favoritos':'Adicionar aos favoritos'}" aria-label="Favoritar ${escapeHtml(deck.name)}" onclick="event.stopPropagation();toggleDeckFavorite('${deck.id}')">${deck.favorite?'★':'☆'}</button>
+    </span>
+  </div>`;
+}
+
+function renderDeckBrowserTree(mobile){
+  const folders=getOrderedDeckFolders();
+  const noFolderDecks=getDecksInFolder(null);
+  const folderMarkup=folders.map(folder=>{
+    const decks=getDecksInFolder(folder.id);
+    return `<div class="deck-folder-group">
+      <div class="deck-folder-heading" role="button" tabindex="0" aria-expanded="${!folder.collapsed}" onclick="toggleDeckFolder('${folder.id}')" onkeydown="if(event.target===this&&(event.key==='Enter'||event.key===' ')){event.preventDefault();toggleDeckFolder('${folder.id}')}"
+        ondragover="allowDeckDrop(event)" ondragleave="leaveDeckDrop(event)" ondrop="dropDeckOnFolder(event,'${folder.id}')">
+        <span class="deck-folder-arrow">${folder.collapsed?'▸':'▾'}</span><span aria-hidden="true">${folder.collapsed?'📁':'📂'}</span>
+        <span class="deck-folder-title">${escapeHtml(folder.name)}</span>
+        <span class="deck-folder-count">${decks.length}</span>
+        <span class="deck-folder-actions">
+          <button type="button" class="deck-folder-action" title="Renomear pasta" aria-label="Renomear ${escapeHtml(folder.name)}" onclick="event.stopPropagation();openDeckFolderModal('${folder.id}')">✎</button>
+          <button type="button" class="deck-folder-action" title="Excluir pasta sem excluir baralhos" aria-label="Excluir pasta ${escapeHtml(folder.name)}" onclick="event.stopPropagation();deleteDeckFolder('${folder.id}')">✕</button>
+        </span>
+      </div>
+      ${folder.collapsed?'':`<div class="deck-folder-children">${decks.map(d=>renderDeckBrowserItem(d,mobile)).join('')||'<span class="deck-folder-empty">Pasta vazia · mova baralhos para cá</span>'}</div>`}
+    </div>`;
+  }).join('');
+  const rootMarkup=(folders.length?`<div class="deck-folder-heading deck-folder-root" ondragover="allowDeckDrop(event)" ondragleave="leaveDeckDrop(event)" ondrop="dropDeckOnFolder(event,null)">
+     <span aria-hidden="true">🗂️</span><span class="deck-folder-title">Sem pasta</span><span class="deck-folder-count">${noFolderDecks.length}</span>
+    </div>`:'')+noFolderDecks.map(d=>renderDeckBrowserItem(d,mobile)).join('');
+  return folderMarkup+rootMarkup+(!folders.length&&!noFolderDecks.length?'<p class="deck-folder-empty">Crie seu primeiro baralho ou pasta.</p>':'');
+}
+
 function renderDesktopDeckExplorer(){
-  const show=state.view==='deck'||state.view==='study';
+  const show=state.view==='deck'||state.view==='study'||state.view==='deck-list';
   if(!show) return '';
-  return `<aside class="desktop-deck-explorer">
-    <div style="display:flex; justify-content:space-between; align-items:center;"><strong style="font-size:13px;">Baralhos</strong><span style="font-size:11px; color:var(--text-faint);">${state.decks.length}</span></div>
-    <div class="desktop-deck-actions"><button class="icon-btn" title="Novo baralho" onclick="openNewDeckModal()">＋</button><button class="icon-btn" title="Tirar foto" onclick="openPhotoImportPicker(true)">📷</button><button class="icon-btn" title="Carregar imagem" onclick="openPhotoImportPicker(false)">🖼️</button></div>
-    ${getOrderedDecks().map(d=>{ const due=getDueCards(d.id).length; const active=state.currentDeckId===d.id&&state.view==='deck'; return `<div class="deck-item ${active?'active':''}" onclick="selectDeck('${d.id}')"><span class="deck-dot" style="background:${d.color}"></span><span class="deck-item-name">${escapeHtml(d.name)}</span>${due?`<span class="due-badge">${due}</span>`:''}<button class="deck-favorite-toggle ${d.favorite?'active':''}" onclick="event.stopPropagation(); toggleDeckFavorite('${d.id}')">${d.favorite?'★':'☆'}</button></div>`; }).join('') || `<p style="font-size:12px; color:var(--text-faint);">Nenhum baralho.</p>`}
+  return `<aside class="desktop-deck-explorer" aria-label="Navegador de baralhos">
+    <div class="deck-browser-heading"><strong>Baralhos</strong><span>${state.decks.length}</span></div>
+    <div class="desktop-deck-actions">
+      <button class="icon-btn" title="Novo baralho" aria-label="Novo baralho" onclick="openNewDeckModal()">＋</button>
+      <button class="icon-btn" title="Nova pasta" aria-label="Nova pasta de baralhos" onclick="openDeckFolderModal()">📁＋</button>
+      <button class="icon-btn" title="Tirar foto" onclick="openPhotoImportPicker(true)">📷</button>
+      <button class="icon-btn" title="Carregar imagem" onclick="openPhotoImportPicker(false)">🖼️</button>
+    </div>
+    <div class="deck-browser-tree">${renderDeckBrowserTree(false)}</div>
   </aside>`;
 }
 
@@ -494,9 +540,14 @@ function renderMain(){
 function renderMobileDeckListView(){
   return `<div class="mobile-deck-selection">
     <button class="ghost-btn mobile-back-btn" onclick="backToHome()">← Menu</button>
-    <div style="display:flex; justify-content:space-between; align-items:center;"><div><h2 style="margin:0; font-size:24px;">Baralhos</h2><p style="margin:3px 0 0; font-size:12px; color:var(--text-faint);">Seus favoritos aparecem primeiro.</p></div><span style="font-size:12px; color:var(--text-faint);">${state.decks.length}</span></div>
-    <div class="mobile-deck-actions"><button class="icon-btn" title="Novo baralho" onclick="openNewDeckModal()">＋</button><button class="icon-btn" title="Tirar foto para criar cartões" onclick="openPhotoImportPicker(true)">📷</button><button class="icon-btn" title="Carregar imagem para criar cartões" onclick="openPhotoImportPicker(false)">🖼️</button></div>
-    <div class="mobile-deck-list">${getOrderedDecks().length ? getOrderedDecks().map(d=>{ const due=getDueCards(d.id).length; return `<div class="mobile-deck-card" onclick="selectDeck('${d.id}')"><span class="deck-dot" style="background:${d.color}"></span><span class="deck-item-name">${escapeHtml(d.name)}</span>${due?`<span class="due-badge">${due}</span>`:''}<button class="mobile-deck-star ${d.favorite?'active':''}" title="Favoritar" onclick="event.stopPropagation(); toggleDeckFavorite('${d.id}')">${d.favorite?'★':'☆'}</button></div>`; }).join('') : `<p style="font-size:12px; color:var(--text-faint); text-align:center;">Crie seu primeiro baralho.</p>`}</div>
+    <div class="deck-browser-heading"><div><h2 style="margin:0;font-size:24px;">Baralhos</h2><p style="margin:3px 0 0;font-size:12px;color:var(--text-faint);">Agrupe seus baralhos por assunto.</p></div><span>${state.decks.length}</span></div>
+    <div class="mobile-deck-actions">
+      <button class="icon-btn" title="Novo baralho" aria-label="Novo baralho" onclick="openNewDeckModal()">＋</button>
+      <button class="icon-btn" title="Nova pasta" aria-label="Nova pasta de baralhos" onclick="openDeckFolderModal()">📁＋</button>
+      <button class="icon-btn" title="Tirar foto para criar cartões" onclick="openPhotoImportPicker(true)">📷</button>
+      <button class="icon-btn" title="Carregar imagem para criar cartões" onclick="openPhotoImportPicker(false)">🖼️</button>
+    </div>
+    <div class="mobile-deck-list deck-browser-tree">${renderDeckBrowserTree(true)}</div>
   </div>`;
 }
 
