@@ -1,6 +1,6 @@
 /* ============ DECK / CARD CRUD ============ */
 function createDeck(name, color, type){
-  const d = { id: uid(), name: name.trim(), color: color || DECK_COLORS[state.decks.length % DECK_COLORS.length], type: type || 'standard', aiEnabled: true, sentenceDifficulty: 'intermediate', favorite:false, archived:false };
+  const d = { id: uid(), folderId:null, name: name.trim(), color: color || DECK_COLORS[state.decks.length % DECK_COLORS.length], type: type || 'standard', aiEnabled: true, sentenceDifficulty: 'intermediate', favorite:false, archived:false };
   state.decks.push(d);
   state.cards[d.id] = [];
   state.currentDeckId = d.id;
@@ -8,6 +8,131 @@ function createDeck(name, color, type){
   state.view = 'deck'; state.tab = 'cards';
   saveData(); render();
 }
+function getOrderedDeckFolders(){
+  return [...state.deckFolders].sort((a,b)=>a.name.localeCompare(b.name,'pt-BR'));
+}
+
+function getDecksInFolder(folderId){
+  return getOrderedDecks().filter(deck=>(deck.folderId||null)===(folderId||null));
+}
+
+function openDeckFolderModal(folderId){
+  const folder=state.deckFolders.find(f=>f.id===folderId);
+  state.modal={type:'deck-folder',folderId:folder?folder.id:null,name:folder?folder.name:''};
+  render();
+}
+
+function confirmDeckFolderModal(){
+  const modal=state.modal;
+  if(!modal || modal.type!=='deck-folder')return;
+  const name=String(modal.name||'').trim();
+  if(!name){showToast('Digite o nome da pasta.','error');return;}
+  if(name.length>80){showToast('O nome da pasta deve ter até 80 caracteres.','error');return;}
+  const duplicate=state.deckFolders.some(f=>f.id!==modal.folderId && f.name.toLocaleLowerCase('pt-BR')===name.toLocaleLowerCase('pt-BR'));
+  if(duplicate){showToast('Já existe uma pasta com esse nome.','error');return;}
+  if(modal.folderId){
+    const folder=state.deckFolders.find(f=>f.id===modal.folderId);
+    if(!folder){state.modal=null;render();return;}
+    folder.name=name;
+  }else{
+    state.deckFolders.push({id:uid(),name,collapsed:false});
+  }
+  state.modal=null;
+  saveData();render();showToast('Pasta salva.');
+}
+
+function toggleDeckFolder(folderId){
+  const folder=state.deckFolders.find(f=>f.id===folderId);
+  if(!folder)return;
+  folder.collapsed=!folder.collapsed;
+  saveData();render();
+}
+
+function deleteDeckFolder(folderId){
+  const folder=state.deckFolders.find(f=>f.id===folderId);
+  if(!folder)return;
+  const count=state.decks.filter(d=>d.folderId===folderId).length;
+  askConfirm('Excluir a pasta "'+folder.name+'"? '+count+' baralho(s) serão movidos para "Sem pasta" e nenhum cartão será apagado.',()=>{
+    state.decks.forEach(d=>{if(d.folderId===folderId)d.folderId=null;});
+    state.deckFolders=state.deckFolders.filter(f=>f.id!==folderId);
+    saveData();render();showToast('Pasta excluída; os baralhos foram preservados.');
+  });
+}
+
+function openMoveDeckModal(deckId){
+  const deck=state.decks.find(d=>d.id===deckId);
+  if(!deck)return;
+  state.modal={type:'deck-move',deckId,folderId:deck.folderId||null};
+  render();
+}
+
+function moveDeckToFolder(deckId,folderId){
+  const deck=state.decks.find(d=>d.id===deckId);
+  if(!deck)return false;
+  const target=state.deckFolders.find(f=>f.id===folderId);
+  const newFolderId=target?target.id:null;
+  if(deck.folderId===newFolderId)return false;
+  deck.folderId=newFolderId;
+  if(target)target.collapsed=false;
+  saveData();render();showToast(target?'Baralho movido para "'+target.name+'".':'Baralho movido para "Sem pasta".');
+  return true;
+}
+
+function confirmMoveDeckModal(){
+  const modal=state.modal;
+  if(!modal || modal.type!=='deck-move')return;
+  const id=modal.deckId,folderId=modal.folderId;
+  state.modal=null;
+  if(!moveDeckToFolder(id,folderId))render();
+}
+
+function startDeckDrag(event,deckId){
+  if(!event.dataTransfer)return;
+  event.dataTransfer.effectAllowed='move';
+  event.dataTransfer.setData('text/plain',deckId);
+}
+
+function allowDeckDrop(event){
+  event.preventDefault();
+  if(event.dataTransfer)event.dataTransfer.dropEffect='move';
+  event.currentTarget.classList.add('deck-folder-drop-active');
+}
+
+function leaveDeckDrop(event){
+  event.currentTarget.classList.remove('deck-folder-drop-active');
+}
+
+function dropDeckOnFolder(event,folderId){
+  event.preventDefault();
+  event.stopPropagation();
+  event.currentTarget.classList.remove('deck-folder-drop-active');
+  const deckId=event.dataTransfer && event.dataTransfer.getData('text/plain');
+  if(deckId)moveDeckToFolder(deckId,folderId);
+}
+
+function renderDeckFolderModal(modal){
+  return `<div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal" style="width:min(420px,calc(100vw - 24px));">
+    <h3>${modal.folderId?'Renomear pasta':'Nova pasta de baralhos'}</h3>
+    <div class="field"><label>NOME DA PASTA</label><input type="text" maxlength="80" autofocus value="${escapeHtml(modal.name||'')}" placeholder="Ex.: História Medieval" oninput="state.modal.name=this.value" onkeydown="if(event.key==='Enter'){event.preventDefault();confirmDeckFolderModal()}"></div>
+    <p style="font-size:12px;color:var(--text-muted);">Organize os baralhos por assunto, sem alterar seus cartões.</p>
+    <div class="modal-actions"><button class="ghost-btn" onclick="closeModal()">Cancelar</button><button class="primary-btn" onclick="confirmDeckFolderModal()">Salvar pasta</button></div>
+  </div></div>`;
+}
+
+function renderMoveDeckModal(modal){
+  const deck=state.decks.find(d=>d.id===modal.deckId);
+  if(!deck)return '';
+  return `<div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal" style="width:min(440px,calc(100vw - 24px));">
+    <h3>Mover baralho</h3>
+    <p style="font-size:13px;color:var(--text-muted);">Escolha uma pasta para <strong>${escapeHtml(deck.name)}</strong>.</p>
+    <div class="field"><label>DESTINO</label><select onchange="state.modal.folderId=this.value||null">
+      <option value="" ${!modal.folderId?'selected':''}>Sem pasta</option>
+      ${getOrderedDeckFolders().map(f=>`<option value="${f.id}" ${modal.folderId===f.id?'selected':''}>📁 ${escapeHtml(f.name)}</option>`).join('')}
+    </select></div>
+    <div class="modal-actions"><button class="ghost-btn" onclick="closeModal()">Cancelar</button><button class="primary-btn" onclick="confirmMoveDeckModal()">Mover</button></div>
+  </div></div>`;
+}
+
 function isAiEnabled(deck){
   return !deck || deck.aiEnabled !== false; // padrão: ligada, a menos que explicitamente desligada
 }
