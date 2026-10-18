@@ -105,11 +105,33 @@ function confirmSpacedRepetitionModal(){
 }
 function deleteDeck(id){
   const deck = state.decks.find(d=>d.id===id);
+  if(!deck) return;
   const cardCount = (state.cards[id]||[]).length;
-  askConfirm(`Excluir o baralho "${deck ? deck.name : ''}" e ${cardCount} cartão(ões)? Essa ação não pode ser desfeita.`, () => {
+  askConfirm(`Excluir o baralho "${deck.name}" e ${cardCount} cartão(ões)? Essa ação não pode ser desfeita.`, () => {
+    // Preserve a posição do usuário nos baralhos, em vez de voltar ao início.
+    const orderedDecks = getOrderedDecks();
+    const deletedIndex = orderedDecks.findIndex(d=>d.id===id);
     state.decks = state.decks.filter(d=>d.id!==id);
     delete state.cards[id];
-    if(state.currentDeckId === id){ state.currentDeckId = null; state.view = 'home'; }
+    const remainingDecks = getOrderedDecks();
+    const nextDeck = remainingDecks[Math.min(deletedIndex, remainingDecks.length-1)] || null;
+
+    // O atalho "Baralhos" não deve tentar abrir um baralho já excluído.
+    if(state.lastDeckId === id) state.lastDeckId = nextDeck ? nextDeck.id : null;
+    if(state.currentDeckId === id){
+      if(isDesktopLayout() && nextDeck){
+        // No desktop, mantém o explorador aberto selecionando o próximo baralho.
+        selectDeck(nextDeck.id);
+        showToast('Baralho excluído.');
+        return;
+      }
+      // No celular (ou ao excluir o último), abre a lista de baralhos.
+      state.currentDeckId = null;
+      state.view = 'deck-list';
+      state.mobileHomeSection = 'decks';
+      state.tab = 'cards';
+      state.editingCardId = null;
+    }
     saveData(); render();
     showToast('Baralho excluído.');
   });
