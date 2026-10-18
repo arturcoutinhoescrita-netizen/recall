@@ -83,6 +83,7 @@ function checkLocalTranslation(userInput, correctBack){
 
 let state = {
   decks: [],
+  deckFolders: [],   // pastas para organizar baralhos por assunto
   cards: {},          // deckId -> [card]
   currentDeckId: null,
   view: 'home',        // home | deck | study | results | library | book
@@ -254,7 +255,7 @@ function recoveryStorageKey(prefix){
   return `${prefix}${state.firebaseUser?.uid||'anonymous'}`;
 }
 function buildDataPayload(){
-  return JSON.parse(JSON.stringify({decks: state.decks, cards: state.cards, stats: state.stats, activities: state.activities, agendaEvents: state.agendaEvents, routineActivities: state.routineActivities, routineActive: state.routineActive, routineLastCheckInAt: state.routineLastCheckInAt, globalAiMessages: state.globalAiMessages, books: state.books, notesItems: state.notesItems, sidebarAutoHide: state.sidebarAutoHide, notesChatWidth: state.notesChatWidth, notesChatHidden: state.notesChatHidden, lastDeckId: state.lastDeckId, lastNoteId: state.lastNoteId, floatingNotes: state.floatingNotes, activeOutlineId: state.activeOutlineId, activeOutlineScroll: state.activeOutlineScroll, geminiApiKey: getApiKey(), geminiApiKey2: getApiKey2(), booksApiKey: getBooksApiKey()}));
+  return JSON.parse(JSON.stringify({decks: state.decks, deckFolders: state.deckFolders, cards: state.cards, stats: state.stats, activities: state.activities, agendaEvents: state.agendaEvents, routineActivities: state.routineActivities, routineActive: state.routineActive, routineLastCheckInAt: state.routineLastCheckInAt, globalAiMessages: state.globalAiMessages, books: state.books, notesItems: state.notesItems, sidebarAutoHide: state.sidebarAutoHide, notesChatWidth: state.notesChatWidth, notesChatHidden: state.notesChatHidden, lastDeckId: state.lastDeckId, lastNoteId: state.lastNoteId, floatingNotes: state.floatingNotes, activeOutlineId: state.activeOutlineId, activeOutlineScroll: state.activeOutlineScroll, geminiApiKey: getApiKey(), geminiApiKey2: getApiKey2(), booksApiKey: getBooksApiKey()}));
 }
 function payloadByteLength(payload){
   try{ return new TextEncoder().encode(JSON.stringify(payload)).length; }
@@ -439,6 +440,7 @@ function mergeCardsPreservingData(remoteCards,localCards){
 function mergeRecoveryPayload(remote,local){
   const merged={...(remote||{}),...(local||{})};
   merged.decks=mergeArrayById(remote?.decks,local?.decks);
+  merged.deckFolders=mergeArrayById(remote?.deckFolders,local?.deckFolders);
   merged.cards=mergeCardsPreservingData(remote?.cards,local?.cards);
   merged.notesItems=mergeArrayById(remote?.notesItems,local?.notesItems);
   merged.books=mergeArrayById(remote?.books,local?.books);
@@ -449,7 +451,13 @@ function mergeRecoveryPayload(remote,local){
 }
 function applyDataPayload(d){
   d=d||{};
-  state.decks = d.decks || [];
+  state.deckFolders = (Array.isArray(d.deckFolders) ? d.deckFolders : [])
+    .filter(f => f && typeof f.id==='string' && typeof f.name==='string' && f.name.trim())
+    .map(f => ({id:f.id, name:f.name.trim(), collapsed:!!f.collapsed}));
+  const validFolderIds = new Set(state.deckFolders.map(f=>f.id));
+  state.decks = (Array.isArray(d.decks) ? d.decks : []).map(deck => ({
+    ...deck, folderId:validFolderIds.has(deck.folderId) ? deck.folderId : null
+  }));
   state.cards = d.cards || {};
   state.stats = d.stats || { totalPoints: 0 };
   state.activities = Array.isArray(d.activities) ? d.activities : [];
