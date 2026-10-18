@@ -875,3 +875,35 @@
   @media (prefers-reduced-motion:reduce){
     .appearance-option{ transition:none; }
   }
+
+/* Organização de baralhos por pastas: explorador desktop e lista mobile. */
+.deck-browser-heading{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.deck-browser-heading > span{color:var(--text-faint);font-size:12px}
+.deck-browser-tree{display:flex;flex-direction:column;gap:5px;min-height:0;overflow-y:auto}
+.deck-folder-group{min-width:0;display:flex;flex-direction:column;gap:3px}
+.deck-folder-heading{display:flex;align-items:center;gap:6px;min-width:0;padding:8px 7px;border:1px solid transparent;border-radius:9px;cursor:pointer;font-size:12px;color:var(--text);transition:background .15s,border-color .15s}
+.deck-folder-heading:hover,.deck-folder-heading:focus-visible{background:var(--accent-soft);border-color:var(--accent-dim);outline:none}
+.deck-folder-drop-active{background:var(--accent-soft)!important;border-color:var(--accent)!important}
+.deck-folder-arrow{font-size:13px;color:var(--text-faint);width:12px;flex-shrink:0}
+.deck-folder-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+.deck-folder-count{font-size:10px;color:var(--text-faint);padding:2px 5px;border-radius:6px;background:var(--bg-2)}
+.deck-folder-actions{display:flex;gap:2px;flex-shrink:0}
+.deck-folder-action,.deck-move-button{display:inline-flex;align-items:center;justify-content:center;width:24px;height:25px;border:0;border-radius:6px;background:transparent;color:var(--text-muted);font-size:14px;cursor:pointer}
+.deck-folder-action:hover,.deck-move-button:hover{background:var(--accent-soft);color:var(--accent)}
+.deck-folder-children{display:flex;flex-direction:column;gap:4px;margin-left:12px;padding-left:7px;border-left:1px solid var(--border)}
+.deck-folder-empty{display:block;padding:6px 8px;color:var(--text-faint);font-size:11px}
+.deck-folder-root{border-top:1px solid var(--border);border-radius:0;padding-top:12px;margin-top:8px;cursor:default}
+.deck-browser-row{display:flex;align-items:center;gap:5px;min-width:0;cursor:pointer}
+.deck-browser-row .deck-item-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.deck-browser-row-actions{display:inline-flex;align-items:center;gap:1px;flex-shrink:0}
+.deck-browser-row .deck-favorite-toggle{width:24px;min-width:24px;height:25px;padding:0;font-size:17px}
+.desktop-deck-actions{grid-template-columns:repeat(4,minmax(0,1fr))}
+@media (max-width:820px){
+  .mobile-deck-actions{grid-template-columns:repeat(4,minmax(0,1fr))}
+  .deck-folder-heading{padding:12px 9px;font-size:14px}
+  .deck-folder-children{margin-left:8px}
+  .deck-browser-row .deck-item-name{font-size:14px}
+  .deck-folder-action,.deck-move-button{width:32px;height:32px}
+  .deck-browser-row .deck-favorite-toggle{width:32px;min-width:32px;height:32px}
+  .deck-browser-tree{overflow-y:visible}
+}
