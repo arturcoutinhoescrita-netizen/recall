@@ -73,6 +73,8 @@ function renderAppearanceModal(){
 }
 function renderModal(overrideModal){
   const m = overrideModal || state.modal;
+  if(m.type === 'deck-folder') return renderDeckFolderModal(m);
+  if(m.type === 'deck-move') return renderMoveDeckModal(m);
   if(m.type === 'spaced-repetition') return renderSpacedRepetitionModal(m);
   if(m.type === 'active-outline-view') return renderActiveOutlineViewModal(m);
   if(m.type === 'agenda-event') return renderAgendaEventModal(m);
