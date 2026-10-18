@@ -350,7 +350,7 @@ function renderDesktopTopNav(){
     <button class="ghost-btn ${state.view==='routine'?'active':''}" onclick="openRoutine()">🌿 Rotina</button>
     <button class="ghost-btn ${(state.view==='library'||state.view==='book'||state.view==='epub-reader')?'active':''}" onclick="openLibrary()">📚 Leituras</button>
     <button class="ghost-btn" title="Configurações, backup e chaves" onclick="openAppOptionsModal()">⚙️</button>
-    <span class="desktop-app-version" title="Versão do Letther B">v2026.08.23.137</span>
+    <span class="desktop-app-version" title="Versão do Letther B">v2026.10.18.139</span>
   </nav>`;
 }
 function renderDeckBrowserItem(deck,mobile){
@@ -419,7 +419,7 @@ function renderSidebar(){
       <div>
         <h1>Letther B</h1>
         <span>LET IT BE</span>
-        <span class="brand-version">v2026.08.23.137</span>
+        <span class="brand-version">v2026.10.18.139</span>
       </div>
     </div>
     <button class="ghost-btn sidebar-focus-toggle" title="No modo foco, encoste o mouse na borda esquerda para revelar o menu" onclick="toggleSidebarAutoHide()">${state.sidebarAutoHide?'⇤ Fixar menu':'⇥ Ocultar menu'}</button>
@@ -450,7 +450,7 @@ function renderSidebar(){
       <a href="#" style="color:var(--text-muted); text-decoration:underline;" onclick="event.preventDefault(); exportAllBackup();">Exportar backup completo</a>
       &nbsp;·&nbsp;
       <a href="#" style="color:var(--text-muted); text-decoration:underline;" onclick="event.preventDefault(); triggerImportBackup();">Importar backup</a>
-      <div style="margin-top:6px; font-size:10px; color:var(--text-faint);">Recall v.138</div>
+      <div style="margin-top:6px; font-size:10px; color:var(--text-faint);">Recall v.139</div>
       ${(!hasClaudeStorage() && hasFileSystemAccess()) ? `
       <br><a href="#" style="color:var(--text-muted); text-decoration:underline;" onclick="event.preventDefault(); saveToFileSystem();">${state.fileHandle ? '💾 Sincronizando com arquivo local ✓' : '💾 Salvar em arquivo local'}</a>
       &nbsp;·&nbsp;
@@ -481,7 +481,7 @@ function renderMobileSidebar(){
   const section=null;
   const nav=(key,label,icon)=>`<button class="ghost-btn mobile-nav-button ${section===key?'active':''}" onclick="selectMobileHomeSection('${key}')"><span style="font-size:20px;">${icon}</span>${label}</button>`;
   return `<div class="mobile-sidebar-content">
-    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.08.23.137</span></div></div>
+    <div class="brand"><div class="brand-mark"></div><div><h1>Letther B</h1><span>LET IT BE</span><span class="brand-version">v2026.10.18.139</span></div></div>
     <div class="mobile-home-nav">
       ${nav('decks','Baralhos','🗂️')}
       ${nav('library','Leituras','📚')}
