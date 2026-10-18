@@ -21,7 +21,7 @@ function exportDeckJson(deckId){
   downloadFile(`${safeFileName(deck.name)}.json`, JSON.stringify({ deck, cards }, null, 2), 'application/json');
 }
 function exportAllBackup(){
-  downloadFile('recall_backup.json', JSON.stringify({ decks: state.decks, cards: state.cards, stats: state.stats, books: state.books }, null, 2), 'application/json');
+  downloadFile('recall_backup.json', JSON.stringify({ decks: state.decks, deckFolders: state.deckFolders, cards: state.cards, stats: state.stats, books: state.books }, null, 2), 'application/json');
 }
 function hasFileSystemAccess(){
   return typeof window.showSaveFilePicker === 'function' && typeof window.showOpenFilePicker === 'function';
@@ -105,7 +105,7 @@ async function saveToFileSystem(){
       });
       storeFileHandle(state.fileHandle);
     }
-    const payload = JSON.stringify({ decks: state.decks, cards: state.cards, stats: state.stats }, null, 2);
+    const payload = JSON.stringify({ decks: state.decks, deckFolders: state.deckFolders, cards: state.cards, stats: state.stats }, null, 2);
     const writable = await state.fileHandle.createWritable();
     await writable.write(payload);
     await writable.close();
@@ -139,7 +139,11 @@ async function openFromFileSystem(){
   }
 }
 function replaceAllData(data){
-  state.decks = (data.decks || []).map(d => ({ id: d.id || uid(), name: d.name, color: d.color || DECK_COLORS[0], type: d.type || 'standard', enabledExercises: d.enabledExercises, sentenceDifficulty: d.sentenceDifficulty || 'intermediate', carryOverLang: d.carryOverLang || [], carryOverByMode: d.carryOverByMode || {}, archived:!!d.archived }));
+  state.deckFolders = (Array.isArray(data.deckFolders) ? data.deckFolders : [])
+    .filter(f=>f && typeof f.id==='string' && typeof f.name==='string' && f.name.trim())
+    .map(f=>({id:f.id,name:f.name.trim(),collapsed:!!f.collapsed}));
+  const validFolders = new Set(state.deckFolders.map(f=>f.id));
+  state.decks = (data.decks || []).map(d => ({ id: d.id || uid(), folderId:validFolders.has(d.folderId)?d.folderId:null, name: d.name, color: d.color || DECK_COLORS[0], type: d.type || 'standard', enabledExercises: d.enabledExercises, sentenceDifficulty: d.sentenceDifficulty || 'intermediate', carryOverLang: d.carryOverLang || [], carryOverByMode: d.carryOverByMode || {}, archived:!!d.archived }));
   const newCards = {};
   state.decks.forEach(d => {
     const oldCards = (data.cards && data.cards[d.id]) || [];
@@ -197,11 +201,19 @@ function triggerImportBackup(){
   input.click();
 }
 function importFullBackup(data){
+  // Cada pasta recebe um novo ID, assim backups não colidem com pastas existentes.
+  const folderIdMap = {};
+  (Array.isArray(data.deckFolders) ? data.deckFolders : []).forEach(f=>{
+    if(!f || !f.id || typeof f.name!=='string' || !f.name.trim())return;
+    const newId=uid();
+    folderIdMap[f.id]=newId;
+    state.deckFolders.push({id:newId,name:f.name.trim(),collapsed:!!f.collapsed});
+  });
   const deckIdMap = {}; // id antigo -> novo, pra remapear o vínculo livro->baralho
   (data.decks || []).forEach(d => {
     const newId = uid();
     deckIdMap[d.id] = newId;
-    state.decks.push({ id:newId, name: d.name, color: d.color || DECK_COLORS[state.decks.length % DECK_COLORS.length], type: d.type || 'standard', enabledExercises: d.enabledExercises, sentenceDifficulty: d.sentenceDifficulty || 'intermediate', carryOverLang: d.carryOverLang || [], carryOverByMode: d.carryOverByMode || {}, archived:!!d.archived });
+    state.decks.push({ id:newId, folderId:folderIdMap[d.folderId]||null, name: d.name, color: d.color || DECK_COLORS[state.decks.length % DECK_COLORS.length], type: d.type || 'standard', enabledExercises: d.enabledExercises, sentenceDifficulty: d.sentenceDifficulty || 'intermediate', carryOverLang: d.carryOverLang || [], carryOverByMode: d.carryOverByMode || {}, archived:!!d.archived });
     const oldCards = (data.cards && data.cards[d.id]) || [];
     state.cards[newId] = oldCards.map(c => normalizeImportedCard(c));
   });
