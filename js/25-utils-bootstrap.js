@@ -167,6 +167,6 @@ if(hasClaudeStorage()){
 
 if('serviceWorker' in navigator){
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('sw.js?v=20260928-138', {updateViaCache:'none'}).then(registration=>registration.update().catch(()=>{})).catch(e => console.error('Falha ao registrar o service worker', e));
+    navigator.serviceWorker.register('sw.js?v=20261018-139', {updateViaCache:'none'}).then(registration=>registration.update().catch(()=>{})).catch(e => console.error('Falha ao registrar o service worker', e));
   });
 }
